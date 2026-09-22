@@ -1,0 +1,62 @@
+//! Provider abstraction. One trait, several backends. IMAP first.
+
+pub mod imap;
+pub mod parse;
+
+use crate::error::Result;
+use crate::model::{Flags, FolderRole};
+use std::time::Duration;
+
+#[derive(Debug, Clone)]
+pub struct RemoteFolder {
+    pub name: String,
+    pub role: FolderRole,
+    pub selectable: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FolderState {
+    pub uidvalidity: u32,
+    pub uidnext: u32,
+    pub exists: u32,
+    pub highest_modseq: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchedMessage {
+    pub uid: u32,
+    pub flags: Flags,
+    pub size: u32,
+    pub raw: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FlagChange {
+    pub uid: u32,
+    pub flags: Flags,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleOutcome {
+    Changed,
+    Timeout,
+}
+
+#[allow(async_fn_in_trait)]
+pub trait Provider {
+    async fn list_folders(&mut self) -> Result<Vec<RemoteFolder>>;
+    async fn select(&mut self, folder: &str) -> Result<FolderState>;
+    /// All UIDs currently in the selected folder.
+    async fn uids(&mut self) -> Result<Vec<u32>>;
+    /// Full messages for the given UIDs of the selected folder.
+    async fn fetch(&mut self, uids: &[u32]) -> Result<Vec<FetchedMessage>>;
+    /// Flags for every message in the selected folder, or only those changed since `modseq`.
+    async fn fetch_flags(&mut self, since_modseq: Option<u64>) -> Result<Vec<FlagChange>>;
+    async fn store_flags(&mut self, uid: u32, add: Flags, remove: Flags) -> Result<()>;
+    async fn move_to(&mut self, uid: u32, dest: &str) -> Result<()>;
+    /// Store a raw RFC 822 message in `folder` (used to keep a copy of sent mail).
+    async fn append(&mut self, folder: &str, raw: &[u8], flags: Flags) -> Result<()>;
+    /// Block until the selected folder changes or the timeout passes.
+    async fn idle(&mut self, timeout: Duration) -> Result<IdleOutcome>;
+    async fn logout(&mut self) -> Result<()>;
+}

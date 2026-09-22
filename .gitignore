@@ -1,0 +1,18 @@
+# rust
+core/target/
+# flutter
+app/build/
+app/.dart_tool/
+app/.flutter-plugins*
+app/ios/Pods/
+app/macos/Pods/
+app/**/Flutter/ephemeral/
+# local
+*.sqlite*
+.env
+.DS_Store
+
+# bridge crate build output
+app/rust/target/
+# flutter_rust_bridge scratch
+app/.fvmrc

@@ -1,0 +1,83 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: core (rust)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - run: cargo fmt --check
+        working-directory: core
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: core
+      - run: cargo test
+        working-directory: core
+      - run: cargo build --release -p mailctl
+        working-directory: core
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mailctl-linux-x86_64
+          path: core/target/release/mailctl
+
+  app-check:
+    name: app (analyze + test)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+        working-directory: app
+      - run: flutter analyze
+        working-directory: app
+      - run: flutter test
+        working-directory: app
+
+  macos:
+    name: build macOS
+    runs-on: macos-15
+    needs: [core, app-check]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            core
+            app/rust
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+        working-directory: app
+      - run: flutter build macos --release
+        working-directory: app
+      - name: package
+        run: |
+          cd app/build/macos/Build/Products/Release
+          ditto -c -k --keepParent mail_app.app Flomsi-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Flomsi-macOS
+          path: app/build/macos/Build/Products/Release/Flomsi-macOS.zip
+
+  # iOS, Android and Windows jobs land together with their bridge packaging (see docs/ARCHITECTURE.md).

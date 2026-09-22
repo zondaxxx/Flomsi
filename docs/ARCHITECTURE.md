@@ -1,0 +1,120 @@
+# Архитектура
+
+Решение принято 22.09.2026, дизайн пересмотрен в тот же день.
+
+## Дизайн: F1 · Editor
+
+История: «E · Mono Glass» (стекло, орбы, неон) отброшено как «нейросетевое»; чистый macOS-натив на macos_ui отброшен как безликий.
+Выбрано **F1 · Editor**: линия Zed / Warp / Sublime. Канва с историей и тремя финальными направлениями (ряд F сверху):
+https://claude.ai/artifact/V8X9XpoALxZ8YWNVmhAEWz
+
+Правила F1:
+- **Палитра One Dark / One Light** (`app/lib/theme/tokens.dart`, `Scheme`): фон #16181d, панели #1b1e24, границы #262a31, текст #d7dae0 / #8b93a1 / #5f6673,
+  синий #74ade8 как единственный акцент; зелёный/жёлтый/красный/фиолетовый/циан только для семантики (статус синка, звезда, ошибка, теги).
+- **Шрифты IBM Plex**: Plex Sans для интерфейса, Plex Mono только для данных (время, счётчики, теги, заголовки письма, статус-строка, клавиши).
+- **Фрейм**: своя верхняя панель 40px (на macOS со светофорами внутри, тайтлбар прозрачный через macos_window_utils), сайдбар 224, список 440, чтение,
+  статус-строка 24px как в редакторе. Панели разделены линиями 1px, без карточек и радиусов больше 5px.
+- **Никакого декора**: ни стекла, ни свечений, ни `//` и `>` в интерфейсе. Клавиши показываются подписью рядом с действием в тулбаре, в палитре и в статус-строке.
+
+Анимации (`app/lib/theme/motion.dart`): 120–180 мс, easeOutCubic, все отключаются при «уменьшить движение». Где они есть и зачем:
+выделение строки при j/k (AnimatedContainer), схлопывание строки при архивации и подъём новых (AnimatedList), смена письма в панели чтения
+(fade + подъём 6px), стаггер сообщений треда по 40 мс, вход палитры и окна аккаунта, пульс точки синка, появление точки непрочитанного.
+Ничего не движется само по себе без действия пользователя, кроме индикатора синка.
+
+Открытые референсы: Zed, Warp, Linear, Raycast, aerc/neomutt; Apple Design Resources (macOS 26/27 Figma kit) для метрик окна;
+open-source почтовики на Flutter: Maily / enough_mail_app, tmail-flutter.
+
+## Стек
+
+| Слой | Технология | Почему |
+|---|---|---|
+| Ядро | Rust (`core/`) | IMAP/MIME/SQLite/секреты не зависят от UI; один бинарь на 4 платформы |
+| UI | Flutter (`app/`) | Один рендер на четырёх платформах; фрейм F1 общий, адаптив по ширине |
+| Мост | flutter_rust_bridge v2; на macOS dylib собирает run-script фаза Xcode (`scripts/build_bridge_macos.sh`) | Без CocoaPods и cargokit. Async-стримы событий синка из ядра в UI |
+| Окно macOS | macos_window_utils | Прозрачный тайтлбар, светофоры внутри верхней панели F1 |
+| База | SQLite + FTS5 | Оффлайн-кэш, полнотекстовый поиск, одна файловая база на профиль |
+| Секреты | OS keychain (`keyring`) | Токены никогда не лежат в SQLite |
+
+Запасной вариант UI: Tauri 2. Ядро при этом не меняется.
+
+## Ядро: модули `mailcore`
+
+```
+model      типы: Account, Folder, Message, Thread, Label, Flags, Op
+sanitize   ammonia: HTML писем без script/style/form/iframe, remote-картинки → data-blocked-src
+compose    Draft: reply / reply-all / forward, In-Reply-To + References, цитирование, MIME через lettre
+smtp       lettre: 465 implicit TLS, 587 STARTTLS, PLAIN/LOGIN или XOAUTH2
+storage    SQLite: схема, миграции, upsert, запросы, FTS5, outbox
+search     язык запросов `from:anna has:attachment before:2026-09` → SQL
+threading  JWZ-lite по Message-ID / References, фолбэк на тему
+provider   trait Provider + реализации: imap (сейчас), gmail_api, jmap, graph (позже)
+sync       SyncEngine: provider → store, проигрывание outbox, события
+auth       OAuth2 PKCE (loopback на десктопе), XOAUTH2 для IMAP
+secrets    обёртка над keyring
+```
+
+Публичный фасад: `Core::open(data_dir)` → `add_account`, `sync_now`, `threads(query)`, `apply(op)`, `events()`.
+
+## Мост (`app/rust` = crate `mail_bridge`)
+
+Тонкие DTO над `mailcore::Core` в `app/rust/src/api/mail.rs`. После правок API: `make bridge`
+(`flutter_rust_bridge_codegen generate`). Dart-код попадает в `app/lib/src/rust/`, Rust-глю в `app/rust/src/frb_generated.rs`.
+Enum с данными в DTO не используем: кодогенератор тогда требует `freezed`; события синка идут плоской структурой с полем `kind`.
+
+Как библиотека попадает в приложение:
+- **macOS**: фаза «Build Rust bridge» в таргете Runner (последняя в списке) запускает `scripts/build_bridge_macos.sh`:
+  `cargo build` в `app/rust` (debug для Debug-конфигурации, иначе release), копия `libmail_bridge.dylib` в `Contents/Frameworks`, ad-hoc codesign.
+  Dart открывает её по явному пути рядом с исполняемым файлом (`RustRepository._bundledLibrary`).
+- **iOS / Android / Windows**: ещё не подключено. План: iOS — статическая библиотека и такая же run-script фаза; Android — `cargo ndk`
+  в Gradle-таске; Windows — CMake-шаг в `windows/`.
+
+Заметка про окружение: Homebrew на этой машине x86_64 под Rosetta (Tier 3), `brew install cocoapods` и `gem install cocoapods`
+(системный Ruby 2.6, `nkf` не собирается) падают. Backend native-assets пробовали: Flutter 3.47 не запускает `hook/build.dart`
+корневого пакета, поэтому остановились на run-script фазе.
+
+## Принципы
+
+1. **Local-first.** Любое действие сначала применяется к локальной базе и пишется в `outbox`. Синк проигрывает outbox на сервер с идемпотентными ключами. Ожидающая локальная операция побеждает до подтверждения сервером; флаги сверяются по `MODSEQ`.
+2. **Инкрементальный синк.** IMAP: `UIDVALIDITY` + `UIDNEXT` + `CONDSTORE`/`QRESYNC` где поддерживается. Gmail API: `historyId`. Graph: delta-ссылки. JMAP: `state`.
+3. **Пуш.** Десктоп: IMAP `IDLE` на выбранных папках. Мобильные: периодический фоновый фетч. Настоящий пуш на iOS без сервера невозможен; опциональный self-hosted relay в поздней фазе.
+4. **Безопасность писем.** HTML чистится (`ammonia`), рендерится в WebView без JavaScript и с CSP, внешние картинки блокируются по умолчанию.
+5. **Секреты.** Refresh-токены и пароли приложений только в keychain/keystore/Credential Manager.
+
+## Схема базы (v1)
+
+```
+accounts(id, kind, email, display_name, imap_host, imap_port, smtp_host, smtp_port, auth_kind, created_at)
+folders(id, account_id, remote_name, role, uidvalidity, uidnext, highest_modseq, last_sync_at)
+messages(id, account_id, folder_id, uid, message_id, thread_id, subject, from_name, from_addr,
+         to_json, cc_json, date, snippet, flags, has_attachment, size, raw_path)
+threads(id, account_id, subject_norm, last_date, msg_count, unread_count)
+labels(id, account_id, name, color) ; message_labels(message_id, label_id)
+messages_fts(subject, from_text, to_text, body)   -- FTS5, content=external
+outbox(id, account_id, op_json, created_at, attempts, last_error)
+```
+
+## Раскладка UI
+
+| Ширина | Панели |
+|---|---|
+| ≥ 1100 | папки · список · чтение |
+| 700–1099 | список · чтение |
+| < 700 | одна панель, стек навигации |
+
+Слои UI: `features/shell/editor_shell.dart` (фрейм F1: верхняя панель, сайдбар, статус-строка, адаптив), общие тела панелей `ThreadListBody`,
+`ThreadBody`, `CommandPalette`, `AddAccountSheet`; действия и команды в `shell_actions.dart`; цвета из `Scheme` (`theme/tokens.dart`),
+движение из `theme/motion.dart`. `KeyScope` и кеймап из `keymaps/*.json` (пресет по умолчанию `vim`) одинаковы везде.
+
+## Фазы
+
+0. Спайк: IMAP-синк одного ящика в SQLite + стеклянный список во Flutter. Цель: мост и производительность блюра на Android.
+1. MVP macOS: Gmail + IMAP, единый инбокс, чтение, архив, ответ, поиск, кеймап, палитра.
+2. iOS и Android: свайпы, фоновое обновление, композер-лист.
+3. Windows, Outlook (Graph), JMAP, правила, snooze, сниппеты.
+4. Светлая тема, календарные приглашения, автоматизация.
+
+## Известные риски
+
+- **Верификация Google.** Scope `gmail.modify` restricted: для публичного релиза нужна верификация и, вероятно, CASA-аудит. До этого 100 тестовых пользователей.
+- **iOS фон.** IDLE в фоне не живёт. Только Background App Refresh.
+- **HTML-письма.** Главный вектор атаки. Санитайзер и WebView без JS обязательны с первого коммита.

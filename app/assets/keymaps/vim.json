@@ -1,0 +1,29 @@
+{
+  "name": "vim",
+  "inputsSwallowSingleKeys": true,
+  "bindings": [
+    { "action": "thread.archive",     "keys": ["e"],              "scope": ["list", "thread"] },
+    { "action": "thread.delete",      "keys": ["#"],              "scope": ["list", "thread"] },
+    { "action": "thread.snooze",      "keys": ["h"],              "scope": ["list", "thread"] },
+    { "action": "thread.star",        "keys": ["*"],              "scope": ["list", "thread"] },
+    { "action": "thread.label",       "keys": ["l"],              "scope": ["list", "thread"] },
+    { "action": "thread.reply",       "keys": ["r"],              "scope": ["thread"] },
+    { "action": "thread.replyAll",    "keys": ["a"],              "scope": ["thread"] },
+    { "action": "thread.forward",     "keys": ["f"],              "scope": ["thread"] },
+    { "action": "nav.next",           "keys": ["j"],              "scope": ["list", "thread"] },
+    { "action": "nav.prev",           "keys": ["k"],              "scope": ["list", "thread"] },
+    { "action": "nav.open",           "keys": ["enter", "o"],     "scope": ["list"] },
+    { "action": "nav.back",           "keys": ["escape", "u"],    "scope": ["thread"] },
+    { "action": "nav.goInbox",        "keys": ["g i"],            "scope": ["global"] },
+    { "action": "nav.goArchive",      "keys": ["g a"],            "scope": ["global"] },
+    { "action": "nav.goStarred",      "keys": ["g s"],            "scope": ["global"] },
+    { "action": "search.focus",       "keys": ["/"],              "scope": ["list"] },
+    { "action": "palette.open",       "keys": ["mod+k"],          "scope": ["global"] },
+    { "action": "compose.new",        "keys": ["c"],              "scope": ["global"] },
+    { "action": "compose.send",       "keys": ["mod+enter"],      "scope": ["compose"] },
+    { "action": "account.switch1",    "keys": ["mod+1"],          "scope": ["global"] },
+    { "action": "account.switch2",    "keys": ["mod+2"],          "scope": ["global"] },
+    { "action": "account.switch3",    "keys": ["mod+3"],          "scope": ["global"] },
+    { "action": "help.cheatsheet",    "keys": ["?"],              "scope": ["global"] }
+  ]
+}
