@@ -10,8 +10,11 @@ import '../../theme/tokens.dart';
 
 /// Filter row + animated thread rows. The search field itself lives in the top bar on desktop.
 class ThreadListBody extends ConsumerStatefulWidget {
-  const ThreadListBody({super.key, this.onOpen});
+  const ThreadListBody({super.key, this.onOpen, this.showSearch = false});
   final void Function(int threadId)? onOpen;
+
+  /// Phones have no top-bar field, so the list carries its own.
+  final bool showSearch;
 
   @override
   ConsumerState<ThreadListBody> createState() => ThreadListBodyState();
@@ -105,6 +108,18 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
 
     return Column(
       children: [
+        if (widget.showSearch)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 2),
+            child: QuietField(
+              controller: searchController,
+              focusNode: searchFocus,
+              hint: 'Search mail',
+              height: 32,
+              leading: Icon(CupertinoIcons.search, size: 14, color: s.fg3),
+              onChanged: onSearchChanged,
+            ),
+          ),
         Container(
           height: 36,
           padding: const EdgeInsets.symmetric(horizontal: 10),

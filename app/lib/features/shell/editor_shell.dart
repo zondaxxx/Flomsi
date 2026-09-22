@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
 import '../../keymap/key_scope.dart';
+import '../../state/appearance.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
@@ -62,60 +63,73 @@ class _EditorShellState extends ConsumerState<EditorShell> {
     );
     final paletteOpen = ref.watch(paletteOpenProvider);
     final draft = ref.watch(composeProvider);
+    final touch = Platform.isIOS || Platform.isAndroid;
     return KeyScope(
       actions: actions.keymap(),
       child: Scaffold(
         backgroundColor: s.bg,
-        body: Stack(
-          children: [
-            LayoutBuilder(
-              builder: (context, c) {
-                final w = c.maxWidth;
-                final threePane = w >= 1100;
-                final phone = w < 700;
-                return Column(
-                  children: [
-                    _TopBar(listKey: _listKey, compact: phone),
-                    const Hairline(),
-                    Expanded(
-                      child: phone
-                          ? ThreadListBody(
-                              key: _listKey,
-                              onOpen: (_) => _openOnPhone(context),
-                            )
-                          : Row(
-                              children: [
-                                if (threePane) ...[
-                                  const SizedBox(width: 224, child: _Sidebar()),
+        body: SafeArea(
+          top: touch,
+          bottom: touch,
+          child: Stack(
+            children: [
+              LayoutBuilder(
+                builder: (context, c) {
+                  final w = c.maxWidth;
+                  final threePane = w >= 1100;
+                  final phone = w < 700;
+                  return Column(
+                    children: [
+                      _TopBar(
+                        listKey: _listKey,
+                        compact: phone,
+                        actions: actions,
+                      ),
+                      const Hairline(),
+                      Expanded(
+                        child: phone
+                            ? ThreadListBody(
+                                key: _listKey,
+                                showSearch: true,
+                                onOpen: (_) => _openOnPhone(context),
+                              )
+                            : Row(
+                                children: [
+                                  if (threePane) ...[
+                                    const SizedBox(
+                                      width: 224,
+                                      child: _Sidebar(),
+                                    ),
+                                    const Hairline(vertical: true),
+                                  ],
+                                  SizedBox(
+                                    width: threePane ? 440 : 380,
+                                    child: ThreadListBody(key: _listKey),
+                                  ),
                                   const Hairline(vertical: true),
+                                  Expanded(
+                                    child: draft != null
+                                        ? ComposeBody(
+                                            key: ValueKey(draft.hashCode),
+                                            draft: draft,
+                                          )
+                                        : const ThreadBody(),
+                                  ),
                                 ],
-                                SizedBox(
-                                  width: threePane ? 440 : 380,
-                                  child: ThreadListBody(key: _listKey),
-                                ),
-                                const Hairline(vertical: true),
-                                Expanded(
-                                  child: draft != null
-                                      ? ComposeBody(
-                                          key: ValueKey(draft.hashCode),
-                                          draft: draft,
-                                        )
-                                      : const ThreadBody(),
-                                ),
-                              ],
-                            ),
-                    ),
-                    const Hairline(),
-                    const _StatusBar(),
-                  ],
-                );
-              },
-            ),
-            if (paletteOpen)
-              Positioned.fill(
-                child: CommandPalette(commands: actions.commands()),
+                              ),
+                      ),
+                      const Hairline(),
+                      const _StatusBar(),
+                    ],
+                  );
+                },
               ),
-          ],
+              if (paletteOpen)
+                Positioned.fill(
+                  child: CommandPalette(commands: actions.commands()),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -123,9 +137,14 @@ class _EditorShellState extends ConsumerState<EditorShell> {
 }
 
 class _TopBar extends ConsumerWidget {
-  const _TopBar({required this.listKey, required this.compact});
+  const _TopBar({
+    required this.listKey,
+    required this.compact,
+    required this.actions,
+  });
   final GlobalKey<ThreadListBodyState> listKey;
   final bool compact;
+  final ShellActions actions;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -184,24 +203,23 @@ class _TopBar extends ConsumerWidget {
             const Spacer(),
           ] else
             const Spacer(),
-          SizedBox(
-            width: compact ? null : 220,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                Container(
-                      width: 7,
-                      height: 7,
-                      decoration: BoxDecoration(
-                        color: sync.lastError != null ? s.red : s.green,
-                        shape: BoxShape.circle,
-                      ),
-                    )
-                    .animate(
-                      target: sync.syncing ? 1 : 0,
-                      onPlay: (c) => c.repeat(reverse: true),
-                    )
-                    .fade(begin: 1, end: 0.25, duration: 700.ms),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: sync.lastError != null ? s.red : s.green,
+                      shape: BoxShape.circle,
+                    ),
+                  )
+                  .animate(
+                    target: sync.syncing ? 1 : 0,
+                    onPlay: (c) => c.repeat(reverse: true),
+                  )
+                  .fade(begin: 1, end: 0.25, duration: 700.ms),
+              if (!compact) ...[
                 const SizedBox(width: 6),
                 AnimatedSwitcher(
                   duration: Motion.of(context, Motion.fast),
@@ -242,12 +260,66 @@ class _TopBar extends ConsumerWidget {
                     ),
                   ),
                 ),
+              ] else ...[
+                const SizedBox(width: 10),
+                IconBtn(
+                  icon: CupertinoIcons.square_pencil,
+                  label: 'New message',
+                  size: 18,
+                  onTap: actions.openNew,
+                ),
+                IconBtn(
+                  icon: CupertinoIcons.ellipsis,
+                  label: 'More',
+                  size: 18,
+                  onTap: () => _showMenu(context, ref),
+                ),
               ],
-            ),
+            ],
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _showMenu(BuildContext context, WidgetRef ref) async {
+    final s = context.s;
+    final repo = ref.read(repositoryProvider);
+    final choice = await showMenu<String>(
+      context: context,
+      position: const RelativeRect.fromLTRB(1000, 40, 8, 0),
+      color: s.bg2,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(6),
+        side: BorderSide(color: s.border),
+      ),
+      items: [
+        PopupMenuItem(
+          value: 'sync',
+          height: 36,
+          child: Text('Sync now', style: ui(context)),
+        ),
+        PopupMenuItem(
+          value: 'add',
+          height: 36,
+          child: Text('Add account…', style: ui(context)),
+        ),
+        PopupMenuItem(
+          value: 'theme',
+          height: 36,
+          child: Text('Appearance', style: ui(context)),
+        ),
+      ],
+    );
+    if (!context.mounted) return;
+    switch (choice) {
+      case 'sync':
+        await repo.sync();
+      case 'add':
+        await showAddAccountSheet(context);
+      case 'theme':
+        ref.read(appearanceProvider.notifier).cycle();
+    }
   }
 
   static String _hhmm(DateTime? d) {
@@ -421,13 +493,14 @@ class _StatusBar extends ConsumerWidget {
             style: mono(context, size: 11),
           ),
           const Spacer(),
-          Text(switch (scope) {
-            'search' => 'esc back · ↵ search',
-            'compose' => '⌘↵ send · esc discard',
-            'thread' => 'r reply · e archive · esc back',
-            'dialog' => 'esc cancel · ↵ confirm',
-            _ => 'j/k move · e archive · r reply · / search · ⌘K commands',
-          }, style: mono(context, size: 11)),
+          if (!(Platform.isIOS || Platform.isAndroid))
+            Text(switch (scope) {
+              'search' => 'esc back · ↵ search',
+              'compose' => '⌘↵ send · esc discard',
+              'thread' => 'r reply · e archive · esc back',
+              'dialog' => 'esc cancel · ↵ confirm',
+              _ => 'j/k move · e archive · r reply · / search · ⌘K commands',
+            }, style: mono(context, size: 11)),
         ],
       ),
     );
