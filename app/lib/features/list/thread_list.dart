@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -56,6 +58,18 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
       'starred' => '$q is:starred'.trim(),
       _ => q,
     };
+  }
+
+  /// A swiped row leaves the list at once; the repository event that follows finds it already gone.
+  void dismissLocally(int threadId) {
+    final i = _items.indexWhere((t) => t.id == threadId);
+    if (i < 0) return;
+    _items.removeAt(i);
+    _listKey.currentState?.removeItem(
+      i,
+      (context, anim) => const SizedBox.shrink(),
+      duration: Duration.zero,
+    );
   }
 
   /// Diff the provider's list into the AnimatedList: removals collapse, insertions rise in.
@@ -194,18 +208,19 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                     itemBuilder: (context, i, anim) {
                       if (i >= _items.length) return const SizedBox.shrink();
                       final t = _items[i];
+                      final row = ThreadRow(
+                        thread: t,
+                        selected: t.id == selected,
+                        onTap: () {
+                          ref
+                              .read(selectedThreadIdProvider.notifier)
+                              .select(t.id);
+                          widget.onOpen?.call(t.id);
+                        },
+                      );
                       return _Transition(
                         anim: anim,
-                        child: ThreadRow(
-                          thread: t,
-                          selected: t.id == selected,
-                          onTap: () {
-                            ref
-                                .read(selectedThreadIdProvider.notifier)
-                                .select(t.id);
-                            widget.onOpen?.call(t.id);
-                          },
-                        ),
+                        child: _touch ? _swipeable(t, row) : row,
                       );
                     },
                   ),
@@ -215,9 +230,75 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     );
   }
 
+  static final bool _touch = Platform.isIOS || Platform.isAndroid;
+
+  /// Swipe right to archive, left to delete. The action is local-first, like the keyboard path.
+  Widget _swipeable(Thread t, Widget row) {
+    final s = context.s;
+    final repo = ref.read(repositoryProvider);
+    return Dismissible(
+      key: ValueKey('thread-${t.id}'),
+      background: _SwipeBackground(
+        color: s.blue,
+        icon: CupertinoIcons.archivebox,
+        label: 'Archive',
+        alignment: Alignment.centerLeft,
+      ),
+      secondaryBackground: _SwipeBackground(
+        color: s.red,
+        icon: CupertinoIcons.trash,
+        label: 'Delete',
+        alignment: Alignment.centerRight,
+      ),
+      movementDuration: Motion.base,
+      onDismissed: (direction) {
+        dismissLocally(t.id);
+        if (direction == DismissDirection.startToEnd) {
+          repo.archive(t.id);
+          ref.read(noticeProvider.notifier).show('Archived');
+        } else {
+          repo.trash(t.id);
+          ref.read(noticeProvider.notifier).show('Deleted');
+        }
+      },
+      child: row,
+    );
+  }
+
   void _setFilter(String f) {
     setState(() => _filter = f);
     ref.read(queryProvider.notifier).set(_compose(searchController.text));
+  }
+}
+
+class _SwipeBackground extends StatelessWidget {
+  const _SwipeBackground({
+    required this.color,
+    required this.icon,
+    required this.label,
+    required this.alignment,
+  });
+  final Color color;
+  final IconData icon;
+  final String label;
+  final Alignment alignment;
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Container(
+      color: color,
+      alignment: alignment,
+      padding: const EdgeInsets.symmetric(horizontal: 22),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 20, color: s.bg),
+          const SizedBox(height: 3),
+          Text(label, style: mono(context, size: 10.5, color: s.bg)),
+        ],
+      ),
+    );
   }
 }
 
