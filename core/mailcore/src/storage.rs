@@ -10,7 +10,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -134,6 +134,15 @@ CREATE TABLE drafts (
 CREATE INDEX drafts_updated ON drafts(updated_at DESC);
 "#;
 
+/// v4: per-account signatures and a small key/value table for app preferences.
+const SCHEMA_V4: &str = r#"
+ALTER TABLE accounts ADD COLUMN signature TEXT NOT NULL DEFAULT '';
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -194,6 +203,9 @@ impl Store {
         if version < 3 {
             conn.execute_batch(SCHEMA_V3)?;
         }
+        if version < 4 {
+            conn.execute_batch(SCHEMA_V4)?;
+        }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
@@ -233,7 +245,50 @@ impl Store {
                 smtp_host: a.smtp_host.clone(),
                 smtp_port: a.smtp_port,
                 auth: a.auth,
+                signature: String::new(),
             })
+        })
+    }
+
+    /// Name shown in From and the signature appended to new drafts.
+    pub fn update_account_profile(
+        &self,
+        id: i64,
+        display_name: &str,
+        signature: &str,
+    ) -> Result<()> {
+        self.with(|c| {
+            let n = c.execute(
+                "UPDATE accounts SET display_name=?2, signature=?3 WHERE id=?1",
+                params![id, display_name, signature],
+            )?;
+            if n == 0 {
+                return Err(Error::NotFound(format!("account {id}")));
+            }
+            Ok(())
+        })
+    }
+
+    // ---------------- settings ----------------
+
+    pub fn setting(&self, key: &str) -> Result<Option<String>> {
+        self.with(|c| {
+            Ok(
+                c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| {
+                    r.get(0)
+                })
+                .optional()?,
+            )
+        })
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO settings(key, value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                params![key, value],
+            )?;
+            Ok(())
         })
     }
 
@@ -248,6 +303,7 @@ impl Store {
             smtp_host: r.get("smtp_host")?,
             smtp_port: r.get::<_, i64>("smtp_port")? as u16,
             auth: AuthKind::parse(&r.get::<_, String>("auth_kind")?).unwrap_or(AuthKind::Password),
+            signature: r.get("signature")?,
         })
     }
 
@@ -1220,5 +1276,41 @@ mod tests {
         assert_eq!(s.uids(1).unwrap(), vec![3]);
         assert_eq!(s.folders(1).unwrap()[0].uidvalidity, Some(5));
         assert!(s.drafts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn profiles_and_settings() {
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        assert_eq!(a.signature, "");
+        s.update_account_profile(a.id, "Zonda", "Zonda\nflomsi.dev")
+            .unwrap();
+        let back = s.account(a.id).unwrap();
+        assert_eq!(back.display_name, "Zonda");
+        assert_eq!(back.signature, "Zonda\nflomsi.dev");
+        assert!(s.update_account_profile(999, "x", "").is_err());
+
+        assert_eq!(s.setting("keymap").unwrap(), None);
+        s.set_setting("keymap", "gmail").unwrap();
+        s.set_setting("keymap", "vim").unwrap();
+        assert_eq!(s.setting("keymap").unwrap().as_deref(), Some("vim"));
+    }
+
+    #[test]
+    fn v3_upgrade_adds_signatures_and_keeps_drafts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch(SCHEMA_V3).unwrap();
+        conn.pragma_update(None, "user_version", 3).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts(kind,email,imap_host,imap_port,auth_kind,created_at) VALUES('imap','t@x','h',993,'password',0);
+             INSERT INTO drafts(account_id,kind,draft_json,updated_at) VALUES(1,'fresh','{\"from\":{\"name\":null,\"addr\":\"t@x\"},\"to\":[],\"cc\":[],\"bcc\":[],\"subject\":\"kept\",\"text\":\"\",\"in_reply_to\":null,\"references\":[]}',0);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.account(1).unwrap().signature, "");
+        assert_eq!(s.drafts().unwrap()[0].draft.subject, "kept");
+        s.set_setting("theme", "light").unwrap();
     }
 }

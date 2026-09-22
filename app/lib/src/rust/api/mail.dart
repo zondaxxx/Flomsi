@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`
+// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`
 
 /// Open (or create) the profile database under `data_dir`. Idempotent.
 Future<void> openCore({required String dataDir}) =>
@@ -117,9 +117,26 @@ Future<DraftDto> replyDraft({
 Future<DraftDto> forwardDraft({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailForwardDraft(threadId: threadId);
 
-/// Empty draft from the given account (or the first one).
+/// Empty draft (signature included) from the given account, or the first one.
 Future<DraftDto> newDraft({PlatformInt64? accountId}) =>
     RustLib.instance.api.crateApiMailNewDraft(accountId: accountId);
+
+/// Name shown in From, and the signature new drafts start with.
+Future<void> updateAccount({
+  required PlatformInt64 id,
+  required String displayName,
+  required String signature,
+}) => RustLib.instance.api.crateApiMailUpdateAccount(
+  id: id,
+  displayName: displayName,
+  signature: signature,
+);
+
+Future<String?> getSetting({required String key}) =>
+    RustLib.instance.api.crateApiMailGetSetting(key: key);
+
+Future<void> setSetting({required String key, required String value}) =>
+    RustLib.instance.api.crateApiMailSetSetting(key: key, value: value);
 
 /// Save a draft (insert, or update `id` in place); returns its id.
 Future<PlatformInt64> saveLocalDraft({
@@ -175,6 +192,9 @@ class AccountDto {
   final String kind;
   final String displayName;
   final int unread;
+  final String signature;
+  final String imapHost;
+  final int imapPort;
 
   const AccountDto({
     required this.id,
@@ -182,6 +202,9 @@ class AccountDto {
     required this.kind,
     required this.displayName,
     required this.unread,
+    required this.signature,
+    required this.imapHost,
+    required this.imapPort,
   });
 
   @override
@@ -190,7 +213,10 @@ class AccountDto {
       email.hashCode ^
       kind.hashCode ^
       displayName.hashCode ^
-      unread.hashCode;
+      unread.hashCode ^
+      signature.hashCode ^
+      imapHost.hashCode ^
+      imapPort.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -201,7 +227,10 @@ class AccountDto {
           email == other.email &&
           kind == other.kind &&
           displayName == other.displayName &&
-          unread == other.unread;
+          unread == other.unread &&
+          signature == other.signature &&
+          imapHost == other.imapHost &&
+          imapPort == other.imapPort;
 }
 
 class AttachmentDto {

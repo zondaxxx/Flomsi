@@ -16,6 +16,7 @@ import '../accounts/add_account_sheet.dart';
 import '../compose/compose_body.dart';
 import '../list/thread_list.dart';
 import '../palette/command_palette.dart';
+import '../settings/settings_sheet.dart';
 import '../sidebar/sidebar_model.dart';
 import '../thread/thread_view.dart';
 import 'shell_actions.dart';
@@ -341,6 +342,11 @@ class _TopBar extends ConsumerWidget {
           height: 36,
           child: Text('Appearance', style: ui(context)),
         ),
+        PopupMenuItem(
+          value: 'settings',
+          height: 36,
+          child: Text('Settings…', style: ui(context)),
+        ),
       ],
     );
     if (!context.mounted) return;
@@ -351,6 +357,8 @@ class _TopBar extends ConsumerWidget {
         await showAddAccountSheet(context);
       case 'theme':
         ref.read(appearanceProvider.notifier).cycle();
+      case 'settings':
+        await showSettingsSheet(context);
     }
   }
 
@@ -399,17 +407,34 @@ class _Sidebar extends ConsumerWidget {
               ],
             ),
           ),
-          HoverRegion(
-            onTap: () => showAddAccountSheet(context),
-            builder: (context, hovered) => Container(
-              height: 34,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              alignment: Alignment.centerLeft,
-              child: Text(
-                '+ Add account',
-                style: ui(context, size: 12.5, color: hovered ? s.fg : s.fg2),
+          Row(
+            children: [
+              Expanded(
+                child: HoverRegion(
+                  onTap: () => showAddAccountSheet(context),
+                  builder: (context, hovered) => Container(
+                    height: 34,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      '+ Add account',
+                      style: ui(
+                        context,
+                        size: 12.5,
+                        color: hovered ? s.fg : s.fg2,
+                      ),
+                    ),
+                  ),
+                ),
               ),
-            ),
+              IconBtn(
+                icon: CupertinoIcons.gear,
+                label: 'Settings  ⌘,',
+                size: 14,
+                onTap: () => showSettingsSheet(context),
+              ),
+              const SizedBox(width: 8),
+            ],
           ),
         ],
       ),

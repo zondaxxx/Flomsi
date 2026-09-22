@@ -146,6 +146,9 @@ class RustRepository implements MailRepository {
           kind: a.kind,
           color: _accountColor(a.kind, i),
           unread: a.unread,
+          displayName: a.displayName,
+          signature: a.signature,
+          server: '${a.imapHost}:${a.imapPort}',
         ),
     ];
   }
@@ -350,6 +353,27 @@ class RustRepository implements MailRepository {
   @override
   Future<Draft> forwardDraft(int threadId) async =>
       _draft(await rust.forwardDraft(threadId: threadId), DraftKind.forward);
+
+  @override
+  Future<void> updateAccount(
+    int id, {
+    required String displayName,
+    required String signature,
+  }) async {
+    await rust.updateAccount(
+      id: id,
+      displayName: displayName,
+      signature: signature,
+    );
+    _events.add(const ThreadsChanged());
+  }
+
+  @override
+  Future<String?> setting(String key) => rust.getSetting(key: key);
+
+  @override
+  Future<void> setSetting(String key, String value) =>
+      rust.setSetting(key: key, value: value);
 
   @override
   Future<int> saveDraft(Draft d) async => (await rust.saveLocalDraft(

@@ -31,12 +31,22 @@ class Account {
     required this.kind,
     required this.color,
     this.unread = 0,
+    this.displayName = '',
+    this.signature = '',
+    this.server = '',
   });
   final int id;
   final String email;
   final String kind; // gmail, imap, outlook, jmap
   final Color color;
   final int unread;
+
+  /// Name shown in From.
+  final String displayName;
+  final String signature;
+
+  /// `imap.example.com:993`
+  final String server;
   String get short =>
       kind == 'imap' ? email.split('@').last.split('.').first : kind;
 }

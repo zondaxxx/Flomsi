@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/material.dart' show Color;
+
 import 'models.dart';
 import 'repository.dart';
 
@@ -211,30 +213,54 @@ class MockRepository implements MailRepository {
   @override
   Stream<RepoEvent> get events => _events.stream;
 
-  @override
-  Future<List<Account>> accounts() async => [
-    Account(
-      id: 1,
-      email: 'dev@gmail.com',
-      kind: 'gmail',
-      color: Swatch.green,
-      unread: _unread(1),
-    ),
-    Account(
-      id: 2,
-      email: 'me@icloud.com',
-      kind: 'icloud',
-      color: Swatch.blue,
-      unread: _unread(2),
-    ),
-    Account(
-      id: 3,
-      email: 'work@outlook.com',
-      kind: 'outlook',
-      color: Swatch.orange,
-      unread: _unread(3),
+  /// Accounts for design work; profiles and removals stay in memory.
+  final List<(int, String, String, Color, String)> _accountRows = [
+    (1, 'dev@gmail.com', 'gmail', Swatch.green, 'imap.gmail.com:993'),
+    (2, 'me@icloud.com', 'icloud', Swatch.blue, 'imap.mail.me.com:993'),
+    (
+      3,
+      'work@outlook.com',
+      'outlook',
+      Swatch.orange,
+      'outlook.office365.com:993',
     ),
   ];
+  final Map<int, (String, String)> _profiles = {
+    1: ('Zonda', 'Zonda\nflomsi.dev'),
+  };
+  final Map<String, String> _settings = {};
+
+  @override
+  Future<List<Account>> accounts() async => [
+    for (final (id, email, kind, color, server) in _accountRows)
+      Account(
+        id: id,
+        email: email,
+        kind: kind,
+        color: color,
+        unread: _unread(id),
+        displayName: _profiles[id]?.$1 ?? '',
+        signature: _profiles[id]?.$2 ?? '',
+        server: server,
+      ),
+  ];
+
+  @override
+  Future<void> updateAccount(
+    int id, {
+    required String displayName,
+    required String signature,
+  }) async {
+    _profiles[id] = (displayName, signature);
+    _events.add(const ThreadsChanged());
+  }
+
+  @override
+  Future<String?> setting(String key) async => _settings[key];
+
+  @override
+  Future<void> setSetting(String key, String value) async =>
+      _settings[key] = value;
 
   int _unread(int accountId) =>
       _threads.where((t) => t.accountId == accountId && t.unread).length;
@@ -591,8 +617,10 @@ class MockRepository implements MailRepository {
   }
 
   @override
-  Future<void> removeAccount(int id) async =>
-      _events.add(const ThreadsChanged());
+  Future<void> removeAccount(int id) async {
+    _accountRows.removeWhere((a) => a.$1 == id);
+    _events.add(const ThreadsChanged());
+  }
 
   @override
   Future<void> sync() async {

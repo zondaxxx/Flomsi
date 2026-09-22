@@ -164,6 +164,22 @@ impl Core {
         self.store.threads(&Query::parse(query), limit)
     }
 
+    /// An empty draft from `account_id`, or from the first account.
+    pub fn new_draft(&self, account_id: Option<i64>) -> Result<(Account, Draft)> {
+        let account = match account_id {
+            Some(id) => self.store.account(id)?,
+            None => self
+                .store
+                .accounts()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| Error::NotFound("no accounts".into()))?,
+        };
+        let mut draft = Draft::new(self.me(&account));
+        draft.text = draft_body(&account, "");
+        Ok((account, draft))
+    }
+
     fn me(&self, account: &Account) -> Address {
         Address {
             name: if account.display_name.is_empty() {
@@ -199,14 +215,12 @@ impl Core {
             };
         }
         let (text, _) = self.store.body(last.id)?;
-        draft.text = format!(
-            "\n\n{}",
-            quote(
-                text.as_deref().unwrap_or(&last.snippet),
-                &last.from,
-                last.date
-            )
+        let quoted = quote(
+            text.as_deref().unwrap_or(&last.snippet),
+            &last.from,
+            last.date,
         );
+        draft.text = draft_body(&account, &quoted);
         Ok((account, draft))
     }
 
@@ -234,14 +248,15 @@ impl Core {
             })
             .collect();
         let (text, _) = self.store.body(last.id)?;
-        draft.text = format!(
-            "\n\n---------- Forwarded message ----------\nFrom: {} <{}>\nDate: {}\nSubject: {}\n\n{}",
+        let forwarded = format!(
+            "---------- Forwarded message ----------\nFrom: {} <{}>\nDate: {}\nSubject: {}\n\n{}",
             last.from.display(),
             last.from.addr,
             last.date.format("%a, %d %b %Y at %H:%M"),
             last.subject,
             text.as_deref().unwrap_or(&last.snippet)
         );
+        draft.text = draft_body(&account, &forwarded);
         Ok((account, draft))
     }
 
@@ -459,6 +474,18 @@ impl Core {
     }
 }
 
+/// Body of a fresh draft: room to write, the signature under a `-- ` line, then `rest`
+/// (a quote or a forwarded message).
+fn draft_body(account: &Account, rest: &str) -> String {
+    let sig = account.signature.trim_end();
+    match (sig.is_empty(), rest.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!("\n\n{rest}"),
+        (false, true) => format!("\n\n-- \n{sig}\n"),
+        (false, false) => format!("\n\n-- \n{sig}\n\n{rest}"),
+    }
+}
+
 struct InlineHtml {
     html: Sanitized,
     unresolved: usize,
@@ -539,6 +566,34 @@ mod tests {
             html.html
         );
         assert_eq!(html.blocked_images, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn drafts_carry_the_signature_above_quotes() {
+        let (core, dir, id) = setup("signature");
+        let account = core.store().accounts().unwrap()[0].clone();
+        let (_, plain) = core.new_draft(None).unwrap();
+        assert_eq!(plain.text, "");
+
+        core.store()
+            .update_account_profile(account.id, "Z", "Z\nflomsi.dev\n")
+            .unwrap();
+        let (_, fresh) = core.new_draft(Some(account.id)).unwrap();
+        assert_eq!(fresh.text, "\n\n-- \nZ\nflomsi.dev\n");
+        assert_eq!(fresh.from.name.as_deref(), Some("Z"));
+
+        let thread = core.store().message(id).unwrap().thread_id;
+        let (_, reply) = core.reply_draft(thread, false).unwrap();
+        assert!(
+            reply.text.starts_with("\n\n-- \nZ\nflomsi.dev\n\nOn "),
+            "{:?}",
+            reply.text
+        );
+        let (_, fwd) = core.forward_draft(thread).unwrap();
+        assert!(fwd
+            .text
+            .starts_with("\n\n-- \nZ\nflomsi.dev\n\n---------- Forwarded message"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

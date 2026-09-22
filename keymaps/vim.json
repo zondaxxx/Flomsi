@@ -19,6 +19,7 @@
     { "action": "nav.goStarred",      "keys": ["g s"],            "scope": ["global"] },
     { "action": "search.focus",       "keys": ["/"],              "scope": ["list"] },
     { "action": "palette.open",       "keys": ["mod+k"],          "scope": ["global"] },
+    { "action": "app.settings",      "keys": ["mod+,"],          "scope": ["global"] },
     { "action": "compose.new",        "keys": ["c"],              "scope": ["global"] },
     { "action": "compose.send",       "keys": ["mod+enter"],      "scope": ["compose"] },
     { "action": "account.switch1",    "keys": ["mod+1"],          "scope": ["global"] },

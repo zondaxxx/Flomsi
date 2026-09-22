@@ -64,4 +64,15 @@ abstract class MailRepository {
     String displayName = '',
   });
   Future<void> removeAccount(int id);
+
+  /// Name shown in From, and the signature new drafts start with.
+  Future<void> updateAccount(
+    int id, {
+    required String displayName,
+    required String signature,
+  });
+
+  /// App preferences kept with the mail database (`theme`, `keymap`).
+  Future<String?> setting(String key);
+  Future<void> setSetting(String key, String value);
 }

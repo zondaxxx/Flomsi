@@ -78,6 +78,8 @@ pub struct Account {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub auth: AuthKind,
+    /// Plain-text signature; drafts get it below a `-- ` line.
+    pub signature: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

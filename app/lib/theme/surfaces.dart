@@ -156,12 +156,16 @@ class SmallButton extends StatelessWidget {
     required this.label,
     this.onPressed,
     this.primary = false,
+    this.danger = false,
     this.hint,
     this.height = 24,
   });
   final String label;
   final VoidCallback? onPressed;
   final bool primary;
+
+  /// Filled red: the confirming step of something destructive.
+  final bool danger;
   final String? hint;
   final double height;
   @override
@@ -175,11 +179,15 @@ class SmallButton extends StatelessWidget {
         height: height,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
-          color: primary
-              ? s.blue.withValues(alpha: enabled ? (hovered ? 0.9 : 1) : 0.5)
+          color: primary || danger
+              ? (danger ? s.red : s.blue).withValues(
+                  alpha: enabled ? (hovered ? 0.9 : 1) : 0.5,
+                )
               : (hovered ? s.hover : s.raised),
           borderRadius: BorderRadius.circular(5),
-          border: Border.all(color: primary ? Colors.transparent : s.border),
+          border: Border.all(
+            color: primary || danger ? Colors.transparent : s.border,
+          ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -190,14 +198,14 @@ class SmallButton extends StatelessWidget {
                 context,
                 size: 12.5,
                 weight: FontWeight.w500,
-                color: primary ? s.bg : s.fg,
+                color: primary || danger ? s.bg : s.fg,
               ),
             ),
             if (hint != null) ...[
               const SizedBox(width: 8),
               KeyHint(
                 hint!,
-                color: primary ? s.bg.withValues(alpha: 0.7) : s.fg3,
+                color: primary || danger ? s.bg.withValues(alpha: 0.7) : s.fg3,
               ),
             ],
           ],

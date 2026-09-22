@@ -10,7 +10,18 @@ import '../keymap/keymap.dart';
 
 final repositoryProvider = Provider<MailRepository>((ref) => MockRepository());
 
-final keymapProvider = FutureProvider<Keymap>((ref) => Keymap.loadAsset('vim'));
+/// Key presets shipped in assets/keymaps. The choice is a stored setting (`keymap`).
+const keymapPresets = ['vim', 'gmail'];
+
+final keymapProvider = FutureProvider<Keymap>((ref) async {
+  String? preset;
+  try {
+    preset = await ref.watch(repositoryProvider).setting('keymap');
+  } catch (_) {
+    // No database yet: the default preset.
+  }
+  return Keymap.loadAsset(keymapPresets.contains(preset) ? preset! : 'vim');
+});
 
 /// Bumps whenever the repository reports a change, so list/thread providers refetch.
 final repoTickProvider = StreamProvider<int>((ref) {

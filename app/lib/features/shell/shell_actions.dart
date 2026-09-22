@@ -8,6 +8,7 @@ import '../../state/providers.dart';
 import '../accounts/add_account_sheet.dart';
 import '../list/thread_list.dart';
 import '../palette/command_palette.dart';
+import '../settings/settings_sheet.dart';
 
 /// Keyboard actions and palette commands shared by every shell.
 class ShellActions {
@@ -106,6 +107,7 @@ class ShellActions {
       'search.focus': () => listKey?.currentState?.focusSearch(),
       'palette.open': () => ref.read(paletteOpenProvider.notifier).toggle(),
       'compose.new': openNew,
+      'app.settings': () => showSettingsSheet(context),
       'help.cheatsheet': () => ref.read(paletteOpenProvider.notifier).open(),
     };
   }
@@ -192,6 +194,14 @@ class ShellActions {
         title: 'Add Account…',
         group: 'Accounts',
         run: () => showAddAccountSheet(context),
+      ),
+      Command(
+        id: 'settings',
+        title: 'Settings…',
+        group: 'App',
+        detail: 'Accounts, signatures, keys, appearance',
+        hint: '⌘,',
+        run: () => showSettingsSheet(context),
       ),
       Command(
         id: 'appearance',

@@ -105,11 +105,19 @@ Enum с данными в DTO не используем: кодогенерат�
    в наборе. Esc и × закрывают с сохранением, «Discard» удаляет, успешная отправка удаляет. Нетронутый шаблон (открыли ответ
    и закрыли) не сохраняется. Папка Drafts в сайдбаре показывает эти черновики; синхронизация с серверной папкой Drafts
    через IMAP APPEND пока не сделана, черновики живут только на этом устройстве.
+8. **Настройки.** Лист настроек (⌘, · палитра · шестерёнка в сайдбаре · меню «…» на телефоне): имя и подпись аккаунта,
+   удаление аккаунта в два клика, пресет клавиш (vim / gmail), тема. Подпись ядро ставит в новое письмо, ответ и пересылку
+   под строкой `-- ` над цитатой. Тема и пресет хранятся в `settings` и восстанавливаются при старте.
+9. **Тесты протоколов.** В ядре есть скриптованные IMAP и SMTP серверы поверх TLS (сертификат rcgen в момент теста):
+   полный синк, выгрузка outbox (STORE/MOVE), смена UIDVALIDITY, IDLE, APPEND, отправка со STARTTLS и неявным TLS,
+   Bcc только в конверте. `connect_trusting` / `send_trusting` добавляют доверенный корень (частный CA, локальный мост);
+   обычные вызовы проверяют сертификат по web PKI.
 
-## Схема базы (v3)
+## Схема базы (v4)
 
 ```
-accounts(id, kind, email, display_name, imap_host, imap_port, smtp_host, smtp_port, auth_kind, created_at)
+accounts(id, kind, email, display_name, imap_host, imap_port, smtp_host, smtp_port, auth_kind, created_at,
+         signature)                                                    -- signature: v4
 folders(id, account_id, remote_name, role, uidvalidity, uidnext, highest_modseq, last_sync_at)
 messages(id, account_id, folder_id, uid, message_id, thread_id, subject, from_name, from_addr,
          to_json, cc_json, date, snippet, flags, has_attachment, size)
@@ -117,6 +125,7 @@ bodies(message_id, text, html)
 attachments(message_id, idx, name, mime, size, content_id, inline)   -- v2
 raw_messages(message_id, data)                                        -- v2, zlib RFC 822
 drafts(id, account_id, kind, draft_json, updated_at)                  -- v3
+settings(key, value)                                                  -- v4: theme, keymap
 threads(id, account_id, subject, subject_norm, last_date, msg_count, unread_count, snippet, has_attachment, starred, participants)
 labels(id, account_id, name, color) ; message_labels(message_id, label_id)
 messages_fts(subject, from_text, to_text, body)   -- FTS5
@@ -125,7 +134,7 @@ outbox(id, account_id, op_json, created_at, attempts, last_error, done)
 
 Миграции по `PRAGMA user_version`. Переход v1 → v2 сбрасывает кэш писем (аккаунты, ярлыки и outbox остаются, у папок
 обнуляется UIDVALIDITY): старые строки не знают своих вложений, а сервер остаётся источником правды, так что следующий синк
-заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`.
+заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`, v3 → v4 добавляет подпись аккаунта и `settings`.
 
 ## Раскладка UI
 

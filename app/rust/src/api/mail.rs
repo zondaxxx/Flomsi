@@ -38,6 +38,9 @@ pub struct AccountDto {
     pub kind: String,
     pub display_name: String,
     pub unread: u32,
+    pub signature: String,
+    pub imap_host: String,
+    pub imap_port: u16,
 }
 
 pub struct FolderDto {
@@ -214,13 +217,8 @@ pub fn list_accounts() -> Result<Vec<AccountDto>> {
     let c = core()?;
     let mut out = Vec::new();
     for a in c.store().accounts()? {
-        out.push(AccountDto {
-            id: a.id,
-            email: a.email.clone(),
-            kind: a.kind.as_str().to_string(),
-            display_name: a.display_name.clone(),
-            unread: c.store().unread_count(Some(a.id))?,
-        });
+        let unread = c.store().unread_count(Some(a.id))?;
+        out.push(account_dto(a, unread));
     }
     Ok(out)
 }
@@ -240,7 +238,20 @@ pub fn add_imap_account(email: String, host: String, port: u16, password: String
         },
         &password,
     )?;
-    Ok(AccountDto { id: a.id, email: a.email, kind: a.kind.as_str().to_string(), display_name: a.display_name, unread: 0 })
+    Ok(account_dto(a, 0))
+}
+
+fn account_dto(a: mailcore::Account, unread: u32) -> AccountDto {
+    AccountDto {
+        id: a.id,
+        email: a.email,
+        kind: a.kind.as_str().to_string(),
+        display_name: a.display_name,
+        unread,
+        signature: a.signature,
+        imap_host: a.imap_host,
+        imap_port: a.imap_port,
+    }
 }
 
 /// Connect + authenticate once; nothing is stored. The error text carries the server's reason.
@@ -378,18 +389,25 @@ pub fn forward_draft(thread_id: i64) -> Result<DraftDto> {
     Ok(draft_to_dto(account.id, draft))
 }
 
-/// Empty draft from the given account (or the first one).
+/// Empty draft (signature included) from the given account, or the first one.
 pub fn new_draft(account_id: Option<i64>) -> Result<DraftDto> {
-    let c = core()?;
-    let account = match account_id {
-        Some(id) => c.store().account(id)?,
-        None => c.store().accounts()?.into_iter().next().ok_or_else(|| anyhow!("no accounts"))?,
-    };
-    let from = Address {
-        name: if account.display_name.is_empty() { None } else { Some(account.display_name.clone()) },
-        addr: account.email.clone(),
-    };
-    Ok(draft_to_dto(account.id, Draft::new(from)))
+    let (account, draft) = core()?.new_draft(account_id)?;
+    Ok(draft_to_dto(account.id, draft))
+}
+
+/// Name shown in From, and the signature new drafts start with.
+pub fn update_account(id: i64, display_name: String, signature: String) -> Result<()> {
+    Ok(core()?.store().update_account_profile(id, display_name.trim(), &signature)?)
+}
+
+// ---------- app preferences ----------
+
+pub fn get_setting(key: String) -> Result<Option<String>> {
+    Ok(core()?.store().setting(&key)?)
+}
+
+pub fn set_setting(key: String, value: String) -> Result<()> {
+    Ok(core()?.store().set_setting(&key, &value)?)
 }
 
 // ---------- drafts kept on this device ----------
