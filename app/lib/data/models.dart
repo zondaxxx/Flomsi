@@ -106,11 +106,53 @@ class Thread {
   );
 }
 
+/// A received attachment: part [idx] of message [messageId].
 class Attachment {
-  const Attachment(this.name, this.size, {this.kind = 'file'});
+  const Attachment({
+    required this.messageId,
+    required this.idx,
+    required this.name,
+    required this.mime,
+    required this.size,
+  });
+  final int messageId;
+  final int idx;
   final String name;
-  final String size;
-  final String kind;
+  final String mime;
+
+  /// Bytes.
+  final int size;
+
+  String get sizeLabel => formatBytes(size);
+}
+
+/// A file going out with a draft: a local [path], or part [idx] of stored message
+/// [messageId] (forwarding keeps the original attachments this way).
+class DraftAttachment {
+  const DraftAttachment({
+    required this.name,
+    required this.mime,
+    required this.size,
+    this.path,
+    this.messageId,
+    this.idx,
+  });
+  final String name;
+  final String mime;
+  final int size;
+  final String? path;
+  final int? messageId;
+  final int? idx;
+
+  bool get fromMessage => path == null;
+}
+
+/// 900 B, 84 KB, 12.4 MB.
+String formatBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).ceil()} KB';
+  final mb = bytes / (1024 * 1024);
+  return '${mb.toStringAsFixed(mb < 10 ? 1 : 0)} MB';
 }
 
 class Message {
@@ -163,6 +205,7 @@ class Draft {
     this.inReplyTo,
     this.references = const [],
     this.kind = DraftKind.fresh,
+    this.attachments = const [],
   });
   final int accountId;
   final String from;
@@ -174,6 +217,7 @@ class Draft {
   final String? inReplyTo;
   final List<String> references;
   final DraftKind kind;
+  final List<DraftAttachment> attachments;
 
   Draft copyWith({
     List<String>? to,
@@ -182,6 +226,7 @@ class Draft {
     String? subject,
     String? text,
     DraftKind? kind,
+    List<DraftAttachment>? attachments,
   }) => Draft(
     accountId: accountId,
     from: from,
@@ -193,6 +238,7 @@ class Draft {
     inReplyTo: inReplyTo,
     references: references,
     kind: kind ?? this.kind,
+    attachments: attachments ?? this.attachments,
   );
 }
 

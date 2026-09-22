@@ -28,6 +28,16 @@ abstract class MailRepository {
   /// SMTP send. Throws with the server's reason.
   Future<void> send(Draft draft);
 
+  /// Local path of an attachment (fetched from the server when not cached), to hand to
+  /// "open with" or a share sheet.
+  Future<String> openAttachment(Attachment a);
+
+  /// Save an attachment into [dir] under a free name; returns the path written.
+  Future<String> saveAttachment(Attachment a, String dir);
+
+  /// Name, size and MIME type of a local file, ready to go into a draft.
+  Future<DraftAttachment> describeFile(String path);
+
   /// Connect and authenticate once without storing anything. Throws with the server's reason.
   Future<void> testImapLogin({
     required String email,

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'models.dart';
 import 'repository.dart';
@@ -148,7 +149,13 @@ class MockRepository implements MailRepository {
           html: '<p>Hi,</p><p>your invoice for <b>September</b> is paid. Thank you.</p><table cellpadding="6" style="border: 1px solid #444"><tr><th align="left">Item</th><th align="right">Amount</th></tr><tr><td>CX22 · mail-sync-worker</td><td align="right">€ 4.51</td></tr><tr><td>Traffic</td><td align="right">€ 0.00</td></tr></table><p><a href="https://console.hetzner.cloud">Open the console</a></p><p style="color: #888; font-size: 12px">Hetzner Online GmbH · Industriestr. 25 · 91710 Gunzenhausen</p>',
           blockedImages: 1,
           attachments: const [
-            Attachment('invoice-2026-09.pdf', '84 KB', kind: 'pdf'),
+            Attachment(
+              messageId: 701,
+              idx: 0,
+              name: 'invoice-2026-09.pdf',
+              mime: 'application/pdf',
+              size: 86016,
+            ),
           ],
         ),
       ],
@@ -161,7 +168,22 @@ class MockRepository implements MailRepository {
           to: ['me'],
           date: today(9, 12),
           text: 'Hey — moving the review to 15:00. The glass prototype needs one more pass on the sidebar translucency over bright wallpapers: contrast drops below 4.5:1 on the light mesh.\n\nCan you check the keyboard flow on the list before then? j/k feels right, but archive on `e` collides with the search field when it has focus.\n\nUpdated frames attached.',
-          attachments: const [Attachment('glass-v3.fig', '12 MB', kind: 'fig')],
+          attachments: const [
+            Attachment(
+              messageId: 201,
+              idx: 0,
+              name: 'glass-v3.fig',
+              mime: 'application/octet-stream',
+              size: 12976128,
+            ),
+            Attachment(
+              messageId: 201,
+              idx: 1,
+              name: 'sidebar-contrast.png',
+              mime: 'image/png',
+              size: 493568,
+            ),
+          ],
         ),
         Message(
           id: 202,
@@ -316,9 +338,16 @@ class MockRepository implements MailRepository {
         to: ['me'],
         date: t.lastDate,
         text: t.snippet,
-        attachments: t.hasAttachment
-            ? const [Attachment('invoice.pdf', '84 KB', kind: 'pdf')]
-            : const [],
+        attachments: [
+          if (t.hasAttachment)
+            Attachment(
+              messageId: threadId * 100,
+              idx: 0,
+              name: 'invoice.pdf',
+              mime: 'application/pdf',
+              size: 86016,
+            ),
+        ],
       ),
     ];
   }
@@ -385,6 +414,81 @@ class MockRepository implements MailRepository {
       subject: 'Fwd: ${t.subject}',
       text: '\n\n---------- Forwarded message ----------\n${last.text}',
       kind: DraftKind.forward,
+      attachments: [
+        for (final a in last.attachments)
+          DraftAttachment(
+            name: a.name,
+            mime: a.mime,
+            size: a.size,
+            messageId: a.messageId,
+            idx: a.idx,
+          ),
+      ],
+    );
+  }
+
+  /// A placeholder file: a one-page PDF for .pdf names, a text note otherwise.
+  static List<int> _mockBytes(String name) =>
+      name.toLowerCase().endsWith('.pdf')
+      ? '%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n'
+                '2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n'
+                '3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 320 120]'
+                '/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n'
+                '4 0 obj<</Length 43>>stream\nBT /F1 16 Tf 32 56 Td (Mock $name) Tj ET\n'
+                'endstream endobj\n'
+                '5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n'
+                'trailer<</Root 1 0 R>>\n%%EOF\n'
+            .codeUnits
+      : 'Mock attachment: $name\n'.codeUnits;
+
+  static String _freePath(String dir, String name) {
+    var candidate = '$dir${Platform.pathSeparator}$name';
+    final dot = name.lastIndexOf('.');
+    final stem = dot > 0 ? name.substring(0, dot) : name;
+    final ext = dot > 0 ? name.substring(dot) : '';
+    for (var n = 1; File(candidate).existsSync(); n++) {
+      candidate = '$dir${Platform.pathSeparator}$stem ($n)$ext';
+    }
+    return candidate;
+  }
+
+  @override
+  Future<String> openAttachment(Attachment a) async {
+    final dir = Directory(
+      '${Directory.systemTemp.path}${Platform.pathSeparator}flomsi-mock',
+    )..createSync(recursive: true);
+    final f = File('${dir.path}${Platform.pathSeparator}${a.name}');
+    if (!f.existsSync()) f.writeAsBytesSync(_mockBytes(a.name));
+    await Future<void>.delayed(const Duration(milliseconds: 250));
+    return f.path;
+  }
+
+  @override
+  Future<String> saveAttachment(Attachment a, String dir) async {
+    Directory(dir).createSync(recursive: true);
+    final path = _freePath(dir, a.name);
+    File(path).writeAsBytesSync(_mockBytes(a.name));
+    return path;
+  }
+
+  @override
+  Future<DraftAttachment> describeFile(String path) async {
+    final f = File(path);
+    final name = f.uri.pathSegments.last;
+    final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    const types = {
+      'pdf': 'application/pdf',
+      'png': 'image/png',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'txt': 'text/plain',
+      'zip': 'application/zip',
+    };
+    return DraftAttachment(
+      name: name,
+      mime: types[ext] ?? 'application/octet-stream',
+      size: await f.length(),
+      path: path,
     );
   }
 

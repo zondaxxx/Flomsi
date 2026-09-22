@@ -4,6 +4,8 @@
 //!   mailctl sync
 //!   mailctl ls "from:anna is:unread"
 //!   mailctl show 12
+//!   mailctl save 345 1 --dir ~/Downloads
+//!   mailctl send --account 1 --to a@x.dev --subject Hi --text Hello --attach report.pdf
 //!   mailctl archive 12
 //!   mailctl idle
 
@@ -67,8 +69,16 @@ enum Cmd {
         #[arg(long, default_value_t = 30)]
         limit: u32,
     },
-    /// Show a thread
+    /// Show a thread (message ids and attachment numbers are what `save` takes)
     Show { thread: i64 },
+    /// Save an attachment of a message; fetches the message from the server if needed
+    Save {
+        message: i64,
+        /// Attachment number as printed by `show`
+        idx: u32,
+        #[arg(long, default_value = ".")]
+        dir: PathBuf,
+    },
     /// Archive a thread (local first, replayed on next sync)
     Archive { thread: i64 },
     /// Mark a thread read / unread
@@ -90,6 +100,9 @@ enum Cmd {
         text: String,
         #[arg(long)]
         all: bool,
+        /// Files to attach (repeatable)
+        #[arg(long)]
+        attach: Vec<PathBuf>,
     },
     /// Send a new message from an account
     Send {
@@ -101,6 +114,9 @@ enum Cmd {
         subject: String,
         #[arg(long)]
         text: String,
+        /// Files to attach (repeatable)
+        #[arg(long)]
+        attach: Vec<PathBuf>,
     },
     /// Wait in IMAP IDLE for new mail, then sync
     Idle {
@@ -126,6 +142,24 @@ fn password_for(email: &str) -> Result<String> {
     Ok(rpassword::prompt_password(format!(
         "password / app password for {email}: "
     ))?)
+}
+
+fn attachments(paths: &[PathBuf]) -> Result<Vec<mailcore::compose::DraftAttachment>> {
+    paths
+        .iter()
+        .map(|p| {
+            mailcore::compose::DraftAttachment::from_path(p)
+                .with_context(|| format!("attach {}", p.display()))
+        })
+        .collect()
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{} KB", b.div_ceil(1024)),
+        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+    }
 }
 
 fn fmt_date(d: chrono::DateTime<chrono::Utc>) -> String {
@@ -293,7 +327,8 @@ async fn main() -> Result<()> {
             for m in core.store().thread_messages(thread)? {
                 let (text, html) = core.store().body(m.id)?;
                 println!(
-                    "\nfrom: {} <{}>\ndate: {}\nto:   {}",
+                    "\n#{} from: {} <{}>\ndate: {}\nto:   {}",
+                    m.id,
                     m.from.display(),
                     m.from.addr,
                     m.date.with_timezone(&chrono::Local),
@@ -302,8 +337,14 @@ async fn main() -> Result<()> {
                         .collect::<Vec<_>>()
                         .join(", ")
                 );
-                if m.has_attachment {
-                    println!("attachments: yes");
+                for a in core.store().attachments(m.id)?.iter().filter(|a| !a.inline) {
+                    println!(
+                        "📎 [{}] {}  {}  {}",
+                        a.idx,
+                        a.name,
+                        a.mime,
+                        human_size(a.size)
+                    );
                 }
                 println!();
                 match text {
@@ -311,6 +352,10 @@ async fn main() -> Result<()> {
                     None => println!("[html only, {} bytes]", html.map(|h| h.len()).unwrap_or(0)),
                 }
             }
+        }
+        Cmd::Save { message, idx, dir } => {
+            let path = core.save_attachment(message, idx, &dir).await?;
+            println!("saved {}", path.display());
         }
         Cmd::Archive { thread } => {
             core.actions().archive(thread)?;
@@ -327,9 +372,15 @@ async fn main() -> Result<()> {
             core.actions().star(thread, !off)?;
             println!("#{thread} {}", if off { "unstarred" } else { "starred" });
         }
-        Cmd::Reply { thread, text, all } => {
+        Cmd::Reply {
+            thread,
+            text,
+            all,
+            attach,
+        } => {
             let (account, mut draft) = core.reply_draft(thread, all)?;
             draft.text = format!("{text}{}", draft.text);
+            draft.attachments = attachments(&attach)?;
             core.send(account.id, &draft).await?;
             println!(
                 "sent reply to {} via {}",
@@ -347,6 +398,7 @@ async fn main() -> Result<()> {
             to,
             subject,
             text,
+            attach,
         } => {
             let a = core.store().account(account)?;
             let mut draft = mailcore::compose::Draft::new(mailcore::Address {
@@ -366,6 +418,7 @@ async fn main() -> Result<()> {
                 .collect();
             draft.subject = subject;
             draft.text = text;
+            draft.attachments = attachments(&attach)?;
             core.send(a.id, &draft).await?;
             println!("sent to {} via {}", to.join(", "), a.email);
         }
@@ -383,7 +436,7 @@ async fn main() -> Result<()> {
                     account,
                     &SyncOptions {
                         roles: vec![FolderRole::Inbox],
-                        initial_window: 200,
+                        ..SyncOptions::default()
                     },
                 )
                 .await?;

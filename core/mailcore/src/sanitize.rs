@@ -224,6 +224,112 @@ fn block_remote_images(html: &str) -> Sanitized {
     }
 }
 
+/// Bitmap types that may be embedded as data: URIs. SVG stays out: it is a document format.
+const INLINE_IMAGE_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/pjpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+];
+
+pub fn is_inline_image_type(mime: &str) -> bool {
+    INLINE_IMAGE_TYPES.contains(&mime.to_ascii_lowercase().as_str())
+}
+
+fn percent_decode(s: &str) -> String {
+    fn hex(c: u8) -> Option<u8> {
+        (c as char).to_digit(16).map(|d| d as u8)
+    }
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The `cid:` targets of `<img>` tags in sanitized markup.
+pub fn cid_refs(html: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for_each_img_src(html, |value| {
+        if let Some(id) = cid_of(value) {
+            out.push(id);
+        }
+        None
+    });
+    out
+}
+
+fn cid_of(src: &str) -> Option<String> {
+    let v = src.trim();
+    if v.len() > 4 && v[..4].eq_ignore_ascii_case("cid:") {
+        Some(percent_decode(
+            &v[4..].replace("&amp;", "&").replace("&quot;", "\""),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Walk `<img … src="…">` in serializer output (lowercase attribute names, double quotes).
+/// `edit` returns a replacement for the whole ` src="…"` attribute, or None to keep it.
+fn for_each_img_src(html: &str, mut edit: impl FnMut(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(i) = rest.find("<img") {
+        out.push_str(&rest[..i]);
+        let tag_end = rest[i..].find('>').map(|e| i + e + 1).unwrap_or(rest.len());
+        let tag = &rest[i..tag_end];
+        let replaced = tag.find(" src=\"").and_then(|s| {
+            let v0 = s + " src=\"".len();
+            let v1 = v0 + tag[v0..].find('"')?;
+            edit(&tag[v0..v1]).map(|attr| format!("{}{}{}", &tag[..s], attr, &tag[v1 + 1..]))
+        });
+        out.push_str(replaced.as_deref().unwrap_or(tag));
+        rest = &rest[tag_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Swap `src="cid:…"` for data: URIs. `lookup` maps a Content-ID to (MIME type, bytes).
+/// Images that cannot be resolved (or are not bitmaps) become `data-blocked-src`, like
+/// blocked remote images; the second value is how many.
+pub fn inline_cid_images(
+    html: &str,
+    lookup: impl Fn(&str) -> Option<(String, Vec<u8>)>,
+) -> (String, usize) {
+    use base64::Engine;
+    let mut unresolved = 0;
+    let out = for_each_img_src(html, |value| {
+        let id = cid_of(value)?;
+        match lookup(&id).filter(|(mime, _)| is_inline_image_type(mime)) {
+            Some((mime, bytes)) => Some(format!(
+                " src=\"data:{};base64,{}\"",
+                mime.to_ascii_lowercase(),
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )),
+            None => {
+                unresolved += 1;
+                Some(format!(" data-blocked-src=\"{value}\""))
+            }
+        }
+    });
+    (out, unresolved)
+}
+
 /// Very small HTML → text for previews and the plain reading mode.
 pub fn html_to_text(html: &str) -> String {
     let mut b = Builder::empty();
@@ -333,5 +439,31 @@ mod tests {
     fn text_extraction() {
         let t = html_to_text("<div>Hello<br>world</div><p>&amp; more</p><style>p{}</style>");
         assert_eq!(t, "Hello\nworld\n\n& more");
+    }
+
+    #[test]
+    fn resolves_cid_images_and_blocks_the_rest() {
+        let clean = sanitize(
+            r#"<p>x</p><img src="cid:logo%40studio.dev" alt="l"><img src="cid:missing@x"><img src="cid:vec@x"><img src="https://t.example/p.gif">"#,
+            SanitizeOptions::default(),
+        );
+        assert_eq!(
+            cid_refs(&clean.html),
+            vec!["logo@studio.dev", "missing@x", "vec@x"]
+        );
+        let (html, unresolved) = inline_cid_images(&clean.html, |cid| match cid {
+            "logo@studio.dev" => Some(("image/PNG".into(), vec![1, 2, 3])),
+            "vec@x" => Some(("image/svg+xml".into(), b"<svg/>".to_vec())),
+            _ => None,
+        });
+        assert!(
+            html.contains(r#"src="data:image/png;base64,AQID""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"data-blocked-src="cid:missing@x""#));
+        assert!(html.contains(r#"data-blocked-src="cid:vec@x""#));
+        assert!(html.contains(r#"data-blocked-src="https://t.example/p.gif""#));
+        assert_eq!(unresolved, 2);
+        assert!(cid_refs(&html).is_empty());
     }
 }

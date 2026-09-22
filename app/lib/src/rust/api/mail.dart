@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `core`, `draft_to_dto`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`
+// These functions are ignored because they are not marked as `pub`: `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`
 
 /// Open (or create) the profile database under `data_dir`. Idempotent.
 Future<void> openCore({required String dataDir}) =>
@@ -57,14 +57,40 @@ Future<List<ThreadDto>> listThreads({
 Future<List<MessageDto>> threadMessages({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailThreadMessages(threadId: threadId);
 
-/// Sanitized HTML body of one message; `load_remote_images` keeps http(s) images instead of blocking them.
+/// Sanitized HTML body of one message. With `load_images`, remote images stay in and inline
+/// images missing from the cache are fetched from the server.
 Future<String?> messageHtml({
   required PlatformInt64 messageId,
-  required bool loadRemoteImages,
+  required bool loadImages,
 }) => RustLib.instance.api.crateApiMailMessageHtml(
   messageId: messageId,
-  loadRemoteImages: loadRemoteImages,
+  loadImages: loadImages,
 );
+
+/// Path of the attachment in the app's file cache (fetched from the server when needed).
+/// This is the file to hand to "open with" or a share sheet.
+Future<String> openAttachment({
+  required PlatformInt64 messageId,
+  required int idx,
+}) => RustLib.instance.api.crateApiMailOpenAttachment(
+  messageId: messageId,
+  idx: idx,
+);
+
+/// Save an attachment into `dir` under a free name; returns the path written.
+Future<String> saveAttachment({
+  required PlatformInt64 messageId,
+  required int idx,
+  required String dir,
+}) => RustLib.instance.api.crateApiMailSaveAttachment(
+  messageId: messageId,
+  idx: idx,
+  dir: dir,
+);
+
+/// Describe a local file for a draft: name, size, MIME type from the extension.
+Future<DraftAttachmentDto> describeFile({required String path}) =>
+    RustLib.instance.api.crateApiMailDescribeFile(path: path);
 
 Future<int> unreadCount() => RustLib.instance.api.crateApiMailUnreadCount();
 
@@ -160,6 +186,81 @@ class AccountDto {
           unread == other.unread;
 }
 
+class AttachmentDto {
+  final PlatformInt64 messageId;
+  final int idx;
+  final String name;
+  final String mime;
+  final PlatformInt64 size;
+
+  const AttachmentDto({
+    required this.messageId,
+    required this.idx,
+    required this.name,
+    required this.mime,
+    required this.size,
+  });
+
+  @override
+  int get hashCode =>
+      messageId.hashCode ^
+      idx.hashCode ^
+      name.hashCode ^
+      mime.hashCode ^
+      size.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is AttachmentDto &&
+          runtimeType == other.runtimeType &&
+          messageId == other.messageId &&
+          idx == other.idx &&
+          name == other.name &&
+          mime == other.mime &&
+          size == other.size;
+}
+
+/// A file going out with a draft: a local `path`, or part `idx` of stored message `message_id`.
+class DraftAttachmentDto {
+  final String name;
+  final String mime;
+  final PlatformInt64 size;
+  final String? path;
+  final PlatformInt64? messageId;
+  final int? idx;
+
+  const DraftAttachmentDto({
+    required this.name,
+    required this.mime,
+    required this.size,
+    this.path,
+    this.messageId,
+    this.idx,
+  });
+
+  @override
+  int get hashCode =>
+      name.hashCode ^
+      mime.hashCode ^
+      size.hashCode ^
+      path.hashCode ^
+      messageId.hashCode ^
+      idx.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DraftAttachmentDto &&
+          runtimeType == other.runtimeType &&
+          name == other.name &&
+          mime == other.mime &&
+          size == other.size &&
+          path == other.path &&
+          messageId == other.messageId &&
+          idx == other.idx;
+}
+
 /// A message being written. Addresses are `Name <addr>` or bare `addr`.
 class DraftDto {
   final PlatformInt64 accountId;
@@ -171,6 +272,7 @@ class DraftDto {
   final String text;
   final String? inReplyTo;
   final List<String> references;
+  final List<DraftAttachmentDto> attachments;
 
   const DraftDto({
     required this.accountId,
@@ -182,6 +284,7 @@ class DraftDto {
     required this.text,
     this.inReplyTo,
     required this.references,
+    required this.attachments,
   });
 
   @override
@@ -194,7 +297,8 @@ class DraftDto {
       subject.hashCode ^
       text.hashCode ^
       inReplyTo.hashCode ^
-      references.hashCode;
+      references.hashCode ^
+      attachments.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -209,7 +313,8 @@ class DraftDto {
           subject == other.subject &&
           text == other.text &&
           inReplyTo == other.inReplyTo &&
-          references == other.references;
+          references == other.references &&
+          attachments == other.attachments;
 }
 
 class FolderDto {
@@ -254,9 +359,14 @@ class MessageDto {
 
   /// Sanitized HTML (no scripts, styles, forms; remote images blocked → `data-blocked-src`).
   final String? html;
+
+  /// Remote images blocked plus inline images not available offline.
   final int blockedImages;
   final bool hasAttachment;
   final bool unread;
+
+  /// Real attachments only; inline images render inside `html`.
+  final List<AttachmentDto> attachments;
 
   const MessageDto({
     required this.id,
@@ -271,6 +381,7 @@ class MessageDto {
     required this.blockedImages,
     required this.hasAttachment,
     required this.unread,
+    required this.attachments,
   });
 
   @override
@@ -286,7 +397,8 @@ class MessageDto {
       html.hashCode ^
       blockedImages.hashCode ^
       hasAttachment.hashCode ^
-      unread.hashCode;
+      unread.hashCode ^
+      attachments.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -304,7 +416,8 @@ class MessageDto {
           html == other.html &&
           blockedImages == other.blockedImages &&
           hasAttachment == other.hasAttachment &&
-          unread == other.unread;
+          unread == other.unread &&
+          attachments == other.attachments;
 }
 
 /// Flat event record: `kind` is one of started, folder, finished, error.

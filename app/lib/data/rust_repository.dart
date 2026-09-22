@@ -236,16 +236,45 @@ class RustRepository implements MailRepository {
           text: m.text ?? m.snippet,
           html: m.html,
           blockedImages: m.blockedImages,
-          attachments: m.hasAttachment
-              ? const [Attachment('attachment', '', kind: 'file')]
-              : const [],
+          attachments: [
+            for (final a in m.attachments)
+              Attachment(
+                messageId: a.messageId.toInt(),
+                idx: a.idx,
+                name: a.name,
+                mime: a.mime,
+                size: a.size.toInt(),
+              ),
+          ],
         ),
     ];
   }
 
   @override
   Future<String?> messageHtml(int messageId, {bool remoteImages = false}) =>
-      rust.messageHtml(messageId: messageId, loadRemoteImages: remoteImages);
+      rust.messageHtml(messageId: messageId, loadImages: remoteImages);
+
+  @override
+  Future<String> openAttachment(Attachment a) =>
+      rust.openAttachment(messageId: a.messageId, idx: a.idx);
+
+  @override
+  Future<String> saveAttachment(Attachment a, String dir) =>
+      rust.saveAttachment(messageId: a.messageId, idx: a.idx, dir: dir);
+
+  @override
+  Future<DraftAttachment> describeFile(String path) async =>
+      _draftAttachment(await rust.describeFile(path: path));
+
+  static DraftAttachment _draftAttachment(rust.DraftAttachmentDto a) =>
+      DraftAttachment(
+        name: a.name,
+        mime: a.mime,
+        size: a.size.toInt(),
+        path: a.path,
+        messageId: a.messageId?.toInt(),
+        idx: a.idx,
+      );
 
   Timer? _pushTimer;
 
@@ -298,6 +327,7 @@ class RustRepository implements MailRepository {
     inReplyTo: d.inReplyTo,
     references: d.references,
     kind: kind,
+    attachments: [for (final a in d.attachments) _draftAttachment(a)],
   );
 
   @override
@@ -327,6 +357,17 @@ class RustRepository implements MailRepository {
         text: d.text,
         inReplyTo: d.inReplyTo,
         references: d.references,
+        attachments: [
+          for (final a in d.attachments)
+            rust.DraftAttachmentDto(
+              name: a.name,
+              mime: a.mime,
+              size: a.size,
+              path: a.path,
+              messageId: a.messageId,
+              idx: a.idx,
+            ),
+        ],
       ),
     );
     _events.add(const ThreadsChanged());

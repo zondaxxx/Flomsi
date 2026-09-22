@@ -14,10 +14,12 @@ anyhow = "1.0.104"
 async-imap = { version = "0.11.3", default-features = false, features = ["runtime-tokio"] }
 base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
+flate2 = "1.1.10"
 futures = "0.3.34"
 keyring = { version = "4.2.0", features = ["android-native-keyring-store"] }
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1-rustls-tls"] }
 mail-parser = "0.11.9"
+mime_guess = "2"
 rand = "0.10.3"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std", "tls12", "logging"] }

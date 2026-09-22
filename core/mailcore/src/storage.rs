@@ -9,7 +9,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -101,8 +101,50 @@ CREATE TABLE outbox (
 );
 "#;
 
+/// v2: attachment metadata and a compressed copy of raw messages. v1 caches carry no
+/// attachment rows, so the message cache is dropped and rebuilt by the next sync (the server
+/// stays the source of truth; accounts, labels and the outbox are kept).
+const SCHEMA_V2: &str = r#"
+CREATE TABLE attachments (
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  idx INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL DEFAULT 0,
+  content_id TEXT,
+  inline INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(message_id, idx)
+);
+CREATE TABLE raw_messages (
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  data BLOB NOT NULL
+);
+"#;
+
+const RESET_MESSAGE_CACHE: &str = r#"
+DELETE FROM messages_fts;
+DELETE FROM message_labels;
+DELETE FROM messages;
+DELETE FROM threads;
+UPDATE folders SET uidvalidity=NULL, uidnext=NULL, highest_modseq=NULL, last_sync_at=NULL;
+"#;
+
 pub struct Store {
     conn: Mutex<Connection>,
+}
+
+fn deflate(raw: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Write;
+    let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(raw)?;
+    Ok(e.finish()?)
+}
+
+fn inflate(data: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::ZlibDecoder::new(data).read_to_end(&mut out)?;
+    Ok(out)
 }
 
 fn ts(dt: DateTime<Utc>) -> i64 {
@@ -132,6 +174,11 @@ impl Store {
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
             conn.execute_batch(SCHEMA_V1)?;
+            conn.execute_batch(SCHEMA_V2)?;
+        } else if version < 2 {
+            conn.execute_batch(&format!("BEGIN;{SCHEMA_V2}{RESET_MESSAGE_CACHE}COMMIT;"))?;
+        }
+        if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         }
         Ok(Store {
@@ -362,6 +409,12 @@ impl Store {
                 "INSERT INTO bodies(message_id, text, html) VALUES(?1,?2,?3)",
                 params![id, m.text, m.html],
             )?;
+            for a in &m.attachments {
+                c.execute(
+                    "INSERT INTO attachments(message_id, idx, name, mime, size, content_id, inline) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                    params![id, a.idx, a.name, a.mime, a.size as i64, a.content_id, a.inline as i64],
+                )?;
+            }
             let from_text = format!("{} {}", m.from.name.clone().unwrap_or_default(), m.from.addr);
             let to_text = m
                 .to
@@ -583,6 +636,88 @@ impl Store {
         })
     }
 
+    pub fn message(&self, id: i64) -> Result<Message> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT * FROM messages WHERE id=?1",
+                [id],
+                Self::row_message,
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("message {id}")))
+        })
+    }
+
+    pub fn folder(&self, id: i64) -> Result<Folder> {
+        self.with(|c| {
+            c.query_row("SELECT * FROM folders WHERE id=?1", [id], Self::row_folder)
+                .optional()?
+                .ok_or_else(|| Error::NotFound(format!("folder {id}")))
+        })
+    }
+
+    /// Every non-body part of a message, inline images included, in parser order.
+    pub fn attachments(&self, message_id: i64) -> Result<Vec<AttachmentMeta>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT idx, name, mime, size, content_id, inline FROM attachments WHERE message_id=?1 ORDER BY idx",
+            )?;
+            let rows = st.query_map([message_id], |r| {
+                Ok(AttachmentMeta {
+                    idx: r.get::<_, i64>(0)? as u32,
+                    name: r.get(1)?,
+                    mime: r.get(2)?,
+                    size: r.get::<_, i64>(3)? as u64,
+                    content_id: r.get(4)?,
+                    inline: r.get::<_, i64>(5)? != 0,
+                })
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Keep a compressed copy of the raw message, for attachments and inline images offline.
+    pub fn put_raw(&self, message_id: i64, raw: &[u8]) -> Result<()> {
+        let data = deflate(raw)?;
+        self.with(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO raw_messages(message_id, data) VALUES(?1,?2)",
+                params![message_id, data],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The cached raw message, or that of a copy with the same Message-ID in another folder
+    /// of the same account (Gmail shows one message in INBOX and All Mail).
+    pub fn raw(&self, message_id: i64) -> Result<Option<Vec<u8>>> {
+        let data: Option<Vec<u8>> = self.with(|c| {
+            Ok(c.query_row(
+                "SELECT r.data FROM raw_messages r JOIN messages m ON m.id = r.message_id
+                 WHERE m.id = ?1
+                    OR (m.message_id IS NOT NULL AND (m.account_id, m.message_id) =
+                        (SELECT account_id, message_id FROM messages WHERE id = ?1))
+                 ORDER BY m.id = ?1 DESC LIMIT 1",
+                [message_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })?;
+        data.map(|d| inflate(&d)).transpose()
+    }
+
+    /// True when this message, or a same-Message-ID copy, already has its raw bytes cached.
+    pub fn has_raw(&self, account_id: i64, message_id: Option<&str>, id: i64) -> Result<bool> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM raw_messages r JOIN messages m ON m.id = r.message_id
+                 WHERE m.id = ?3 OR (?2 IS NOT NULL AND m.account_id = ?1 AND m.message_id = ?2))",
+                params![account_id, message_id, id],
+                |r| r.get::<_, i64>(0),
+            )? != 0)
+        })
+    }
+
     // ---------------- threads / search ----------------
 
     fn row_thread(r: &Row) -> rusqlite::Result<Thread> {
@@ -787,6 +922,7 @@ mod tests {
             date: dt(1_780_000_000 + day * 86_400),
             snippet: text.chars().take(40).collect(),
             has_attachment: false,
+            attachments: vec![],
             text: Some(text.into()),
             html: None,
         }
@@ -888,5 +1024,61 @@ mod tests {
         s.reset_folder(inbox.id).unwrap();
         assert!(s.threads(&Query::parse(""), 10).unwrap().is_empty());
         assert_eq!(s.max_uid(inbox.id).unwrap(), None);
+    }
+
+    #[test]
+    fn attachments_and_raw_cache() {
+        use crate::testdata::INVOICE_EML;
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let inbox = s.upsert_folder(a.id, "INBOX", FolderRole::Inbox).unwrap();
+        let all = s
+            .upsert_folder(a.id, "[Gmail]/All Mail", FolderRole::All)
+            .unwrap();
+        let parsed = crate::provider::parse::parse_rfc822(INVOICE_EML, Utc::now());
+        let id = s
+            .upsert_message(a.id, inbox.id, 7, Flags::default(), 100, &parsed)
+            .unwrap();
+        let copy = s
+            .upsert_message(a.id, all.id, 70, Flags::default(), 100, &parsed)
+            .unwrap();
+        assert_eq!(s.attachments(id).unwrap(), parsed.attachments);
+        assert!(s.message(id).unwrap().has_attachment);
+        assert_eq!(s.raw(id).unwrap(), None);
+        assert!(!s.has_raw(a.id, Some("inv@studio.dev"), copy).unwrap());
+
+        s.put_raw(id, INVOICE_EML).unwrap();
+        assert_eq!(s.raw(id).unwrap().as_deref(), Some(INVOICE_EML));
+        // The All Mail copy finds the same bytes through its Message-ID.
+        assert_eq!(s.raw(copy).unwrap().as_deref(), Some(INVOICE_EML));
+        assert!(s.has_raw(a.id, Some("inv@studio.dev"), copy).unwrap());
+
+        // Deleting a message drops its parts and its raw copy.
+        s.delete_by_uid(inbox.id, 7).unwrap();
+        assert!(s.attachments(id).unwrap().is_empty());
+        assert_eq!(s.raw(copy).unwrap(), None);
+    }
+
+    #[test]
+    fn v1_message_cache_is_rebuilt_on_upgrade() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.pragma_update(None, "user_version", 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts(kind,email,imap_host,imap_port,auth_kind,created_at) VALUES('imap','t@x','h',993,'password',0);
+             INSERT INTO folders(account_id,remote_name,role,uidvalidity,uidnext) VALUES(1,'INBOX','inbox',5,10);
+             INSERT INTO threads(account_id,subject) VALUES(1,'s');
+             INSERT INTO messages(account_id,folder_id,uid,thread_id,date) VALUES(1,1,3,1,0);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.accounts().unwrap().len(), 1);
+        let f = &s.folders(1).unwrap()[0];
+        assert_eq!(f.uidvalidity, None);
+        assert!(s.uids(f.id).unwrap().is_empty());
+        let v: i32 = s
+            .with(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
     }
 }

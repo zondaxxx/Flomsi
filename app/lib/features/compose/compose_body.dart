@@ -1,9 +1,11 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
+import '../attachments/attachment_chip.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
@@ -26,9 +28,16 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
   late final _body = TextEditingController(text: widget.draft.text);
   final _bodyFocus = FocusNode(debugLabel: 'compose-body');
   final _toFocus = FocusNode(debugLabel: 'compose-to');
+  late var _files = [...widget.draft.attachments];
   bool _showCc = false;
   bool _sending = false;
+  bool _picking = false;
   String? _error;
+
+  /// Most servers (Gmail, Outlook, iCloud) refuse messages over 25 MB after base64.
+  static const _serverLimit = 25 * 1024 * 1024;
+  int get _encodedSize =>
+      (_files.fold<int>(0, (sum, f) => sum + f.size) * 4 / 3).ceil();
 
   @override
   void initState() {
@@ -62,7 +71,28 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     cc: _split(_cc.text),
     subject: _subject.text.trim(),
     text: _body.text,
+    attachments: _files,
   );
+
+  Future<void> _attach() async {
+    if (_picking) return;
+    _picking = true;
+    try {
+      final picked = await openFiles();
+      if (picked.isEmpty) return;
+      final repo = ref.read(repositoryProvider);
+      final added = [for (final x in picked) await repo.describeFile(x.path)];
+      if (mounted) setState(() => _files = [..._files, ...added]);
+    } catch (e) {
+      if (mounted) {
+        setState(
+          () => _error = e.toString().replaceFirst(RegExp(r'^\w+: '), ''),
+        );
+      }
+    } finally {
+      _picking = false;
+    }
+  }
 
   static List<String> _split(String s) => s
       .split(RegExp(r'[,;]'))
@@ -118,6 +148,12 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
             (e.logicalKey == LogicalKeyboardKey.enter ||
                 e.logicalKey == LogicalKeyboardKey.numpadEnter)) {
           send();
+          return KeyEventResult.handled;
+        }
+        if (mod &&
+            HardwareKeyboard.instance.isShiftPressed &&
+            e.logicalKey == LogicalKeyboardKey.keyA) {
+          _attach();
           return KeyEventResult.handled;
         }
         if (e.logicalKey == LogicalKeyboardKey.escape) {
@@ -194,6 +230,38 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
                       ),
                     ),
                   ),
+                  if (_files.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final f in _files)
+                          Appear(
+                            key: ObjectKey(f),
+                            child: DraftFileChip(
+                              file: f,
+                              onRemove: () => setState(
+                                () => _files = [..._files]..remove(f),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _encodedSize > _serverLimit
+                          ? '≈ ${formatBytes(_encodedSize)} encoded · most servers refuse mail over 25 MB'
+                          : '${_files.length} ${_files.length == 1 ? 'file' : 'files'} · ${formatBytes(_files.fold(0, (s, f) => s + f.size))}',
+                      style: mono(
+                        context,
+                        size: 11,
+                        color: _encodedSize > _serverLimit
+                            ? context.s.red
+                            : context.s.fg3,
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 24),
                 ],
               ),
@@ -206,9 +274,10 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
             ),
             child: Row(
               children: [
-                const IconBtn(
+                IconBtn(
                   icon: CupertinoIcons.paperclip,
-                  label: 'Attach (soon)',
+                  label: 'Attach files  ⌘⇧A',
+                  onTap: _attach,
                 ),
                 const SizedBox(width: 8),
                 if (_error != null)

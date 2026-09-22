@@ -48,6 +48,9 @@ pub struct SyncOptions {
     pub roles: Vec<FolderRole>,
     /// On first sync of a folder, only fetch this many most-recent messages.
     pub initial_window: usize,
+    /// Messages with attachments or inline images up to this raw size keep a compressed copy
+    /// of their bytes, so those parts open offline. Bigger ones are fetched when opened.
+    pub keep_raw_below: usize,
 }
 
 impl Default for SyncOptions {
@@ -60,6 +63,7 @@ impl Default for SyncOptions {
                 FolderRole::All,
             ],
             initial_window: 200,
+            keep_raw_below: 2 * 1024 * 1024,
         }
     }
 }
@@ -186,7 +190,7 @@ impl SyncEngine {
         for chunk in new_uids.chunks(50) {
             for fm in provider.fetch(chunk).await? {
                 let parsed = parse_rfc822(&fm.raw, now);
-                self.store.upsert_message(
+                let id = self.store.upsert_message(
                     account.id,
                     folder.id,
                     fm.uid,
@@ -194,6 +198,14 @@ impl SyncEngine {
                     fm.size as u64,
                     &parsed,
                 )?;
+                if !parsed.attachments.is_empty()
+                    && fm.raw.len() <= opts.keep_raw_below
+                    && !self
+                        .store
+                        .has_raw(account.id, parsed.message_id.as_deref(), id)?
+                {
+                    self.store.put_raw(id, &fm.raw)?;
+                }
                 fetched += 1;
             }
         }

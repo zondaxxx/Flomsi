@@ -16,6 +16,59 @@ pub struct Draft {
     pub text: String,
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
+    #[serde(default)]
+    pub attachments: Vec<DraftAttachment>,
+}
+
+/// A file going out with a draft. Bytes are read only at send time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DraftAttachment {
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub source: AttachmentSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AttachmentSource {
+    /// A file on this device.
+    File { path: String },
+    /// A part of a stored message; forwarding keeps the original attachments this way.
+    Message { message_id: i64, idx: u32 },
+}
+
+impl DraftAttachment {
+    /// Describe a local file: name, size and a MIME type guessed from the extension.
+    pub fn from_path(path: &std::path::Path) -> Result<DraftAttachment> {
+        let meta = std::fs::metadata(path)?;
+        if !meta.is_file() {
+            return Err(Error::Other(format!("{} is not a file", path.display())));
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "attachment".to_string());
+        Ok(DraftAttachment {
+            mime: mime_guess::from_path(path)
+                .first_or_octet_stream()
+                .essence_str()
+                .to_string(),
+            name,
+            size: meta.len(),
+            source: AttachmentSource::File {
+                path: path.to_string_lossy().into_owned(),
+            },
+        })
+    }
+}
+
+/// An attachment with its bytes loaded, ready to be encoded.
+#[derive(Debug, Clone)]
+pub struct OutgoingFile {
+    pub name: String,
+    pub mime: String,
+    pub bytes: Vec<u8>,
 }
 
 impl Draft {
@@ -61,6 +114,7 @@ impl Draft {
             text: String::new(),
             in_reply_to: original_message_id.map(|s| s.to_string()),
             references: refs,
+            attachments: vec![],
         }
     }
 
@@ -72,10 +126,11 @@ impl Draft {
         }
     }
 
-    /// Serialize to RFC 5322 bytes ready for SMTP / IMAP APPEND.
-    pub fn to_mime(&self) -> Result<lettre::Message> {
+    /// Serialize to RFC 5322 bytes ready for SMTP / IMAP APPEND. `files` are the loaded
+    /// attachments; with any, the body becomes the first part of a multipart/mixed message.
+    pub fn to_mime(&self, files: &[OutgoingFile]) -> Result<lettre::Message> {
         use lettre::message::header::ContentType;
-        use lettre::message::Mailbox;
+        use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
         fn mailbox(a: &Address) -> Result<Mailbox> {
             let addr: lettre::Address = a
                 .addr
@@ -107,8 +162,19 @@ impl Draft {
                     .join(" "),
             );
         }
-        b.header(ContentType::TEXT_PLAIN)
-            .body(self.text.clone())
+        if files.is_empty() {
+            return b
+                .header(ContentType::TEXT_PLAIN)
+                .body(self.text.clone())
+                .map_err(|e| Error::Parse(format!("mime: {e}")));
+        }
+        let mut mixed = MultiPart::mixed().singlepart(SinglePart::plain(self.text.clone()));
+        for f in files {
+            let ct = ContentType::parse(&f.mime)
+                .unwrap_or_else(|_| ContentType::parse("application/octet-stream").unwrap());
+            mixed = mixed.singlepart(Attachment::new(f.name.clone()).body(f.bytes.clone(), ct));
+        }
+        b.multipart(mixed)
             .map_err(|e| Error::Parse(format!("mime: {e}")))
     }
 }
@@ -228,7 +294,7 @@ mod tests {
         };
         let mut d = Draft::reply(&msg(), Some("orig@studio.dev"), &[], &me, false);
         d.text = "Works for me.".into();
-        let bytes = d.to_mime().unwrap().formatted();
+        let bytes = d.to_mime(&[]).unwrap().formatted();
         let s = String::from_utf8(bytes).unwrap();
         assert!(s.contains("From: \"Z\" <me@x.dev>") || s.contains("From: Z <me@x.dev>"));
         assert!(s.contains("In-Reply-To: <orig@studio.dev>"));
@@ -247,5 +313,45 @@ mod tests {
             Utc.with_ymd_and_hms(2026, 9, 22, 9, 12, 0).unwrap(),
         );
         assert_eq!(q, "On Tue, 22 Sep 2026 at 09:12, Anna wrote:\n> a\n> b\n");
+    }
+
+    #[test]
+    fn mime_carries_attachments() {
+        use crate::provider::parse::{extract_attachment, parse_rfc822};
+        let mut d = Draft::new(Address {
+            name: None,
+            addr: "me@x.dev".into(),
+        });
+        d.to = vec![Address {
+            name: None,
+            addr: "a@x.dev".into(),
+        }];
+        d.subject = "Invoice".into();
+        d.text = "See attached.".into();
+        let file = OutgoingFile {
+            name: "Счёт.pdf".into(),
+            mime: "application/pdf".into(),
+            bytes: crate::testdata::PDF_BYTES.to_vec(),
+        };
+        let bytes = d.to_mime(&[file]).unwrap().formatted();
+        let parsed = parse_rfc822(&bytes, Utc::now());
+        assert_eq!(parsed.text.as_deref().map(str::trim), Some("See attached."));
+        assert_eq!(parsed.attachments.len(), 1);
+        assert_eq!(parsed.attachments[0].name, "Счёт.pdf");
+        assert_eq!(parsed.attachments[0].mime, "application/pdf");
+        let (_, got) = extract_attachment(&bytes, 0).unwrap();
+        assert_eq!(got, crate::testdata::PDF_BYTES);
+    }
+
+    #[test]
+    fn describes_local_files() {
+        let p = std::env::temp_dir().join(format!("mailcore-draft-{}.pdf", std::process::id()));
+        std::fs::write(&p, b"%PDF").unwrap();
+        let a = DraftAttachment::from_path(&p).unwrap();
+        assert_eq!(a.mime, "application/pdf");
+        assert_eq!(a.size, 4);
+        assert!(a.name.ends_with(".pdf"));
+        std::fs::remove_file(&p).unwrap();
+        assert!(DraftAttachment::from_path(&std::env::temp_dir()).is_err());
     }
 }

@@ -24,6 +24,9 @@ core/target/release/mailctl sync
 core/target/release/mailctl ls "is:unread"
 make app-mac              # the app reads the same ~/.mail_ database
 core/target/release/mailctl reply 12 --text "Works for me."   # SMTP send with the original quoted
+core/target/release/mailctl show 12                           # message ids and numbered attachments
+core/target/release/mailctl save 345 1 --dir ~/Downloads      # fetched from the server if not cached
+core/target/release/mailctl send --account 1 --to a@x.dev --subject Report --text "Attached." --attach report.pdf
 make app-mac-mock         # UI only, sample data
 ```
 

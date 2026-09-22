@@ -2,8 +2,8 @@
 
 use anyhow::{anyhow, Result};
 use flutter_rust_bridge::frb;
-use mailcore::compose::Draft;
-use mailcore::sanitize::{html_to_text, sanitize, SanitizeOptions};
+use mailcore::compose::{AttachmentSource, Draft, DraftAttachment};
+use mailcore::sanitize::html_to_text;
 use mailcore::Address;
 use mailcore::{AuthKind, Core, FolderRole, NewAccount, ProviderKind, SyncEvent, SyncOptions};
 use std::path::PathBuf;
@@ -73,9 +73,30 @@ pub struct MessageDto {
     pub text: Option<String>,
     /// Sanitized HTML (no scripts, styles, forms; remote images blocked → `data-blocked-src`).
     pub html: Option<String>,
+    /// Remote images blocked plus inline images not available offline.
     pub blocked_images: u32,
     pub has_attachment: bool,
     pub unread: bool,
+    /// Real attachments only; inline images render inside `html`.
+    pub attachments: Vec<AttachmentDto>,
+}
+
+pub struct AttachmentDto {
+    pub message_id: i64,
+    pub idx: u32,
+    pub name: String,
+    pub mime: String,
+    pub size: i64,
+}
+
+/// A file going out with a draft: a local `path`, or part `idx` of stored message `message_id`.
+pub struct DraftAttachmentDto {
+    pub name: String,
+    pub mime: String,
+    pub size: i64,
+    pub path: Option<String>,
+    pub message_id: Option<i64>,
+    pub idx: Option<u32>,
 }
 
 pub struct SyncSummaryDto {
@@ -96,6 +117,24 @@ pub struct DraftDto {
     pub text: String,
     pub in_reply_to: Option<String>,
     pub references: Vec<String>,
+    pub attachments: Vec<DraftAttachmentDto>,
+}
+
+fn attachment_to_dto(a: DraftAttachment) -> DraftAttachmentDto {
+    let (path, message_id, idx) = match a.source {
+        AttachmentSource::File { path } => (Some(path), None, None),
+        AttachmentSource::Message { message_id, idx } => (None, Some(message_id), Some(idx)),
+    };
+    DraftAttachmentDto { name: a.name, mime: a.mime, size: a.size as i64, path, message_id, idx }
+}
+
+fn dto_to_attachment(a: &DraftAttachmentDto) -> Result<DraftAttachment> {
+    let source = match (&a.path, a.message_id, a.idx) {
+        (Some(path), _, _) => AttachmentSource::File { path: path.clone() },
+        (None, Some(message_id), Some(idx)) => AttachmentSource::Message { message_id, idx },
+        _ => return Err(anyhow!("attachment {} has no source", a.name)),
+    };
+    Ok(DraftAttachment { name: a.name.clone(), mime: a.mime.clone(), size: a.size.max(0) as u64, source })
 }
 
 fn fmt_addr(a: &Address) -> String {
@@ -127,11 +166,12 @@ fn draft_to_dto(account_id: i64, d: Draft) -> DraftDto {
         text: d.text,
         in_reply_to: d.in_reply_to,
         references: d.references,
+        attachments: d.attachments.into_iter().map(attachment_to_dto).collect(),
     }
 }
 
-fn dto_to_draft(d: &DraftDto) -> Draft {
-    Draft {
+fn dto_to_draft(d: &DraftDto) -> Result<Draft> {
+    Ok(Draft {
         from: parse_addr(&d.from),
         to: d.to.iter().filter(|s| !s.trim().is_empty()).map(|s| parse_addr(s)).collect(),
         cc: d.cc.iter().filter(|s| !s.trim().is_empty()).map(|s| parse_addr(s)).collect(),
@@ -140,7 +180,8 @@ fn dto_to_draft(d: &DraftDto) -> Draft {
         text: d.text.clone(),
         in_reply_to: d.in_reply_to.clone(),
         references: d.references.clone(),
-    }
+        attachments: d.attachments.iter().map(dto_to_attachment).collect::<Result<_>>()?,
+    })
 }
 
 /// Flat event record: `kind` is one of started, folder, finished, error.
@@ -237,11 +278,19 @@ pub fn thread_messages(thread_id: i64) -> Result<Vec<MessageDto>> {
     let c = core()?;
     let mut out = Vec::new();
     for m in c.store().thread_messages(thread_id)? {
-        let (text, html) = c.store().body(m.id).unwrap_or((None, None));
-        let cleaned = html.as_deref().map(|h| sanitize(h, SanitizeOptions::default()));
-        let text = text.or_else(|| html.as_deref().map(html_to_text));
+        let (text, raw_html) = c.store().body(m.id).unwrap_or((None, None));
+        let cleaned = c.message_html_cached(m.id, false).unwrap_or(None);
+        let text = text.or_else(|| raw_html.as_deref().map(html_to_text));
         let blocked_images = cleaned.as_ref().map(|s| s.blocked_images as u32).unwrap_or(0);
         let html = cleaned.map(|s| s.html);
+        let attachments = c
+            .store()
+            .attachments(m.id)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| !a.inline)
+            .map(|a| AttachmentDto { message_id: m.id, idx: a.idx, name: a.name, mime: a.mime, size: a.size as i64 })
+            .collect();
         out.push(MessageDto {
             id: m.id,
             thread_id: m.thread_id,
@@ -255,15 +304,36 @@ pub fn thread_messages(thread_id: i64) -> Result<Vec<MessageDto>> {
             blocked_images,
             has_attachment: m.has_attachment,
             unread: m.flags.is_unread(),
+            attachments,
         });
     }
     Ok(out)
 }
 
-/// Sanitized HTML body of one message; `load_remote_images` keeps http(s) images instead of blocking them.
-pub fn message_html(message_id: i64, load_remote_images: bool) -> Result<Option<String>> {
-    let (_, html) = core()?.store().body(message_id)?;
-    Ok(html.map(|h| sanitize(&h, SanitizeOptions { load_remote_images }).html))
+/// Sanitized HTML body of one message. With `load_images`, remote images stay in and inline
+/// images missing from the cache are fetched from the server.
+pub async fn message_html(message_id: i64, load_images: bool) -> Result<Option<String>> {
+    Ok(core()?.message_html(message_id, load_images).await?.map(|s| s.html))
+}
+
+// ---------- attachments ----------
+
+/// Path of the attachment in the app's file cache (fetched from the server when needed).
+/// This is the file to hand to "open with" or a share sheet.
+pub async fn open_attachment(message_id: i64, idx: u32) -> Result<String> {
+    let p = core()?.cached_attachment_file(message_id, idx).await?;
+    Ok(p.to_string_lossy().into_owned())
+}
+
+/// Save an attachment into `dir` under a free name; returns the path written.
+pub async fn save_attachment(message_id: i64, idx: u32, dir: String) -> Result<String> {
+    let p = core()?.save_attachment(message_id, idx, &PathBuf::from(dir)).await?;
+    Ok(p.to_string_lossy().into_owned())
+}
+
+/// Describe a local file for a draft: name, size, MIME type from the extension.
+pub fn describe_file(path: String) -> Result<DraftAttachmentDto> {
+    Ok(attachment_to_dto(DraftAttachment::from_path(&PathBuf::from(path))?))
 }
 
 pub fn unread_count() -> Result<u32> {
@@ -316,7 +386,7 @@ pub fn new_draft(account_id: Option<i64>) -> Result<DraftDto> {
 
 /// SMTP send; copies to Sent where the server does not; flags the original as answered.
 pub async fn send_draft(draft: DraftDto) -> Result<()> {
-    let d = dto_to_draft(&draft);
+    let d = dto_to_draft(&draft)?;
     if d.to.is_empty() {
         return Err(anyhow!("no recipients"));
     }

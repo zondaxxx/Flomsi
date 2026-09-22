@@ -7,6 +7,7 @@ import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/models.dart';
+import '../attachments/attachment_chip.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
@@ -394,7 +395,7 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
                 Icon(CupertinoIcons.photo, size: 13, color: s.fg3),
                 const SizedBox(width: 6),
                 Text(
-                  '${m.blockedImages} remote ${m.blockedImages == 1 ? 'image' : 'images'} blocked',
+                  '${m.blockedImages} ${m.blockedImages == 1 ? 'image' : 'images'} blocked',
                   style: mono(context, size: 11, color: s.fg3),
                 ),
                 const SizedBox(width: 10),
@@ -428,39 +429,7 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
           Wrap(
             spacing: 8,
             runSpacing: 8,
-            children: [
-              for (final a in m.attachments)
-                HoverRegion(
-                  onTap: () {},
-                  builder: (context, hovered) => Container(
-                    height: 30,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    decoration: BoxDecoration(
-                      color: hovered ? s.hover : null,
-                      border: Border.all(color: s.border),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(CupertinoIcons.paperclip, size: 13, color: s.fg2),
-                        const SizedBox(width: 8),
-                        Text(
-                          a.name,
-                          style: mono(context, size: 12, color: s.fg),
-                        ),
-                        if (a.size.isNotEmpty) ...[
-                          const SizedBox(width: 8),
-                          Text(
-                            a.size,
-                            style: mono(context, size: 12, color: s.fg3),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-            ],
+            children: [for (final a in m.attachments) AttachmentChip(a)],
           ),
         ],
         SizedBox(height: widget.last ? 0 : 20),

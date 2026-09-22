@@ -219,6 +219,19 @@ pub struct Message {
     pub size: u64,
 }
 
+/// One non-body MIME part. `idx` is its position in mail-parser's attachment order, which is
+/// how the bytes are found again later. `inline` parts are images the HTML body references
+/// through `cid:`; they render in place and are not listed as attachments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentMeta {
+    pub idx: u32,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub content_id: Option<String>,
+    pub inline: bool,
+}
+
 /// A message parsed from raw RFC 822 bytes, before it has database ids.
 #[derive(Debug, Clone)]
 pub struct ParsedMessage {
@@ -232,6 +245,7 @@ pub struct ParsedMessage {
     pub date: DateTime<Utc>,
     pub snippet: String,
     pub has_attachment: bool,
+    pub attachments: Vec<AttachmentMeta>,
     pub text: Option<String>,
     pub html: Option<String>,
 }
