@@ -36,3 +36,6 @@ webpki-roots = "1.0.9"
 # iOS keeps secrets in the data-protection keychain; the crate needs its `protected` store there.
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["protected"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }

@@ -5,6 +5,7 @@ use crate::error::{Error, Result};
 use crate::model::{Flags, FolderRole};
 use async_imap::types::Flag;
 use futures::TryStreamExt;
+use rustls::pki_types::CertificateDer;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -37,13 +38,19 @@ impl async_imap::Authenticator for XOAuth2 {
     }
 }
 
-fn tls_connector() -> TlsConnector {
+/// Public web PKI roots, plus any extra certificates the caller trusts on purpose.
+fn tls_connector(extra_roots: &[CertificateDer<'static>]) -> Result<TlsConnector> {
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for cert in extra_roots {
+        roots
+            .add(cert.clone())
+            .map_err(|e| Error::Tls(format!("extra root: {e}")))?;
+    }
     let config = rustls::ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    TlsConnector::from(Arc::new(config))
+    Ok(TlsConnector::from(Arc::new(config)))
 }
 
 fn to_flags<'a>(it: impl Iterator<Item = Flag<'a>>) -> Flags {
@@ -111,10 +118,22 @@ impl ImapProvider {
         user: &str,
         cred: Credential,
     ) -> Result<ImapProvider> {
+        Self::connect_trusting(host, port, user, cred, &[]).await
+    }
+
+    /// Like `connect`, but also trusts `extra_roots`: a private CA, a local bridge's
+    /// self-signed certificate, or a test server. Nothing else loosens verification.
+    pub async fn connect_trusting(
+        host: &str,
+        port: u16,
+        user: &str,
+        cred: Credential,
+        extra_roots: &[CertificateDer<'static>],
+    ) -> Result<ImapProvider> {
         let tcp = TcpStream::connect((host, port)).await?;
         let domain = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| Error::Tls(e.to_string()))?;
-        let tls = tls_connector()
+        let tls = tls_connector(extra_roots)?
             .connect(domain, tcp)
             .await
             .map_err(|e| Error::Tls(e.to_string()))?;
