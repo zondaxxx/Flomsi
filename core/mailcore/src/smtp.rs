@@ -2,8 +2,9 @@
 
 use crate::error::{Error, Result};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
-use lettre::transport::smtp::client::{Tls, TlsParameters};
+use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+use rustls::pki_types::CertificateDer;
 
 pub enum SmtpCredential {
     Password(String),
@@ -15,17 +16,45 @@ pub struct SmtpConfig {
     pub port: u16,
     pub user: String,
     pub cred: SmtpCredential,
+    /// TLS from the first byte (port 465). Otherwise STARTTLS is required (587).
+    pub implicit_tls: bool,
+}
+
+impl SmtpConfig {
+    pub fn new(host: String, port: u16, user: String, cred: SmtpCredential) -> SmtpConfig {
+        SmtpConfig {
+            implicit_tls: port == 465,
+            host,
+            port,
+            user,
+            cred,
+        }
+    }
 }
 
 pub async fn send(cfg: &SmtpConfig, message: lettre::Message) -> Result<()> {
-    let tls = TlsParameters::new(cfg.host.clone()).map_err(|e| Error::Tls(e.to_string()))?;
+    send_trusting(cfg, message, &[]).await
+}
+
+/// Like `send`, also trusting `extra_roots` (a private CA, a local bridge, tests).
+pub async fn send_trusting(
+    cfg: &SmtpConfig,
+    message: lettre::Message,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<()> {
+    let mut params = TlsParameters::builder(cfg.host.clone());
+    for der in extra_roots {
+        let cert = Certificate::from_der(der.to_vec()).map_err(|e| Error::Tls(e.to_string()))?;
+        params = params.add_root_certificate(cert);
+    }
+    let tls = params.build().map_err(|e| Error::Tls(e.to_string()))?;
     let (secret, mechanism) = match &cfg.cred {
         SmtpCredential::Password(p) => (p.clone(), vec![Mechanism::Plain, Mechanism::Login]),
         SmtpCredential::AccessToken(t) => (t.clone(), vec![Mechanism::Xoauth2]),
     };
     let builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&cfg.host)
         .port(cfg.port)
-        .tls(if cfg.port == 465 {
+        .tls(if cfg.implicit_tls {
             Tls::Wrapper(tls)
         } else {
             Tls::Required(tls)

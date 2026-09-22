@@ -21,6 +21,8 @@ pub mod sync;
 pub mod threading;
 
 #[cfg(test)]
+mod fake_smtp;
+#[cfg(test)]
 mod testdata;
 
 pub use error::{Error, Result};
@@ -285,12 +287,7 @@ impl Core {
         let message = draft.to_mime(&files)?;
         let raw = message.formatted();
         smtp::send(
-            &SmtpConfig {
-                host,
-                port,
-                user: account.email.clone(),
-                cred: secret,
-            },
+            &SmtpConfig::new(host, port, account.email.clone(), secret),
             message,
         )
         .await?;
