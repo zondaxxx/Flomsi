@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mail_app/data/models.dart';
@@ -101,5 +104,54 @@ void main() {
     await tester.pumpWidget(_host(const ComposeBody(draft: draft)));
     await tester.pumpAndSettle();
     expect(find.textContaining('most servers refuse'), findsOneWidget);
+  });
+
+  testWidgets('files dropped on the composer attach; folders are refused', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 800));
+    final dir = Directory.systemTemp.createTempSync('flomsi-drop');
+    addTearDown(() => dir.deleteSync(recursive: true));
+    final file = File('${dir.path}/report.pdf')
+      ..writeAsBytesSync(List.filled(2048, 1));
+    await tester.pumpWidget(
+      _host(const ComposeBody(draft: Draft(accountId: 1, from: 'me@x.dev'))),
+    );
+    await tester.pumpAndSettle();
+
+    Future<void> fromPlatform(String method, Object args) =>
+        tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+          'desktop_drop',
+          const StandardMethodCodec().encodeMethodCall(
+            MethodCall(method, args),
+          ),
+          (_) {},
+        );
+    double hintOpacity() => tester
+        .widget<AnimatedOpacity>(
+          find.ancestor(
+            of: find.text('Drop to attach'),
+            matching: find.byType(AnimatedOpacity),
+          ),
+        )
+        .opacity;
+
+    expect(hintOpacity(), 0);
+    await fromPlatform('entered', [500.0, 400.0]);
+    await tester.pumpAndSettle();
+    expect(hintOpacity(), 1);
+
+    await tester.runAsync(() async {
+      await fromPlatform('performOperation_macos', [
+        {'path': file.path, 'isDirectory': false},
+        {'path': dir.path, 'isDirectory': true},
+      ]);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pumpAndSettle();
+    expect(hintOpacity(), 0);
+    expect(find.text('report.pdf'), findsOneWidget);
+    expect(find.text('1 file · 2 KB'), findsOneWidget);
+    expect(find.textContaining('Folders can’t be attached'), findsOneWidget);
   });
 }

@@ -1,10 +1,12 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
+import '../../platform.dart';
 import '../attachments/attachment_chip.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
@@ -32,6 +34,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
   bool _showCc = false;
   bool _sending = false;
   bool _picking = false;
+  bool _dragging = false;
   String? _error;
 
   /// Most servers (Gmail, Outlook, iCloud) refuse messages over 25 MB after base64.
@@ -79,19 +82,49 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     _picking = true;
     try {
       final picked = await openFiles();
-      if (picked.isEmpty) return;
-      final repo = ref.read(repositoryProvider);
-      final added = [for (final x in picked) await repo.describeFile(x.path)];
-      if (mounted) setState(() => _files = [..._files, ...added]);
+      await _addPaths([for (final x in picked) x.path]);
     } catch (e) {
-      if (mounted) {
-        setState(
-          () => _error = e.toString().replaceFirst(RegExp(r'^\w+: '), ''),
-        );
-      }
+      if (mounted) setState(() => _error = _reason(e));
     } finally {
       _picking = false;
     }
+  }
+
+  static String _reason(Object e) =>
+      e.toString().replaceFirst(RegExp(r'^\w+: '), '');
+
+  /// Describe each file and add it; the first failure (a folder, a vanished file) is
+  /// shown in the send row, the rest still attach.
+  Future<void> _addPaths(List<String> paths) async {
+    if (paths.isEmpty) return;
+    final repo = ref.read(repositoryProvider);
+    final added = <DraftAttachment>[];
+    String? failed;
+    for (final p in paths) {
+      try {
+        added.add(await repo.describeFile(p));
+      } catch (e) {
+        failed ??= _reason(e);
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _files = [..._files, ...added];
+      _error = failed;
+    });
+  }
+
+  void _dropped(DropDoneDetails d) {
+    setState(() => _dragging = false);
+    final folders = d.files.whereType<DropItemDirectory>().length;
+    _addPaths([
+      for (final f in d.files)
+        if (f is! DropItemDirectory) f.path,
+    ]).then((_) {
+      if (folders > 0 && mounted) {
+        setState(() => _error = 'Folders can’t be attached; zip them first.');
+      }
+    });
   }
 
   static List<String> _split(String s) => s
@@ -138,7 +171,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       DraftKind.fresh => 'New message',
     };
     final pad = widget.compact ? 16.0 : 44.0;
-    return Focus(
+    final body = Focus(
       onKeyEvent: (node, e) {
         if (e is! KeyDownEvent) return KeyEventResult.ignored;
         final mod =
@@ -311,6 +344,27 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
         ],
       ),
     );
+    if (kTouch) return body;
+    return DropTarget(
+      onDragEntered: (_) => setState(() => _dragging = true),
+      onDragExited: (_) => setState(() => _dragging = false),
+      onDragDone: _dropped,
+      child: Stack(
+        children: [
+          body,
+          Positioned.fill(
+            child: IgnorePointer(
+              child: AnimatedOpacity(
+                opacity: _dragging ? 1 : 0,
+                duration: Motion.of(context, Motion.fast),
+                curve: Motion.curve,
+                child: const _DropHint(),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _link(String text, VoidCallback onTap) => HoverRegion(
@@ -373,6 +427,33 @@ class _HeaderField extends StatelessWidget {
             ),
           ),
           ?trailing,
+        ],
+      ),
+    );
+  }
+}
+
+/// Shown over the composer while files are dragged in from the desktop.
+class _DropHint extends StatelessWidget {
+  const _DropHint();
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Container(
+      margin: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: s.blue.withValues(alpha: 0.07),
+        border: Border.all(color: s.blue.withValues(alpha: 0.7)),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      alignment: Alignment.center,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(CupertinoIcons.paperclip, size: 20, color: s.blue),
+          const SizedBox(height: 8),
+          Text('Drop to attach', style: mono(context, size: 12, color: s.blue)),
         ],
       ),
     );
