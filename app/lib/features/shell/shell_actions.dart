@@ -52,20 +52,17 @@ class ShellActions {
   Future<void> openReply({bool all = false}) => withSelected((id) async {
     final d = await ref.read(repositoryProvider).replyDraft(id, all: all);
     ref.read(composeProvider.notifier).open(d);
-    onOpen?.call();
   });
 
   Future<void> openForward() => withSelected((id) async {
     final d = await ref.read(repositoryProvider).forwardDraft(id);
     ref.read(composeProvider.notifier).open(d);
-    onOpen?.call();
   });
 
   Future<void> openNew() async {
     try {
       final d = await ref.read(repositoryProvider).newDraft();
       ref.read(composeProvider.notifier).open(d);
-      onOpen?.call();
     } catch (e) {
       ref.read(noticeProvider.notifier).show('Add an account first');
     }

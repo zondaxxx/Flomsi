@@ -208,11 +208,14 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
               children: [
                 Text(title, style: ui(context, weight: FontWeight.w500)),
                 const SizedBox(width: 10),
-                Text(
-                  'from ${d.from}',
-                  style: mono(context, size: 11, color: s.fg3),
+                Expanded(
+                  child: Text(
+                    'from ${d.from}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: mono(context, size: 11, color: s.fg3),
+                  ),
                 ),
-                const Spacer(),
                 IconBtn(
                   icon: CupertinoIcons.xmark,
                   label: 'Discard  esc',
@@ -326,14 +329,14 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
                   const Spacer(),
                 SmallButton(
                   label: 'Discard',
-                  hint: 'esc',
+                  hint: kTouch ? null : 'esc',
                   height: 30,
                   onPressed: _close,
                 ),
                 const SizedBox(width: 8),
                 SmallButton(
                   label: _sending ? 'Sending…' : 'Send',
-                  hint: '⌘↵',
+                  hint: kTouch ? null : '⌘↵',
                   primary: true,
                   height: 30,
                   onPressed: _sending ? null : send,

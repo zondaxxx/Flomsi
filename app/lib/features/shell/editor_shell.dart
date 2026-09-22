@@ -52,9 +52,34 @@ class _EditorShellState extends ConsumerState<EditorShell> {
     );
   }
 
+  /// Phones have no reading pane to host the composer, so it gets its own route, which
+  /// closes itself when the compose state clears (sent, discarded, closed).
+  void _openComposeOnPhone(BuildContext context) {
+    if (MediaQuery.sizeOf(context).width >= 700) return;
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        transitionDuration: Motion.of(context, Motion.base),
+        reverseTransitionDuration: Motion.of(context, Motion.fast),
+        pageBuilder: (_, a, _) => FadeTransition(
+          opacity: a,
+          child: SlideTransition(
+            position: Tween(
+              begin: const Offset(0, 0.03),
+              end: Offset.zero,
+            ).animate(CurvedAnimation(parent: a, curve: Motion.curve)),
+            child: const _PhoneCompose(),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = context.s;
+    ref.listen<Draft?>(composeProvider, (prev, next) {
+      if (prev == null && next != null) _openComposeOnPhone(context);
+    });
     final actions = ShellActions(
       ref: ref,
       context: context,
@@ -489,45 +514,89 @@ class _StatusBar extends ConsumerWidget {
             ),
           ),
           const SizedBox(width: 20),
-          Text(
-            accounts.map((a) => a.short).join(' · '),
-            style: mono(context, size: 11),
+          // Narrow windows ellipsize the account list and the hints instead of overflowing.
+          Flexible(
+            flex: 2,
+            child: Text(
+              accounts.map((a) => a.short).join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: mono(context, size: 11),
+            ),
           ),
-          const Spacer(),
+          const SizedBox(width: 16),
           // Desktop: notices take the key-hint slot for a moment. Phones get NoticeHost's pill.
-          if (!(Platform.isIOS || Platform.isAndroid))
-            AnimatedSwitcher(
-              duration: Motion.of(context, Motion.base),
-              switchInCurve: Motion.curve,
-              transitionBuilder: (child, a) => FadeTransition(
-                opacity: a,
-                child: SlideTransition(
-                  position: Tween(
-                    begin: const Offset(0, 0.4),
-                    end: Offset.zero,
-                  ).animate(a),
-                  child: child,
+          if (Platform.isIOS || Platform.isAndroid)
+            const Spacer()
+          else
+            Expanded(
+              flex: 3,
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: AnimatedSwitcher(
+                  duration: Motion.of(context, Motion.base),
+                  switchInCurve: Motion.curve,
+                  transitionBuilder: (child, a) => FadeTransition(
+                    opacity: a,
+                    child: SlideTransition(
+                      position: Tween(
+                        begin: const Offset(0, 0.4),
+                        end: Offset.zero,
+                      ).animate(a),
+                      child: child,
+                    ),
+                  ),
+                  child: notice != null
+                      ? Text(
+                          notice,
+                          key: ValueKey('notice:$notice'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: mono(context, size: 11, color: s.fg),
+                        )
+                      : Text(
+                          switch (scope) {
+                            'search' => 'esc back · ↵ search',
+                            'compose' => '⌘↵ send · ⌘⇧A attach · esc discard',
+                            'thread' => 'r reply · e archive · esc back',
+                            'dialog' => 'esc cancel · ↵ confirm',
+                            _ => 'j/k move · e archive · r reply · / search · ⌘K commands',
+                          },
+                          key: ValueKey('hints:$scope'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: mono(context, size: 11),
+                        ),
                 ),
               ),
-              child: notice != null
-                  ? Text(
-                      notice,
-                      key: ValueKey('notice:$notice'),
-                      style: mono(context, size: 11, color: s.fg),
-                    )
-                  : Text(
-                      switch (scope) {
-                        'search' => 'esc back · ↵ search',
-                        'compose' => '⌘↵ send · ⌘⇧A attach · esc discard',
-                        'thread' => 'r reply · e archive · esc back',
-                        'dialog' => 'esc cancel · ↵ confirm',
-                        _ => 'j/k move · e archive · r reply · / search · ⌘K commands',
-                      },
-                      key: ValueKey('hints:$scope'),
-                      style: mono(context, size: 11),
-                    ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class _PhoneCompose extends ConsumerWidget {
+  const _PhoneCompose();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref.listen<Draft?>(composeProvider, (prev, next) {
+      if (next == null && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+    });
+    final draft = ref.watch(composeProvider);
+    return Scaffold(
+      backgroundColor: context.s.bg,
+      body: SafeArea(
+        child: draft == null
+            ? const SizedBox.shrink()
+            : ComposeBody(
+                key: ValueKey(draft.hashCode),
+                draft: draft,
+                compact: true,
+              ),
       ),
     );
   }
