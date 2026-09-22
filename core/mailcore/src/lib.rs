@@ -173,17 +173,28 @@ impl Core {
             .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))?;
         let account = self.store.account(last.account_id)?;
         let me = self.me(&account);
-        let refs: Vec<String> = messages.iter().filter_map(|m| m.message_id.clone()).collect();
+        let refs: Vec<String> = messages
+            .iter()
+            .filter_map(|m| m.message_id.clone())
+            .collect();
         let earlier = &refs[..refs.len().saturating_sub(1)];
         let mut draft = Draft::reply(last, last.message_id.as_deref(), earlier, &me, reply_all);
         if last.from.addr.eq_ignore_ascii_case(&me.addr) {
             draft.to = last.to.clone();
-            draft.cc = if reply_all { last.cc.clone() } else { Vec::new() };
+            draft.cc = if reply_all {
+                last.cc.clone()
+            } else {
+                Vec::new()
+            };
         }
         let (text, _) = self.store.body(last.id)?;
         draft.text = format!(
             "\n\n{}",
-            quote(text.as_deref().unwrap_or(&last.snippet), &last.from, last.date)
+            quote(
+                text.as_deref().unwrap_or(&last.snippet),
+                &last.from,
+                last.date
+            )
         );
         Ok((account, draft))
     }
