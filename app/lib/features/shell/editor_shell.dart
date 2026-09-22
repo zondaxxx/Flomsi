@@ -468,6 +468,7 @@ class _StatusBar extends ConsumerWidget {
         ref.watch(accountsProvider).asData?.value ?? const <Account>[];
     final pos = threads.indexWhere((t) => t.id == selected);
     final scope = ref.watch(scopeProvider);
+    final notice = ref.watch(noticeProvider);
     return Container(
       height: 24,
       color: s.bg2,
@@ -493,14 +494,39 @@ class _StatusBar extends ConsumerWidget {
             style: mono(context, size: 11),
           ),
           const Spacer(),
+          // Desktop: notices take the key-hint slot for a moment. Phones get NoticeHost's pill.
           if (!(Platform.isIOS || Platform.isAndroid))
-            Text(switch (scope) {
-              'search' => 'esc back · ↵ search',
-              'compose' => '⌘↵ send · esc discard',
-              'thread' => 'r reply · e archive · esc back',
-              'dialog' => 'esc cancel · ↵ confirm',
-              _ => 'j/k move · e archive · r reply · / search · ⌘K commands',
-            }, style: mono(context, size: 11)),
+            AnimatedSwitcher(
+              duration: Motion.of(context, Motion.base),
+              switchInCurve: Motion.curve,
+              transitionBuilder: (child, a) => FadeTransition(
+                opacity: a,
+                child: SlideTransition(
+                  position: Tween(
+                    begin: const Offset(0, 0.4),
+                    end: Offset.zero,
+                  ).animate(a),
+                  child: child,
+                ),
+              ),
+              child: notice != null
+                  ? Text(
+                      notice,
+                      key: ValueKey('notice:$notice'),
+                      style: mono(context, size: 11, color: s.fg),
+                    )
+                  : Text(
+                      switch (scope) {
+                        'search' => 'esc back · ↵ search',
+                        'compose' => '⌘↵ send · ⌘⇧A attach · esc discard',
+                        'thread' => 'r reply · e archive · esc back',
+                        'dialog' => 'esc cancel · ↵ confirm',
+                        _ => 'j/k move · e archive · r reply · / search · ⌘K commands',
+                      },
+                      key: ValueKey('hints:$scope'),
+                      style: mono(context, size: 11),
+                    ),
+            ),
         ],
       ),
     );

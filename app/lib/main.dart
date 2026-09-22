@@ -9,6 +9,8 @@ import 'data/mock_repository.dart';
 import 'data/repository.dart';
 import 'data/rust_repository.dart';
 import 'features/shell/editor_shell.dart';
+import 'features/shell/notice_host.dart';
+import 'platform.dart';
 import 'state/appearance.dart';
 import 'state/providers.dart';
 import 'theme/tokens.dart';
@@ -58,6 +60,10 @@ class MailApp extends ConsumerWidget {
       theme: buildTheme(Scheme.light),
       darkTheme: buildTheme(Scheme.dark),
       themeMode: mode,
+      // Phones show notices as a pill over every route; desktop uses the status line.
+      builder: (context, child) => kTouch
+          ? NoticeHost(child: child ?? const SizedBox.shrink())
+          : child ?? const SizedBox.shrink(),
       home: const EditorShell(),
     );
   }
