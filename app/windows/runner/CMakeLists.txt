@@ -38,3 +38,21 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+
+# Rust bridge: build mail_bridge.dll with cargo and put it next to the executable.
+set(MAIL_BRIDGE_CRATE "${CMAKE_SOURCE_DIR}/../rust")
+set(MAIL_BRIDGE_PROFILE_DIR "release")
+set(MAIL_BRIDGE_DLL "${MAIL_BRIDGE_CRATE}/target/${MAIL_BRIDGE_PROFILE_DIR}/mail_bridge.dll")
+add_custom_command(
+  OUTPUT "${MAIL_BRIDGE_DLL}"
+  COMMAND cargo build --release --manifest-path "${MAIL_BRIDGE_CRATE}/Cargo.toml"
+  WORKING_DIRECTORY "${MAIL_BRIDGE_CRATE}"
+  COMMENT "cargo build mail_bridge (release)"
+  VERBATIM
+)
+add_custom_target(mail_bridge_build ALL DEPENDS "${MAIL_BRIDGE_DLL}")
+add_dependencies(${BINARY_NAME} mail_bridge_build)
+add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MAIL_BRIDGE_DLL}" "$<TARGET_FILE_DIR:${BINARY_NAME}>/mail_bridge.dll"
+)

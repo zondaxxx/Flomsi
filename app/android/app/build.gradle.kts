@@ -47,3 +47,24 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+// Rust bridge: cargo-ndk builds libmail_bridge.so for each ABI into jniLibs before the APK is assembled.
+val cargoNdk by tasks.registering(Exec::class) {
+    val crateDir = file("../../rust")
+    val outDir = file("src/main/jniLibs")
+    val cargo = System.getenv("CARGO") ?: (System.getenv("HOME") + "/.cargo/bin/cargo")
+    workingDir = crateDir
+    inputs.dir(file("../../rust/src"))
+    outputs.dir(outDir)
+    commandLine(
+        cargo, "ndk",
+        "-t", "arm64-v8a", "-t", "x86_64",
+        "-o", outDir.absolutePath,
+        "build", "--release",
+    )
+}
+
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
+    dependsOn(cargoNdk)
+}
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(cargoNdk) }

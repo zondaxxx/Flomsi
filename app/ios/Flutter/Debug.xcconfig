@@ -1,1 +1,4 @@
 #include "Generated.xcconfig"
+
+// Rust bridge (built by scripts/build_bridge_ios.sh into BUILT_PRODUCTS_DIR)
+OTHER_LDFLAGS = $(inherited) -force_load "$(BUILT_PRODUCTS_DIR)/libmail_bridge.a" -Wl,-export_dynamic -framework Security -lresolv

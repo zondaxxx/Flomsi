@@ -13,6 +13,7 @@ dependencies:
   flutter_animate: ^4.5.2
   flutter_riverpod: ^3.4.3
   flutter_rust_bridge: 2.13.0
+  flutter_widget_from_html_core: ^0.17.4
   macos_window_utils: ^1.9.1
   path_provider: ^2.1.6
 

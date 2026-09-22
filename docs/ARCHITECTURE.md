@@ -65,8 +65,16 @@ Enum с данными в DTO не используем: кодогенерат�
 - **macOS**: фаза «Build Rust bridge» в таргете Runner (последняя в списке) запускает `scripts/build_bridge_macos.sh`:
   `cargo build` в `app/rust` (debug для Debug-конфигурации, иначе release), копия `libmail_bridge.dylib` в `Contents/Frameworks`, ad-hoc codesign.
   Dart открывает её по явному пути рядом с исполняемым файлом (`RustRepository._bundledLibrary`).
-- **iOS / Android / Windows**: ещё не подключено. План: iOS — статическая библиотека и такая же run-script фаза; Android — `cargo ndk`
-  в Gradle-таске; Windows — CMake-шаг в `windows/`.
+- **iOS**: фаза «Build Rust bridge» стоит ПЕРВОЙ в таргете Runner и запускает `scripts/build_bridge_ios.sh`: `cargo build --target`
+  для каждой архитектуры из `$ARCHS` (arm64 устройства, arm64 и x86_64 симулятора), `lipo` в `$BUILT_PRODUCTS_DIR/libmail_bridge.a`.
+  Линковка через `OTHER_LDFLAGS = -force_load libmail_bridge.a -framework Security -lresolv` в `ios/Flutter/{Debug,Release}.xcconfig`.
+  Скрипт снимает переменные Xcode (`SDKROOT`, `*_DEPLOYMENT_TARGET`, `CC`…), иначе rustc не может собрать host-крейты.
+  На iOS keyring использует data-protection keychain: фича `protected` включена target-зависимостью в `core/mailcore/Cargo.toml`.
+  Dart открывает символы из самого исполняемого файла (`ExternalLibrary.process`).
+- **Android**: Gradle-таск `cargoNdk` в `android/app/build.gradle.kts` вызывает `cargo ndk -t arm64-v8a -t x86_64 -o src/main/jniLibs build --release`
+  перед `preBuild`; `jniLibs/` в .gitignore. Нужны `cargo-ndk`, NDK и rust-таргеты `aarch64-linux-android`, `x86_64-linux-android`.
+- **Windows**: `windows/runner/CMakeLists.txt` собирает `mail_bridge.dll` через `cargo build --release` и копирует рядом с exe;
+  `windows/CMakeLists.txt` кладёт dll в бандл при install. Загрузчик flutter_rust_bridge открывает `mail_bridge.dll` из папки приложения.
 
 Заметка про окружение: Homebrew на этой машине x86_64 под Rosetta (Tier 3), `brew install cocoapods` и `gem install cocoapods`
 (системный Ruby 2.6, `nkf` не собирается) падают. Backend native-assets пробовали: Flutter 3.47 не запускает `hook/build.dart`

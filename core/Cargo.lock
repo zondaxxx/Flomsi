@@ -1372,6 +1372,7 @@ version = "0.1.0"
 dependencies = [
  "ammonia",
  "anyhow",
+ "apple-native-keyring-store",
  "async-imap",
  "base64 0.23.1",
  "chrono",
