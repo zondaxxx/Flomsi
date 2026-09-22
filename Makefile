@@ -1,4 +1,4 @@
-# mail_ — common tasks. Requires: rustup (stable), flutter, Xcode (macOS/iOS).
+# Flomsi — common tasks. Requires: rustup (stable), flutter, Xcode (macOS/iOS).
 CARGO := $(HOME)/.cargo/bin/cargo
 
 .PHONY: core core-test cli app-mac app-mac-mock app-ios app-android bridge fmt check

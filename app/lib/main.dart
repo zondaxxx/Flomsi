@@ -50,7 +50,7 @@ class MailApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(appearanceProvider);
     return MaterialApp(
-      title: 'Mail',
+      title: 'Flomsi',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Scheme.light),
       darkTheme: buildTheme(Scheme.dark),

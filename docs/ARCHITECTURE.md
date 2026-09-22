@@ -113,6 +113,12 @@ outbox(id, account_id, op_json, created_at, attempts, last_error)
 3. Windows, Outlook (Graph), JMAP, правила, snooze, сниппеты.
 4. Светлая тема, календарные приглашения, автоматизация.
 
+## Сборки и CI
+
+Репозиторий: https://github.com/zondaxxx/Flomsi. Все сборки идут через GitHub Actions (`.github/workflows/ci.yml`):
+`core` (fmt, clippy, tests, mailctl для Linux), `app-check` (analyze, tests), `macos` (release-сборка, артефакт `Flomsi-macOS`).
+Локальные сборки нужны только для скриншотов. В коммитах только авторство владельца репозитория, без атрибуции ассистента.
+
 ## Известные риски
 
 - **Верификация Google.** Scope `gmail.modify` restricted: для публичного релиза нужна верификация и, вероятно, CASA-аудит. До этого 100 тестовых пользователей.

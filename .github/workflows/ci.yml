@@ -74,7 +74,7 @@ jobs:
       - name: package
         run: |
           cd app/build/macos/Build/Products/Release
-          ditto -c -k --keepParent mail_app.app Flomsi-macOS.zip
+          ditto -c -k --keepParent Flomsi.app Flomsi-macOS.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Flomsi-macOS
