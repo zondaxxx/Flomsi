@@ -30,8 +30,16 @@ const _presets = <String, (String, String)>{
   'proton.me': ('127.0.0.1', 'Requires Proton Bridge running locally.'),
 };
 
-Future<void> showAddAccountSheet(BuildContext context) =>
-    showGeneralDialog<void>(
+/// The keymap scope is set around the dialog here, not in the sheet's lifecycle methods:
+/// Riverpod does not allow providers to change while widgets mount or unmount.
+Future<void> showAddAccountSheet(BuildContext context) async {
+  final scope = ProviderScope.containerOf(
+    context,
+    listen: false,
+  ).read(scopeProvider.notifier);
+  scope.set('dialog');
+  try {
+    await showGeneralDialog<void>(
       context: context,
       barrierDismissible: true,
       barrierLabel: 'Close',
@@ -41,6 +49,10 @@ Future<void> showAddAccountSheet(BuildContext context) =>
         child: Appear(duration: Motion.fast, dy: 8, child: AddAccountSheet()),
       ),
     );
+  } finally {
+    scope.set('list');
+  }
+}
 
 class AddAccountSheet extends ConsumerStatefulWidget {
   const AddAccountSheet({super.key});
@@ -61,13 +73,11 @@ class _AddAccountSheetState extends ConsumerState<AddAccountSheet> {
   @override
   void initState() {
     super.initState();
-    ref.read(scopeProvider.notifier).set('dialog');
     _email.addListener(_autofill);
   }
 
   @override
   void dispose() {
-    ref.read(scopeProvider.notifier).set('list');
     _email.dispose();
     _host.dispose();
     _port.dispose();
