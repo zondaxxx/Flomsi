@@ -345,6 +345,33 @@ pub async fn sync_all(inbox_only: bool) -> Result<SyncSummaryDto> {
     Ok(summary)
 }
 
+/// Sit in IMAP IDLE on the account's inbox. Returns true when the server reported a change,
+/// false when `timeout_secs` passed quietly. Errors surface as exceptions (no connection, auth…).
+pub async fn wait_for_change(account_id: i64, timeout_secs: u32) -> Result<bool> {
+    let outcome = core()?
+        .wait_for_change(account_id, std::time::Duration::from_secs(u64::from(timeout_secs)))
+        .await?;
+    Ok(matches!(outcome, mailcore::provider::IdleOutcome::Changed))
+}
+
+/// Sync one account (inbox only when `inbox_only`).
+pub async fn sync_account(account_id: i64, inbox_only: bool) -> Result<SyncSummaryDto> {
+    let c = core()?;
+    let mut opts = SyncOptions::default();
+    if inbox_only {
+        opts.roles = vec![FolderRole::Inbox];
+    }
+    let mut summary = SyncSummaryDto { accounts: 1, fetched: 0, removed: 0, errors: vec![] };
+    match c.sync_account(account_id, &opts).await {
+        Ok(rep) => {
+            summary.fetched = rep.fetched as u32;
+            summary.removed = rep.removed as u32;
+        }
+        Err(e) => summary.errors.push(e.to_string()),
+    }
+    Ok(summary)
+}
+
 /// Subscribe to sync events. The stream stays open for the life of the app.
 pub async fn sync_events(sink: crate::frb_generated::StreamSink<SyncEventDto>) -> Result<()> {
     let mut rx = core()?.subscribe();

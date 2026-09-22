@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -29,7 +30,9 @@ Future<void> main() async {
     repo = MockRepository();
   } else {
     try {
-      repo = await RustRepository.open();
+      final rustRepo = await RustRepository.open();
+      unawaited(rustRepo.startBackgroundSync());
+      repo = rustRepo;
     } catch (e, st) {
       debugPrint('rust core unavailable, falling back to mock: $e\n$st');
       repo = MockRepository();

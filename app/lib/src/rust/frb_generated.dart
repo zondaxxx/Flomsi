@@ -69,7 +69,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -490650696;
+  int get rustContentHash => -1826236787;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -134,6 +134,11 @@ abstract class RustLibApi extends BaseApi {
     required bool on_,
   });
 
+  Future<SyncSummaryDto> crateApiMailSyncAccount({
+    required PlatformInt64 accountId,
+    required bool inboxOnly,
+  });
+
   Future<SyncSummaryDto> crateApiMailSyncAll({required bool inboxOnly});
 
   Stream<SyncEventDto> crateApiMailSyncEvents();
@@ -152,6 +157,11 @@ abstract class RustLibApi extends BaseApi {
   Future<void> crateApiMailTrashThread({required PlatformInt64 threadId});
 
   Future<int> crateApiMailUnreadCount();
+
+  Future<bool> crateApiMailWaitForChange({
+    required PlatformInt64 accountId,
+    required int timeoutSecs,
+  });
 }
 
 class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
@@ -625,6 +635,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<SyncSummaryDto> crateApiMailSyncAccount({
+    required PlatformInt64 accountId,
+    required bool inboxOnly,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_i_64(accountId, serializer);
+          sse_encode_bool(inboxOnly, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 16,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_sync_summary_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiMailSyncAccountConstMeta,
+        argValues: [accountId, inboxOnly],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMailSyncAccountConstMeta => const TaskConstMeta(
+    debugName: "sync_account",
+    argNames: ["accountId", "inboxOnly"],
+  );
+
+  @override
   Future<SyncSummaryDto> crateApiMailSyncAll({required bool inboxOnly}) {
     return handler.executeNormal(
       NormalTask(
@@ -634,7 +678,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -664,7 +708,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 17,
+              funcId: 18,
               port: port_,
             );
           },
@@ -702,7 +746,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -734,7 +778,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 20,
             port: port_,
           );
         },
@@ -762,7 +806,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 21,
             port: port_,
           );
         },
@@ -789,7 +833,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 22,
             port: port_,
           );
         },
@@ -806,6 +850,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
 
   TaskConstMeta get kCrateApiMailUnreadCountConstMeta =>
       const TaskConstMeta(debugName: "unread_count", argNames: []);
+
+  @override
+  Future<bool> crateApiMailWaitForChange({
+    required PlatformInt64 accountId,
+    required int timeoutSecs,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_i_64(accountId, serializer);
+          sse_encode_u_32(timeoutSecs, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 23,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_bool,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiMailWaitForChangeConstMeta,
+        argValues: [accountId, timeoutSecs],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMailWaitForChangeConstMeta => const TaskConstMeta(
+    debugName: "wait_for_change",
+    argNames: ["accountId", "timeoutSecs"],
+  );
 
   @protected
   AnyhowException dco_decode_AnyhowException(dynamic raw) {

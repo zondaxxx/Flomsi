@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -158,13 +160,51 @@ class ThreadBody extends ConsumerWidget {
   }
 }
 
-class _ThreadContent extends ConsumerWidget {
+class _ThreadContent extends ConsumerStatefulWidget {
   const _ThreadContent({super.key, required this.thread, required this.pad});
   final Thread thread;
   final double pad;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_ThreadContent> createState() => _ThreadContentState();
+}
+
+class _ThreadContentState extends ConsumerState<_ThreadContent> {
+  Timer? _readTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleMarkRead();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ThreadContent old) {
+    super.didUpdateWidget(old);
+    if (old.thread.id != widget.thread.id) _scheduleMarkRead();
+  }
+
+  /// Reading a thread marks it read after a beat, like every mail client; j/k skimming stays unread.
+  void _scheduleMarkRead() {
+    _readTimer?.cancel();
+    if (!widget.thread.unread) return;
+    final id = widget.thread.id;
+    _readTimer = Timer(const Duration(milliseconds: 900), () {
+      if (!mounted) return;
+      ref.read(repositoryProvider).markRead(id, true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _readTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final thread = widget.thread;
+    final pad = widget.pad;
     final messages =
         ref.watch(messagesProvider(thread.id)).asData?.value ??
         const <Message>[];

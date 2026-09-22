@@ -102,6 +102,25 @@ Future<void> sendDraft({required DraftDto draft}) =>
 Future<SyncSummaryDto> syncAll({required bool inboxOnly}) =>
     RustLib.instance.api.crateApiMailSyncAll(inboxOnly: inboxOnly);
 
+/// Sit in IMAP IDLE on the account's inbox. Returns true when the server reported a change,
+/// false when `timeout_secs` passed quietly. Errors surface as exceptions (no connection, auth…).
+Future<bool> waitForChange({
+  required PlatformInt64 accountId,
+  required int timeoutSecs,
+}) => RustLib.instance.api.crateApiMailWaitForChange(
+  accountId: accountId,
+  timeoutSecs: timeoutSecs,
+);
+
+/// Sync one account (inbox only when `inbox_only`).
+Future<SyncSummaryDto> syncAccount({
+  required PlatformInt64 accountId,
+  required bool inboxOnly,
+}) => RustLib.instance.api.crateApiMailSyncAccount(
+  accountId: accountId,
+  inboxOnly: inboxOnly,
+);
+
 /// Subscribe to sync events. The stream stays open for the life of the app.
 Stream<SyncEventDto> syncEvents() =>
     RustLib.instance.api.crateApiMailSyncEvents();

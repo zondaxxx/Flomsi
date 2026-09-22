@@ -18,6 +18,9 @@ class RustRepository implements MailRepository {
 
   final _events = StreamController<RepoEvent>.broadcast();
   StreamSubscription<rust.SyncEventDto>? _sub;
+  final _idleLoops = <int, bool>{}; // account id → keep running
+  Timer? _periodic;
+  bool _disposed = false;
 
   /// Desktop: `~/.mail_` (shared with the `mailctl` CLI). Mobile: app support dir.
   static Future<String> defaultDataDir() async {
@@ -61,6 +64,57 @@ class RustRepository implements MailRepository {
       }
     });
     return repo;
+  }
+
+  /// Keeps mail fresh without the user asking: a sync on start, an IMAP IDLE loop per account
+  /// (the server pushes, we fetch), and a periodic fallback for servers where IDLE misbehaves.
+  Future<void> startBackgroundSync() async {
+    await sync();
+    _periodic?.cancel();
+    _periodic = Timer.periodic(const Duration(minutes: 10), (_) => sync());
+    await _refreshIdleLoops();
+  }
+
+  Future<void> _refreshIdleLoops() async {
+    final ids = (await rust.listAccounts()).map((a) => a.id.toInt()).toSet();
+    for (final id in ids) {
+      if (_idleLoops.containsKey(id)) continue;
+      _idleLoops[id] = true;
+      unawaited(_idleLoop(id));
+    }
+    for (final id in _idleLoops.keys.toList()) {
+      if (!ids.contains(id)) _idleLoops[id] = false;
+    }
+  }
+
+  Future<void> _idleLoop(int accountId) async {
+    var backoff = const Duration(seconds: 30);
+    while (!_disposed && (_idleLoops[accountId] ?? false)) {
+      try {
+        // Servers drop IDLE after ~29 minutes; re-enter well before that.
+        final changed = await rust.waitForChange(
+          accountId: accountId,
+          timeoutSecs: 25 * 60,
+        );
+        backoff = const Duration(seconds: 30);
+        if (changed) {
+          _events.add(const SyncStarted());
+          final s = await rust.syncAccount(
+            accountId: accountId,
+            inboxOnly: true,
+          );
+          _events.add(SyncFinished(fetched: s.fetched, errors: s.errors));
+          _events.add(const ThreadsChanged());
+        }
+      } catch (e) {
+        // No network, auth failure, server hiccup: wait and try again, up to every 5 minutes.
+        await Future<void>.delayed(backoff);
+        backoff = backoff * 2 > const Duration(minutes: 5)
+            ? const Duration(minutes: 5)
+            : backoff * 2;
+      }
+    }
+    _idleLoops.remove(accountId);
   }
 
   static Color _accountColor(String kind, int i) => switch (kind) {
@@ -277,6 +331,7 @@ class RustRepository implements MailRepository {
       displayName: displayName,
     );
     _events.add(const ThreadsChanged());
+    unawaited(_refreshIdleLoops());
     return Account(
       id: a.id.toInt(),
       email: a.email,
@@ -288,6 +343,7 @@ class RustRepository implements MailRepository {
   @override
   Future<void> removeAccount(int id) async {
     await rust.removeAccount(id: id);
+    _idleLoops[id] = false;
     _events.add(const ThreadsChanged());
   }
 
@@ -304,6 +360,8 @@ class RustRepository implements MailRepository {
   }
 
   void dispose() {
+    _disposed = true;
+    _periodic?.cancel();
     _sub?.cancel();
     _events.close();
   }
