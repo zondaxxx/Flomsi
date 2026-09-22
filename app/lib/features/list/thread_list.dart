@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
+import '../../platform.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
@@ -110,6 +111,10 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   @override
   Widget build(BuildContext context) {
     final s = context.s;
+    final draftsView = ref.watch(queryProvider).trim() == 'in:drafts';
+    final draftCount = draftsView
+        ? ref.watch(draftsProvider).asData?.value.length ?? 0
+        : 0;
     final threads = ref.watch(threadsProvider);
     final selected = ref.watch(selectedThreadIdProvider);
     final syncError = ref.watch(
@@ -142,24 +147,33 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
           ),
           child: Row(
             children: [
-              _FilterButton(
-                label: 'All',
-                count: list?.length ?? 0,
-                active: _filter == 'all',
-                onTap: () => _setFilter('all'),
-              ),
-              _FilterButton(
-                label: 'Unread',
-                count: unread,
-                active: _filter == 'unread',
-                onTap: () => _setFilter('unread'),
-              ),
-              _FilterButton(
-                label: 'Starred',
-                count: starred,
-                active: _filter == 'starred',
-                onTap: () => _setFilter('starred'),
-              ),
+              if (draftsView)
+                _FilterButton(
+                  label: 'On this device',
+                  count: draftCount,
+                  active: true,
+                  onTap: () {},
+                )
+              else ...[
+                _FilterButton(
+                  label: 'All',
+                  count: list?.length ?? 0,
+                  active: _filter == 'all',
+                  onTap: () => _setFilter('all'),
+                ),
+                _FilterButton(
+                  label: 'Unread',
+                  count: unread,
+                  active: _filter == 'unread',
+                  onTap: () => _setFilter('unread'),
+                ),
+                _FilterButton(
+                  label: 'Starred',
+                  count: starred,
+                  active: _filter == 'starred',
+                  onTap: () => _setFilter('starred'),
+                ),
+              ],
               const Spacer(),
               IconBtn(
                 icon: CupertinoIcons.line_horizontal_3_decrease,
@@ -195,36 +209,40 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
             ),
           ),
         Expanded(
-          child: threads.when(
-            loading: () => const SizedBox.shrink(),
-            error: (e, _) => Center(
-              child: Text('$e', style: mono(context, color: s.red)),
-            ),
-            data: (_) => _items.isEmpty
-                ? const EmptyNote('No mail')
-                : AnimatedList(
-                    key: _listKey,
-                    initialItemCount: _items.length,
-                    itemBuilder: (context, i, anim) {
-                      if (i >= _items.length) return const SizedBox.shrink();
-                      final t = _items[i];
-                      final row = ThreadRow(
-                        thread: t,
-                        selected: t.id == selected,
-                        onTap: () {
-                          ref
-                              .read(selectedThreadIdProvider.notifier)
-                              .select(t.id);
-                          widget.onOpen?.call(t.id);
-                        },
-                      );
-                      return _Transition(
-                        anim: anim,
-                        child: _touch ? _swipeable(t, row) : row,
-                      );
-                    },
+          child: draftsView
+              ? const _DraftList()
+              : threads.when(
+                  loading: () => const SizedBox.shrink(),
+                  error: (e, _) => Center(
+                    child: Text('$e', style: mono(context, color: s.red)),
                   ),
-          ),
+                  data: (_) => _items.isEmpty
+                      ? const EmptyNote('No mail')
+                      : AnimatedList(
+                          key: _listKey,
+                          initialItemCount: _items.length,
+                          itemBuilder: (context, i, anim) {
+                            if (i >= _items.length) {
+                              return const SizedBox.shrink();
+                            }
+                            final t = _items[i];
+                            final row = ThreadRow(
+                              thread: t,
+                              selected: t.id == selected,
+                              onTap: () {
+                                ref
+                                    .read(selectedThreadIdProvider.notifier)
+                                    .select(t.id);
+                                widget.onOpen?.call(t.id);
+                              },
+                            );
+                            return _Transition(
+                              anim: anim,
+                              child: _touch ? _swipeable(t, row) : row,
+                            );
+                          },
+                        ),
+                ),
         ),
       ],
     );
@@ -483,6 +501,158 @@ class ThreadRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Drafts kept on this device, newest first. A click reopens one in the composer.
+class _DraftList extends ConsumerWidget {
+  const _DraftList();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = context.s;
+    return ref
+        .watch(draftsProvider)
+        .when(
+          loading: () => const SizedBox.shrink(),
+          error: (e, _) => Center(
+            child: Text('$e', style: mono(context, color: s.red)),
+          ),
+          data: (drafts) => drafts.isEmpty
+              ? const EmptyNote('No drafts')
+              : ListView.builder(
+                  itemCount: drafts.length,
+                  itemBuilder: (context, i) => Appear(
+                    key: ValueKey('draft-${drafts[i].localId}'),
+                    delay: Duration(milliseconds: 18 * i.clamp(0, 10)),
+                    child: DraftRow(
+                      draft: drafts[i],
+                      onTap: () =>
+                          ref.read(composeProvider.notifier).open(drafts[i]),
+                      onDelete: () async {
+                        await ref
+                            .read(repositoryProvider)
+                            .deleteDraft(drafts[i].localId!);
+                        ref.invalidate(draftsProvider);
+                        ref
+                            .read(noticeProvider.notifier)
+                            .show('Draft discarded');
+                      },
+                    ),
+                  ),
+                ),
+        );
+  }
+}
+
+class DraftRow extends StatelessWidget {
+  const DraftRow({
+    super.key,
+    required this.draft,
+    required this.onTap,
+    required this.onDelete,
+  });
+  final Draft draft;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    final d = draft;
+    final to = d.to.isEmpty ? 'no recipients' : d.to.join(', ');
+    final body = d.text.trim().split('\n').first;
+    return HoverRegion(
+      onTap: onTap,
+      builder: (context, hovered) => AnimatedContainer(
+        duration: Motion.of(context, Motion.fast),
+        curve: Motion.curve,
+        padding: const EdgeInsets.fromLTRB(29, 9, 8, 9),
+        decoration: BoxDecoration(
+          color: hovered ? s.hover : Colors.transparent,
+          border: Border(bottom: BorderSide(color: s.border)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'draft',
+                        style: mono(context, size: 11, color: s.red),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          to,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: ui(
+                            context,
+                            color: d.to.isEmpty ? s.fg3 : s.fg,
+                          ),
+                        ),
+                      ),
+                      if (d.attachments.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 8),
+                          child: Icon(
+                            CupertinoIcons.paperclip,
+                            size: 12,
+                            color: s.fg3,
+                          ),
+                        ),
+                      if (d.savedAt != null) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          formatWhen(d.savedAt!.toLocal()),
+                          style: mono(context, size: 11),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: d.subject.isEmpty ? '(no subject)' : d.subject,
+                          style: ui(
+                            context,
+                            size: 12.5,
+                            color: d.subject.isEmpty ? s.fg3 : s.fg,
+                          ),
+                        ),
+                        if (body.isNotEmpty)
+                          TextSpan(
+                            text: '  —  $body',
+                            style: ui(context, size: 12.5, color: s.fg3),
+                          ),
+                      ],
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            AnimatedOpacity(
+              opacity: hovered || kTouch ? 1 : 0,
+              duration: Motion.of(context, Motion.fast),
+              child: IconBtn(
+                icon: CupertinoIcons.trash,
+                label: 'Discard draft',
+                size: 13,
+                onTap: onDelete,
               ),
             ),
           ],

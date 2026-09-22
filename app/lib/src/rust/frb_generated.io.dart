@@ -84,6 +84,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
 
   @protected
+  List<SavedDraftDto> dco_decode_list_saved_draft_dto(dynamic raw);
+
+  @protected
   List<ThreadDto> dco_decode_list_thread_dto(dynamic raw);
 
   @protected
@@ -97,6 +100,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? dco_decode_opt_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  SavedDraftDto dco_decode_saved_draft_dto(dynamic raw);
 
   @protected
   SyncEventDto dco_decode_sync_event_dto(dynamic raw);
@@ -188,6 +194,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
 
   @protected
+  List<SavedDraftDto> sse_decode_list_saved_draft_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   List<ThreadDto> sse_decode_list_thread_dto(SseDeserializer deserializer);
 
   @protected
@@ -201,6 +212,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int? sse_decode_opt_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  SavedDraftDto sse_decode_saved_draft_dto(SseDeserializer deserializer);
 
   @protected
   SyncEventDto sse_decode_sync_event_dto(SseDeserializer deserializer);
@@ -320,6 +334,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_saved_draft_dto(
+    List<SavedDraftDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_thread_dto(
     List<ThreadDto> self,
     SseSerializer serializer,
@@ -339,6 +359,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_box_autoadd_u_32(int? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_saved_draft_dto(SavedDraftDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_sync_event_dto(SyncEventDto self, SseSerializer serializer);

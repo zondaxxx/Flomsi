@@ -28,6 +28,15 @@ abstract class MailRepository {
   /// SMTP send. Throws with the server's reason.
   Future<void> send(Draft draft);
 
+  /// Keep [draft] on this device: inserted, or updated in place when it has a
+  /// [Draft.localId]. Returns the local id.
+  Future<int> saveDraft(Draft draft);
+
+  /// Drafts kept on this device, most recently edited first.
+  Future<List<Draft>> drafts();
+
+  Future<void> deleteDraft(int localId);
+
   /// Local path of an attachment (fetched from the server when not cached), to hand to
   /// "open with" or a share sheet.
   Future<String> openAttachment(Attachment a);

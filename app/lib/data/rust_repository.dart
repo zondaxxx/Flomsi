@@ -167,6 +167,13 @@ class RustRepository implements MailRepository {
         name: 'starred',
         role: FolderRole.starred,
       ),
+      Folder(
+        id: 7,
+        accountId: 0,
+        name: 'drafts',
+        role: FolderRole.drafts,
+        unread: (await rust.listLocalDrafts()).length,
+      ),
       const Folder(id: 3, accountId: 0, name: 'sent', role: FolderRole.sent),
       const Folder(
         id: 4,
@@ -345,31 +352,56 @@ class RustRepository implements MailRepository {
       _draft(await rust.forwardDraft(threadId: threadId), DraftKind.forward);
 
   @override
-  Future<void> send(Draft d) async {
-    await rust.sendDraft(
-      draft: rust.DraftDto(
-        accountId: d.accountId,
-        from: d.from,
-        to: d.to,
-        cc: d.cc,
-        bcc: d.bcc,
-        subject: d.subject,
-        text: d.text,
-        inReplyTo: d.inReplyTo,
-        references: d.references,
-        attachments: [
-          for (final a in d.attachments)
-            rust.DraftAttachmentDto(
-              name: a.name,
-              mime: a.mime,
-              size: a.size,
-              path: a.path,
-              messageId: a.messageId,
-              idx: a.idx,
-            ),
-        ],
+  Future<int> saveDraft(Draft d) async => (await rust.saveLocalDraft(
+    id: d.localId,
+    kind: d.kind.name,
+    draft: _dto(d),
+  )).toInt();
+
+  @override
+  Future<List<Draft>> drafts() async => [
+    for (final s in await rust.listLocalDrafts())
+      _draft(
+        s.draft,
+        DraftKind.values.asNameMap()[s.kind] ?? DraftKind.fresh,
+      ).copyWith(
+        localId: s.id.toInt(),
+        savedAt: DateTime.fromMillisecondsSinceEpoch(
+          s.updatedAt.toInt() * 1000,
+          isUtc: true,
+        ),
       ),
-    );
+  ];
+
+  @override
+  Future<void> deleteDraft(int localId) => rust.deleteLocalDraft(id: localId);
+
+  static rust.DraftDto _dto(Draft d) => rust.DraftDto(
+    accountId: d.accountId,
+    from: d.from,
+    to: d.to,
+    cc: d.cc,
+    bcc: d.bcc,
+    subject: d.subject,
+    text: d.text,
+    inReplyTo: d.inReplyTo,
+    references: d.references,
+    attachments: [
+      for (final a in d.attachments)
+        rust.DraftAttachmentDto(
+          name: a.name,
+          mime: a.mime,
+          size: a.size,
+          path: a.path,
+          messageId: a.messageId,
+          idx: a.idx,
+        ),
+    ],
+  );
+
+  @override
+  Future<void> send(Draft d) async {
+    await rust.sendDraft(draft: _dto(d));
     _events.add(const ThreadsChanged());
   }
 

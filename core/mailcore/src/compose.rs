@@ -63,6 +63,17 @@ impl DraftAttachment {
     }
 }
 
+/// A draft kept on this device while it is written. `kind` is the UI's hint for how it
+/// started: `fresh`, `reply` or `forward`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedDraft {
+    pub id: i64,
+    pub account_id: i64,
+    pub kind: String,
+    pub draft: Draft,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// An attachment with its bytes loaded, ready to be encoded.
 #[derive(Debug, Clone)]
 pub struct OutgoingFile {

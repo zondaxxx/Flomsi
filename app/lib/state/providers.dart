@@ -40,8 +40,16 @@ final accountsProvider = FutureProvider<List<Account>>((ref) async {
   return ref.watch(repositoryProvider).accounts();
 });
 
+/// Drafts kept on this device. The composer invalidates this after each autosave, which
+/// is cheaper than a repository event that would refetch every list.
+final draftsProvider = FutureProvider<List<Draft>>((ref) async {
+  ref.watch(repoTickProvider);
+  return ref.watch(repositoryProvider).drafts();
+});
+
 final foldersProvider = FutureProvider<List<Folder>>((ref) async {
   ref.watch(repoTickProvider);
+  ref.watch(draftsProvider);
   return ref.watch(repositoryProvider).folders();
 });
 

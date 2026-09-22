@@ -1,5 +1,6 @@
 //! SQLite cache. One database per profile, WAL mode, FTS5 for search.
 
+use crate::compose::{Draft, SavedDraft};
 use crate::error::{Error, Result};
 use crate::model::*;
 use crate::search::Query;
@@ -9,7 +10,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -121,6 +122,18 @@ CREATE TABLE raw_messages (
 );
 "#;
 
+/// v3: drafts kept on this device while they are written (autosave).
+const SCHEMA_V3: &str = r#"
+CREATE TABLE drafts (
+  id INTEGER PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'fresh',
+  draft_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX drafts_updated ON drafts(updated_at DESC);
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -177,6 +190,9 @@ impl Store {
             conn.execute_batch(SCHEMA_V2)?;
         } else if version < 2 {
             conn.execute_batch(&format!("BEGIN;{SCHEMA_V2}{RESET_MESSAGE_CACHE}COMMIT;"))?;
+        }
+        if version < 3 {
+            conn.execute_batch(SCHEMA_V3)?;
         }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -718,6 +734,81 @@ impl Store {
         })
     }
 
+    // ---------------- drafts ----------------
+
+    /// Insert a draft, or update it in place when `id` names one that still exists.
+    pub fn save_draft(
+        &self,
+        id: Option<i64>,
+        account_id: i64,
+        kind: &str,
+        draft: &Draft,
+    ) -> Result<i64> {
+        let json = serde_json::to_string(draft)?;
+        let now = Utc::now().timestamp();
+        self.with(|c| {
+            if let Some(id) = id {
+                let changed = c.execute(
+                    "UPDATE drafts SET account_id=?2, kind=?3, draft_json=?4, updated_at=?5 WHERE id=?1",
+                    params![id, account_id, kind, json, now],
+                )?;
+                if changed > 0 {
+                    return Ok(id);
+                }
+            }
+            c.execute(
+                "INSERT INTO drafts(account_id, kind, draft_json, updated_at) VALUES(?1,?2,?3,?4)",
+                params![account_id, kind, json, now],
+            )?;
+            Ok(c.last_insert_rowid())
+        })
+    }
+
+    fn saved_drafts(&self, sql: &str, args: impl rusqlite::Params) -> Result<Vec<SavedDraft>> {
+        let rows: Vec<(i64, i64, String, String, i64)> = self.with(|c| {
+            let mut st = c.prepare(sql)?;
+            let rows = st.query_map(args, |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        rows.into_iter()
+            .map(|(id, account_id, kind, json, updated)| {
+                Ok(SavedDraft {
+                    id,
+                    account_id,
+                    kind,
+                    draft: serde_json::from_str(&json)?,
+                    updated_at: dt(updated),
+                })
+            })
+            .collect()
+    }
+
+    /// Every saved draft, most recently edited first.
+    pub fn drafts(&self) -> Result<Vec<SavedDraft>> {
+        self.saved_drafts(
+            "SELECT id, account_id, kind, draft_json, updated_at FROM drafts ORDER BY updated_at DESC, id DESC",
+            [],
+        )
+    }
+
+    pub fn draft(&self, id: i64) -> Result<SavedDraft> {
+        self.saved_drafts(
+            "SELECT id, account_id, kind, draft_json, updated_at FROM drafts WHERE id=?1",
+            [id],
+        )?
+        .pop()
+        .ok_or_else(|| Error::NotFound(format!("draft {id}")))
+    }
+
+    pub fn delete_draft(&self, id: i64) -> Result<()> {
+        self.with(|c| {
+            c.execute("DELETE FROM drafts WHERE id=?1", [id])?;
+            Ok(())
+        })
+    }
+
     // ---------------- threads / search ----------------
 
     fn row_thread(r: &Row) -> rusqlite::Result<Thread> {
@@ -1080,5 +1171,54 @@ mod tests {
             .with(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn drafts_are_kept_updated_and_removed() {
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let mut d = Draft::new(Address {
+            name: None,
+            addr: "t@example.com".into(),
+        });
+        d.subject = "Plan".into();
+        let id = s.save_draft(None, a.id, "fresh", &d).unwrap();
+        d.text = "first line".into();
+        assert_eq!(s.save_draft(Some(id), a.id, "fresh", &d).unwrap(), id);
+        let all = s.drafts().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].draft, d);
+        assert_eq!(all[0].kind, "fresh");
+        assert_eq!(s.draft(id).unwrap().draft.text, "first line");
+
+        // A stale id (deleted elsewhere) saves as a new draft instead of failing.
+        let other = s.save_draft(Some(9999), a.id, "reply", &d).unwrap();
+        assert_ne!(other, id);
+        s.delete_draft(id).unwrap();
+        assert_eq!(s.drafts().unwrap().len(), 1);
+        assert!(s.draft(id).is_err());
+
+        // Removing the account removes its drafts.
+        s.delete_account(a.id).unwrap();
+        assert!(s.drafts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn v2_upgrade_adds_drafts_and_keeps_messages() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA_V1).unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        conn.execute_batch(
+            "INSERT INTO accounts(kind,email,imap_host,imap_port,auth_kind,created_at) VALUES('imap','t@x','h',993,'password',0);
+             INSERT INTO folders(account_id,remote_name,role,uidvalidity,uidnext) VALUES(1,'INBOX','inbox',5,10);
+             INSERT INTO threads(account_id,subject) VALUES(1,'s');
+             INSERT INTO messages(account_id,folder_id,uid,thread_id,date) VALUES(1,1,3,1,0);",
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        assert_eq!(s.uids(1).unwrap(), vec![3]);
+        assert_eq!(s.folders(1).unwrap()[0].uidvalidity, Some(5));
+        assert!(s.drafts().unwrap().is_empty());
     }
 }

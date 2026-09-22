@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -396707377;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 2111631060;
 
 // Section: executor
 
@@ -120,6 +120,41 @@ fn wire__crate__api__mail__archive_thread_impl(
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
                     (move || {
                         let output_ok = crate::api::mail::archive_thread(api_thread_id)?;
+                        std::result::Result::Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__mail__delete_local_draft_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "delete_local_draft",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_id = <i64>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::mail::delete_local_draft(api_id)?;
                         std::result::Result::Ok(output_ok)
                     })(),
                 )
@@ -293,6 +328,40 @@ fn wire__crate__api__mail__list_folders_impl(
                 transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
                     (move || {
                         let output_ok = crate::api::mail::list_folders(api_account_id)?;
+                        std::result::Result::Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__mail__list_local_drafts_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "list_local_drafts",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::mail::list_local_drafts()?;
                         std::result::Result::Ok(output_ok)
                     })(),
                 )
@@ -625,6 +694,44 @@ fn wire__crate__api__mail__save_attachment_impl(
                         std::result::Result::Ok(output_ok)
                     })()
                     .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__mail__save_local_draft_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "save_local_draft",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_id = <Option<i64>>::sse_decode(&mut deserializer);
+            let api_kind = <String>::sse_decode(&mut deserializer);
+            let api_draft = <crate::api::mail::DraftDto>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok =
+                            crate::api::mail::save_local_draft(api_id, api_kind, api_draft)?;
+                        std::result::Result::Ok(output_ok)
+                    })(),
                 )
             }
         },
@@ -1233,6 +1340,18 @@ impl SseDecode for Vec<u8> {
     }
 }
 
+impl SseDecode for Vec<crate::api::mail::SavedDraftDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ {
+            ans_.push(<crate::api::mail::SavedDraftDto>::sse_decode(deserializer));
+        }
+        return ans_;
+    }
+}
+
 impl SseDecode for Vec<crate::api::mail::ThreadDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -1309,6 +1428,22 @@ impl SseDecode for Option<u32> {
         } else {
             return None;
         }
+    }
+}
+
+impl SseDecode for crate::api::mail::SavedDraftDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_id = <i64>::sse_decode(deserializer);
+        let mut var_kind = <String>::sse_decode(deserializer);
+        let mut var_updatedAt = <i64>::sse_decode(deserializer);
+        let mut var_draft = <crate::api::mail::DraftDto>::sse_decode(deserializer);
+        return crate::api::mail::SavedDraftDto {
+            id: var_id,
+            kind: var_kind,
+            updated_at: var_updatedAt,
+            draft: var_draft,
+        };
     }
 }
 
@@ -1420,30 +1555,33 @@ fn pde_ffi_dispatcher_primary_impl(
     match func_id {
         1 => wire__crate__api__mail__add_imap_account_impl(port, ptr, rust_vec_len, data_len),
         2 => wire__crate__api__mail__archive_thread_impl(port, ptr, rust_vec_len, data_len),
-        3 => wire__crate__api__mail__describe_file_impl(port, ptr, rust_vec_len, data_len),
-        4 => wire__crate__api__mail__forward_draft_impl(port, ptr, rust_vec_len, data_len),
-        5 => wire__crate__api__mail__init_app_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__mail__list_accounts_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__mail__list_folders_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__mail__list_threads_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__mail__mark_read_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__mail__message_html_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__mail__new_draft_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__mail__open_attachment_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__mail__open_core_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__mail__remove_account_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__mail__reply_draft_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__mail__save_attachment_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__mail__send_draft_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__mail__star_thread_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__mail__sync_account_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__mail__sync_all_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__mail__sync_events_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__mail__test_imap_login_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__mail__thread_messages_impl(port, ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__mail__trash_thread_impl(port, ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__mail__unread_count_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__mail__wait_for_change_impl(port, ptr, rust_vec_len, data_len),
+        3 => wire__crate__api__mail__delete_local_draft_impl(port, ptr, rust_vec_len, data_len),
+        4 => wire__crate__api__mail__describe_file_impl(port, ptr, rust_vec_len, data_len),
+        5 => wire__crate__api__mail__forward_draft_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__mail__init_app_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__mail__list_accounts_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__mail__list_folders_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__mail__list_local_drafts_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__mail__list_threads_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__mail__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__mail__message_html_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__mail__new_draft_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__mail__open_attachment_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__mail__open_core_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__mail__remove_account_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__mail__reply_draft_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__mail__save_attachment_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__mail__save_local_draft_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__mail__send_draft_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__mail__star_thread_impl(port, ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__mail__sync_account_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__mail__sync_all_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__mail__sync_events_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__mail__test_imap_login_impl(port, ptr, rust_vec_len, data_len),
+        26 => wire__crate__api__mail__thread_messages_impl(port, ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__mail__trash_thread_impl(port, ptr, rust_vec_len, data_len),
+        28 => wire__crate__api__mail__unread_count_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__mail__wait_for_change_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -1602,6 +1740,29 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::mail::MessageDto>
     for crate::api::mail::MessageDto
 {
     fn into_into_dart(self) -> crate::api::mail::MessageDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::mail::SavedDraftDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.id.into_into_dart().into_dart(),
+            self.kind.into_into_dart().into_dart(),
+            self.updated_at.into_into_dart().into_dart(),
+            self.draft.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::mail::SavedDraftDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::mail::SavedDraftDto>
+    for crate::api::mail::SavedDraftDto
+{
+    fn into_into_dart(self) -> crate::api::mail::SavedDraftDto {
         self
     }
 }
@@ -1847,6 +2008,16 @@ impl SseEncode for Vec<u8> {
     }
 }
 
+impl SseEncode for Vec<crate::api::mail::SavedDraftDto> {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i32>::sse_encode(self.len() as _, serializer);
+        for item in self {
+            <crate::api::mail::SavedDraftDto>::sse_encode(item, serializer);
+        }
+    }
+}
+
 impl SseEncode for Vec<crate::api::mail::ThreadDto> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -1903,6 +2074,16 @@ impl SseEncode for Option<u32> {
         if let Some(value) = self {
             <u32>::sse_encode(value, serializer);
         }
+    }
+}
+
+impl SseEncode for crate::api::mail::SavedDraftDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <i64>::sse_encode(self.id, serializer);
+        <String>::sse_encode(self.kind, serializer);
+        <i64>::sse_encode(self.updated_at, serializer);
+        <crate::api::mail::DraftDto>::sse_encode(self.draft, serializer);
     }
 }
 

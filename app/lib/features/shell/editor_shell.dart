@@ -181,34 +181,42 @@ class _TopBar extends ConsumerWidget {
     final sync = ref.watch(syncStatusProvider);
     final mac = Platform.isMacOS;
 
+    // Long titles (an account address, a search) ellipsize; the count stays whole.
+    final titleArea = Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.baseline,
+      textBaseline: TextBaseline.alphabetic,
+      children: [
+        Flexible(
+          child: Text(
+            titleForQuery(query),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: ui(context, weight: FontWeight.w500),
+          ),
+        ),
+        const SizedBox(width: 8),
+        AnimatedSwitcher(
+          duration: Motion.of(context, Motion.fast),
+          child: Text(
+            '$total · $unread new',
+            key: ValueKey('$total-$unread'),
+            style: mono(context, size: 11),
+          ),
+        ),
+      ],
+    );
+
     return Container(
       height: 40,
       color: s.bg2,
       padding: EdgeInsets.only(left: mac && !compact ? 80 : 12, right: 12),
       child: Row(
         children: [
-          SizedBox(
-            width: compact ? null : 150,
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.baseline,
-              textBaseline: TextBaseline.alphabetic,
-              children: [
-                Text(
-                  titleForQuery(query),
-                  style: ui(context, weight: FontWeight.w500),
-                ),
-                const SizedBox(width: 8),
-                AnimatedSwitcher(
-                  duration: Motion.of(context, Motion.fast),
-                  child: Text(
-                    '$total · $unread new',
-                    key: ValueKey('$total-$unread'),
-                    style: mono(context, size: 11),
-                  ),
-                ),
-              ],
-            ),
-          ),
+          if (compact)
+            Expanded(child: titleArea)
+          else
+            SizedBox(width: 150, child: titleArea),
           if (!compact) ...[
             const Spacer(),
             SizedBox(
@@ -226,8 +234,7 @@ class _TopBar extends ConsumerWidget {
               ),
             ),
             const Spacer(),
-          ] else
-            const Spacer(),
+          ],
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -557,7 +564,7 @@ class _StatusBar extends ConsumerWidget {
                       : Text(
                           switch (scope) {
                             'search' => 'esc back · ↵ search',
-                            'compose' => '⌘↵ send · ⌘⇧A attach · esc discard',
+                            'compose' => '⌘↵ send · ⌘⇧A attach · esc close',
                             'thread' => 'r reply · e archive · esc back',
                             'dialog' => 'esc cancel · ↵ confirm',
                             _ => 'j/k move · e archive · r reply · / search · ⌘K commands',

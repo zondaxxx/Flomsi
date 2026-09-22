@@ -255,12 +255,12 @@ class MockRepository implements MailRepository {
       role: FolderRole.starred,
       unread: _threads.where((t) => t.starred).length,
     ),
-    const Folder(
+    Folder(
       id: 3,
       accountId: 0,
       name: 'drafts',
       role: FolderRole.drafts,
-      unread: 2,
+      unread: _drafts.length,
     ),
     const Folder(id: 4, accountId: 0, name: 'sent', role: FolderRole.sent),
     const Folder(
@@ -451,6 +451,37 @@ class MockRepository implements MailRepository {
     }
     return candidate;
   }
+
+  /// Drafts kept "on this device" for design work; one is there from the start.
+  final List<Draft> _drafts = [
+    Draft(
+      accountId: 1,
+      from: 'dev@gmail.com',
+      to: const ['anna@studio.dev'],
+      subject: 'Sidebar contrast numbers',
+      text: 'Measured the light mesh again: 3.9:1 on the selected row, 4.6:1 once the tint goes to 12%.',
+      localId: 1,
+      savedAt: DateTime.now().subtract(const Duration(minutes: 42)),
+    ),
+  ];
+  int _draftSeq = 1;
+
+  @override
+  Future<int> saveDraft(Draft draft) async {
+    final i = _drafts.indexWhere((d) => d.localId == draft.localId);
+    final id = i >= 0 ? draft.localId! : ++_draftSeq + 100;
+    final saved = draft.copyWith(localId: id, savedAt: DateTime.now());
+    if (i >= 0) _drafts.removeAt(i);
+    _drafts.insert(0, saved);
+    return id;
+  }
+
+  @override
+  Future<List<Draft>> drafts() async => List.unmodifiable(_drafts);
+
+  @override
+  Future<void> deleteDraft(int localId) async =>
+      _drafts.removeWhere((d) => d.localId == localId);
 
   @override
   Future<String> openAttachment(Attachment a) async {

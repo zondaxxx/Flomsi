@@ -206,6 +206,8 @@ class Draft {
     this.references = const [],
     this.kind = DraftKind.fresh,
     this.attachments = const [],
+    this.localId,
+    this.savedAt,
   });
   final int accountId;
   final String from;
@@ -219,6 +221,10 @@ class Draft {
   final DraftKind kind;
   final List<DraftAttachment> attachments;
 
+  /// Id of the copy kept on this device, once autosave has stored it.
+  final int? localId;
+  final DateTime? savedAt;
+
   Draft copyWith({
     List<String>? to,
     List<String>? cc,
@@ -227,6 +233,8 @@ class Draft {
     String? text,
     DraftKind? kind,
     List<DraftAttachment>? attachments,
+    int? localId,
+    DateTime? savedAt,
   }) => Draft(
     accountId: accountId,
     from: from,
@@ -239,6 +247,8 @@ class Draft {
     references: references,
     kind: kind ?? this.kind,
     attachments: attachments ?? this.attachments,
+    localId: localId ?? this.localId,
+    savedAt: savedAt ?? this.savedAt,
   );
 }
 

@@ -1,11 +1,14 @@
+import 'dart:async';
+
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
+import '../../data/repository.dart';
 import '../../platform.dart';
 import '../attachments/attachment_chip.dart';
 import '../../state/providers.dart';
@@ -37,6 +40,16 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
   bool _dragging = false;
   String? _error;
 
+  // Autosave: every pause in typing stores the draft on this device.
+  late final MailRepository _repo; // read in initState: dispose may not use ref
+  late int? _localId = widget.draft.localId;
+  late final String _initial = _fingerprint(_current);
+  String? _lastSaved;
+  DateTime? _savedAt;
+  Timer? _saveTimer;
+  Future<void> _saving = Future.value();
+  bool _done = false;
+
   /// Most servers (Gmail, Outlook, iCloud) refuse messages over 25 MB after base64.
   static const _serverLimit = 25 * 1024 * 1024;
   int get _encodedSize =>
@@ -45,7 +58,12 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
   @override
   void initState() {
     super.initState();
+    _repo = ref.read(repositoryProvider);
     _showCc = widget.draft.cc.isNotEmpty;
+    _lastSaved = _initial;
+    for (final c in [_to, _cc, _subject, _body]) {
+      c.addListener(_scheduleSave);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       ref.read(scopeProvider.notifier).set('compose');
@@ -60,6 +78,11 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
 
   @override
   void dispose() {
+    _saveTimer?.cancel();
+    // Closed some other way (another draft opened, window closing): keep what was typed.
+    if (!_done && _fingerprint(_current) != _lastSaved && !_untouched) {
+      _repo.saveDraft(_current.copyWith(localId: _localId));
+    }
     _to.dispose();
     _cc.dispose();
     _subject.dispose();
@@ -76,6 +99,48 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     text: _body.text,
     attachments: _files,
   );
+
+  static String _fingerprint(Draft d) => [
+    d.to.join(','),
+    d.cc.join(','),
+    d.subject,
+    d.text,
+    for (final a in d.attachments)
+      '${a.name}|${a.path}|${a.messageId}|${a.idx}',
+  ].join('\u0000');
+
+  /// Still exactly what the composer opened with (a fresh reply nobody typed into).
+  bool get _untouched => _fingerprint(_current) == _initial;
+
+  void _scheduleSave() {
+    if (_done) return;
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 700), _saveNow);
+  }
+
+  /// Store the draft unless it is unchanged since the last save, or an untouched
+  /// template that was never stored. Saves run one after another.
+  Future<void> _saveNow() {
+    _saveTimer?.cancel();
+    if (_done) return _saving;
+    final d = _current;
+    final fp = _fingerprint(d);
+    if (fp == _lastSaved || (fp == _initial && _localId == null)) {
+      return _saving;
+    }
+    _lastSaved = fp;
+    return _saving = _saving.then((_) async {
+      try {
+        _localId = await _repo.saveDraft(d.copyWith(localId: _localId));
+        if (!mounted) return;
+        setState(() => _savedAt = DateTime.now());
+        ref.invalidate(draftsProvider);
+      } catch (e) {
+        _lastSaved = null; // try again on the next change
+        if (mounted) setState(() => _error = 'Draft not saved: ${_reason(e)}');
+      }
+    });
+  }
 
   Future<void> _attach() async {
     if (_picking) return;
@@ -112,6 +177,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       _files = [..._files, ...added];
       _error = failed;
     });
+    _scheduleSave();
   }
 
   void _dropped(DropDoneDetails d) {
@@ -133,9 +199,43 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       .where((e) => e.isNotEmpty)
       .toList();
 
-  void _close() {
+  void _leave() {
+    _done = true;
+    _saveTimer?.cancel();
+    ref.invalidate(draftsProvider);
     ref.read(scopeProvider.notifier).set('list');
     ref.read(composeProvider.notifier).close();
+  }
+
+  /// Esc and ×: close and keep the draft (unless nothing was typed).
+  Future<void> _close() async {
+    if (_done) return;
+    if (_untouched) {
+      await _saving;
+      // A draft created in this session and then typed back to the template is noise.
+      if (widget.draft.localId == null && _localId != null) {
+        await _repo.deleteDraft(_localId!);
+      }
+    } else {
+      await _saveNow();
+      if (_lastSaved == null) return; // save failed: the error stays visible
+      ref.read(noticeProvider.notifier).show('Draft saved');
+    }
+    if (mounted) _leave();
+  }
+
+  /// The Discard button: close and delete the stored draft.
+  Future<void> _discard() async {
+    if (_done) return;
+    _done = true;
+    _saveTimer?.cancel();
+    await _saving;
+    if (_localId != null) await _repo.deleteDraft(_localId!);
+    if (!mounted) return;
+    if (_localId != null) {
+      ref.read(noticeProvider.notifier).show('Draft discarded');
+    }
+    _leave();
   }
 
   Future<void> send() async {
@@ -149,10 +249,15 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       _sending = true;
       _error = null;
     });
+    _saveTimer?.cancel();
     try {
-      await ref.read(repositoryProvider).send(d);
+      await _repo.send(d);
+      _done = true;
+      await _saving;
+      if (_localId != null) await _repo.deleteDraft(_localId!);
+      if (!mounted) return;
       ref.read(noticeProvider.notifier).show('Sent to ${d.to.first}');
-      _close();
+      _leave();
     } catch (e) {
       setState(() {
         _sending = false;
@@ -216,9 +321,22 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
                     style: mono(context, size: 11, color: s.fg3),
                   ),
                 ),
+                AnimatedSwitcher(
+                  duration: Motion.of(context, Motion.base),
+                  child: _savedAt == null
+                      ? const SizedBox.shrink()
+                      : Padding(
+                          key: ValueKey(_savedAt),
+                          padding: const EdgeInsets.only(right: 8),
+                          child: Text(
+                            'saved ${formatWhen(_savedAt!)}',
+                            style: mono(context, size: 11, color: s.fg3),
+                          ),
+                        ),
+                ),
                 IconBtn(
                   icon: CupertinoIcons.xmark,
-                  label: 'Discard  esc',
+                  label: kTouch ? 'Close' : 'Close, keep draft  esc',
                   onTap: _close,
                 ),
               ],
@@ -327,12 +445,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
                   )
                 else
                   const Spacer(),
-                SmallButton(
-                  label: 'Discard',
-                  hint: kTouch ? null : 'esc',
-                  height: 30,
-                  onPressed: _close,
-                ),
+                SmallButton(label: 'Discard', height: 30, onPressed: _discard),
                 const SizedBox(width: 8),
                 SmallButton(
                   label: _sending ? 'Sending…' : 'Send',

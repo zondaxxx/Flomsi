@@ -121,6 +121,24 @@ Future<DraftDto> forwardDraft({required PlatformInt64 threadId}) =>
 Future<DraftDto> newDraft({PlatformInt64? accountId}) =>
     RustLib.instance.api.crateApiMailNewDraft(accountId: accountId);
 
+/// Save a draft (insert, or update `id` in place); returns its id.
+Future<PlatformInt64> saveLocalDraft({
+  PlatformInt64? id,
+  required String kind,
+  required DraftDto draft,
+}) => RustLib.instance.api.crateApiMailSaveLocalDraft(
+  id: id,
+  kind: kind,
+  draft: draft,
+);
+
+/// Every saved draft, most recently edited first.
+Future<List<SavedDraftDto>> listLocalDrafts() =>
+    RustLib.instance.api.crateApiMailListLocalDrafts();
+
+Future<void> deleteLocalDraft({required PlatformInt64 id}) =>
+    RustLib.instance.api.crateApiMailDeleteLocalDraft(id: id);
+
 /// SMTP send; copies to Sent where the server does not; flags the original as answered.
 Future<void> sendDraft({required DraftDto draft}) =>
     RustLib.instance.api.crateApiMailSendDraft(draft: draft);
@@ -418,6 +436,35 @@ class MessageDto {
           hasAttachment == other.hasAttachment &&
           unread == other.unread &&
           attachments == other.attachments;
+}
+
+/// A draft kept on this device. `kind` is fresh, reply or forward.
+class SavedDraftDto {
+  final PlatformInt64 id;
+  final String kind;
+  final PlatformInt64 updatedAt;
+  final DraftDto draft;
+
+  const SavedDraftDto({
+    required this.id,
+    required this.kind,
+    required this.updatedAt,
+    required this.draft,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^ kind.hashCode ^ updatedAt.hashCode ^ draft.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SavedDraftDto &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          kind == other.kind &&
+          updatedAt == other.updatedAt &&
+          draft == other.draft;
 }
 
 /// Flat event record: `kind` is one of started, folder, finished, error.

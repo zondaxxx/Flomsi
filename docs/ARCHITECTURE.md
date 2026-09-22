@@ -101,8 +101,12 @@ Enum с данными в DTO не используем: кодогенерат�
    (INBOX и All Mail у Gmail) делят один сырой экземпляр через Message-ID. «Открыть» пишет файл в `<data>/files/<id>-<idx>/`
    и отдаёт системе (десктоп) или в share sheet (телефоны); «Сохранить» кладёт в Downloads под свободным именем.
    Пересылка берёт настоящие вложения оригинала ссылками `(message_id, idx)`, байты читаются только при отправке.
+7. **Черновики.** Композер сохраняет черновик на устройстве (таблица `drafts`, JSON `compose::Draft`) через 0,7 с после паузы
+   в наборе. Esc и × закрывают с сохранением, «Discard» удаляет, успешная отправка удаляет. Нетронутый шаблон (открыли ответ
+   и закрыли) не сохраняется. Папка Drafts в сайдбаре показывает эти черновики; синхронизация с серверной папкой Drafts
+   через IMAP APPEND пока не сделана, черновики живут только на этом устройстве.
 
-## Схема базы (v2)
+## Схема базы (v3)
 
 ```
 accounts(id, kind, email, display_name, imap_host, imap_port, smtp_host, smtp_port, auth_kind, created_at)
@@ -112,6 +116,7 @@ messages(id, account_id, folder_id, uid, message_id, thread_id, subject, from_na
 bodies(message_id, text, html)
 attachments(message_id, idx, name, mime, size, content_id, inline)   -- v2
 raw_messages(message_id, data)                                        -- v2, zlib RFC 822
+drafts(id, account_id, kind, draft_json, updated_at)                  -- v3
 threads(id, account_id, subject, subject_norm, last_date, msg_count, unread_count, snippet, has_attachment, starred, participants)
 labels(id, account_id, name, color) ; message_labels(message_id, label_id)
 messages_fts(subject, from_text, to_text, body)   -- FTS5
@@ -120,7 +125,7 @@ outbox(id, account_id, op_json, created_at, attempts, last_error, done)
 
 Миграции по `PRAGMA user_version`. Переход v1 → v2 сбрасывает кэш писем (аккаунты, ярлыки и outbox остаются, у папок
 обнуляется UIDVALIDITY): старые строки не знают своих вложений, а сервер остаётся источником правды, так что следующий синк
-заново качает окно из 200 последних писем на папку.
+заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`.
 
 ## Раскладка UI
 

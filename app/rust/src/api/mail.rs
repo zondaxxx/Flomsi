@@ -184,6 +184,14 @@ fn dto_to_draft(d: &DraftDto) -> Result<Draft> {
     })
 }
 
+/// A draft kept on this device. `kind` is fresh, reply or forward.
+pub struct SavedDraftDto {
+    pub id: i64,
+    pub kind: String,
+    pub updated_at: i64,
+    pub draft: DraftDto,
+}
+
 /// Flat event record: `kind` is one of started, folder, finished, error.
 pub struct SyncEventDto {
     pub kind: String,
@@ -382,6 +390,33 @@ pub fn new_draft(account_id: Option<i64>) -> Result<DraftDto> {
         addr: account.email.clone(),
     };
     Ok(draft_to_dto(account.id, Draft::new(from)))
+}
+
+// ---------- drafts kept on this device ----------
+
+/// Save a draft (insert, or update `id` in place); returns its id.
+pub fn save_local_draft(id: Option<i64>, kind: String, draft: DraftDto) -> Result<i64> {
+    let d = dto_to_draft(&draft)?;
+    Ok(core()?.store().save_draft(id, draft.account_id, &kind, &d)?)
+}
+
+/// Every saved draft, most recently edited first.
+pub fn list_local_drafts() -> Result<Vec<SavedDraftDto>> {
+    Ok(core()?
+        .store()
+        .drafts()?
+        .into_iter()
+        .map(|s| SavedDraftDto {
+            id: s.id,
+            kind: s.kind,
+            updated_at: s.updated_at.timestamp(),
+            draft: draft_to_dto(s.account_id, s.draft),
+        })
+        .collect())
+}
+
+pub fn delete_local_draft(id: i64) -> Result<()> {
+    Ok(core()?.store().delete_draft(id)?)
 }
 
 /// SMTP send; copies to Sent where the server does not; flags the original as answered.
