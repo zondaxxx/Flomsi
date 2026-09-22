@@ -88,6 +88,7 @@ class _EditorShellState extends ConsumerState<EditorShell> {
       onOpen: () => _openOnPhone(context),
     );
     final paletteOpen = ref.watch(paletteOpenProvider);
+    final picker = ref.watch(pickerProvider);
     final draft = ref.watch(composeProvider);
     final touch = Platform.isIOS || Platform.isAndroid;
     return KeyScope(
@@ -153,6 +154,15 @@ class _EditorShellState extends ConsumerState<EditorShell> {
               if (paletteOpen)
                 Positioned.fill(
                   child: CommandPalette(commands: actions.commands()),
+                ),
+              if (picker != null && !paletteOpen)
+                Positioned.fill(
+                  child: CommandPalette(
+                    key: ObjectKey(picker),
+                    commands: picker.items,
+                    hint: picker.hint,
+                    onClose: ref.read(pickerProvider.notifier).close,
+                  ),
                 ),
             ],
           ),

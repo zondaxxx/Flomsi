@@ -24,10 +24,38 @@ class Command {
   final VoidCallback run;
 }
 
-/// ⌘K: Zed-style popover at the top, grouped, arrow keys + return.
+/// A one-off choice shown in the palette's popover ("Move to…", "Snooze until…").
+class Picker {
+  const Picker({required this.hint, required this.items});
+  final String hint;
+  final List<Command> items;
+}
+
+final pickerProvider = NotifierProvider<PickerController, Picker?>(
+  PickerController.new,
+);
+
+class PickerController extends Notifier<Picker?> {
+  @override
+  Picker? build() => null;
+  void open(Picker p) => state = p;
+  void close() => state = null;
+}
+
+/// ⌘K: Zed-style popover at the top, grouped, arrow keys + return. The same popover shows
+/// pickers, with their own placeholder and close action.
 class CommandPalette extends ConsumerStatefulWidget {
-  const CommandPalette({super.key, required this.commands});
+  const CommandPalette({
+    super.key,
+    required this.commands,
+    this.hint = 'Search mail or run a command',
+    this.onClose,
+  });
   final List<Command> commands;
+  final String hint;
+
+  /// Defaults to closing the command palette.
+  final VoidCallback? onClose;
 
   @override
   ConsumerState<CommandPalette> createState() => _CommandPaletteState();
@@ -63,7 +91,8 @@ class _CommandPaletteState extends ConsumerState<CommandPalette> {
         .toList();
   }
 
-  void _close() => ref.read(paletteOpenProvider.notifier).close();
+  void _close() =>
+      (widget.onClose ?? ref.read(paletteOpenProvider.notifier).close)();
 
   void _run(Command c) {
     _close();
@@ -172,7 +201,7 @@ class _CommandPaletteState extends ConsumerState<CommandPalette> {
                                 decoration: InputDecoration(
                                   isDense: true,
                                   border: InputBorder.none,
-                                  hintText: 'Search mail or run a command',
+                                  hintText: widget.hint,
                                   hintStyle: ui(
                                     context,
                                     size: 14,

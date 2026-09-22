@@ -264,6 +264,8 @@ pub struct Thread {
     pub snippet: String,
     pub has_attachment: bool,
     pub starred: bool,
+    /// When a snooze ends (future: hidden from the inbox) or ended (past: it woke up).
+    pub snoozed_until: Option<DateTime<Utc>>,
 }
 
 /// A user action, applied locally first and replayed to the provider from the outbox.

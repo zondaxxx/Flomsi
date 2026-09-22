@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`
+// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`, `thread_dto`
 
 /// Open (or create) the profile database under `data_dir`. Idempotent.
 Future<void> openCore({required String dataDir}) =>
@@ -53,6 +53,10 @@ Future<List<ThreadDto>> listThreads({
   required String query,
   required int limit,
 }) => RustLib.instance.api.crateApiMailListThreads(query: query, limit: limit);
+
+/// One thread by id, wherever it lives (snoozed, archived, any folder); None when gone.
+Future<ThreadDto?> getThread({required PlatformInt64 threadId}) =>
+    RustLib.instance.api.crateApiMailGetThread(threadId: threadId);
 
 Future<List<MessageDto>> threadMessages({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailThreadMessages(threadId: threadId);
@@ -105,6 +109,34 @@ Future<void> markRead({required PlatformInt64 threadId, required bool read}) =>
 
 Future<void> starThread({required PlatformInt64 threadId, required bool on_}) =>
     RustLib.instance.api.crateApiMailStarThread(threadId: threadId, on_: on_);
+
+/// "Move to…" any folder of the thread's account; returns how many messages moved.
+Future<int> moveThread({
+  required PlatformInt64 threadId,
+  required PlatformInt64 folderId,
+}) => RustLib.instance.api.crateApiMailMoveThread(
+  threadId: threadId,
+  folderId: folderId,
+);
+
+/// Hide the thread from the inbox until `until` (Unix seconds).
+Future<void> snoozeThread({
+  required PlatformInt64 threadId,
+  required PlatformInt64 until,
+}) => RustLib.instance.api.crateApiMailSnoozeThread(
+  threadId: threadId,
+  until: until,
+);
+
+Future<void> unsnoozeThread({required PlatformInt64 threadId}) =>
+    RustLib.instance.api.crateApiMailUnsnoozeThread(threadId: threadId);
+
+/// Wake threads whose snooze ended; returns how many woke.
+Future<int> wakeSnoozed() => RustLib.instance.api.crateApiMailWakeSnoozed();
+
+/// When the next snooze ends (Unix seconds), to schedule a wake-up.
+Future<PlatformInt64?> nextSnoozeWake() =>
+    RustLib.instance.api.crateApiMailNextSnoozeWake();
 
 Future<DraftDto> replyDraft({
   required PlatformInt64 threadId,
@@ -578,6 +610,9 @@ class ThreadDto {
   final bool hasAttachment;
   final bool starred;
 
+  /// Unix seconds: when a snooze ends (future) or ended (past).
+  final PlatformInt64? snoozedUntil;
+
   const ThreadDto({
     required this.id,
     required this.accountId,
@@ -589,6 +624,7 @@ class ThreadDto {
     required this.snippet,
     required this.hasAttachment,
     required this.starred,
+    this.snoozedUntil,
   });
 
   @override
@@ -602,7 +638,8 @@ class ThreadDto {
       unreadCount.hashCode ^
       snippet.hashCode ^
       hasAttachment.hashCode ^
-      starred.hashCode;
+      starred.hashCode ^
+      snoozedUntil.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -618,5 +655,6 @@ class ThreadDto {
           unreadCount == other.unreadCount &&
           snippet == other.snippet &&
           hasAttachment == other.hasAttachment &&
-          starred == other.starred;
+          starred == other.starred &&
+          snoozedUntil == other.snoozedUntil;
 }

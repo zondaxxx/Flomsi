@@ -17,6 +17,8 @@ pub struct Query {
     pub folder: Option<FolderRole>,
     pub label: Option<String>,
     pub account: Option<String>,
+    /// `in:snoozed`: threads whose snooze has not ended yet.
+    pub snoozed: bool,
 }
 
 impl Query {
@@ -39,6 +41,7 @@ impl Query {
                 Some(("is", "starred")) | Some(("is", "flagged")) => q.starred = true,
                 Some(("before", v)) => q.before = parse_date(v),
                 Some(("after", v)) => q.after = parse_date(v),
+                Some(("in", "snoozed")) => q.snoozed = true,
                 Some(("in", v)) => q.folder = FolderRole::parse(v),
                 Some(("label", v)) => q.label = Some(v.to_string()),
                 Some(("account", v)) => q.account = Some(v.to_string()),

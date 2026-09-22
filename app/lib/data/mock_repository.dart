@@ -316,7 +316,29 @@ class MockRepository implements MailRepository {
   @override
   Future<List<Thread>> threads(String query, {int limit = 100}) async {
     final q = query.trim().toLowerCase();
-    Iterable<Thread> out = _threads;
+    final now = DateTime.now();
+    final snoozedView = q.split(RegExp(r'\s+')).contains('in:snoozed');
+    Iterable<Thread> out = _threads.map(
+      (t) => _snoozes.containsKey(t.id)
+          ? Thread(
+              id: t.id,
+              accountId: t.accountId,
+              subject: t.subject,
+              participants: t.participants,
+              lastDate: t.lastDate,
+              msgCount: t.msgCount,
+              unreadCount: t.unreadCount,
+              snippet: t.snippet,
+              hasAttachment: t.hasAttachment,
+              starred: t.starred,
+              labels: t.labels,
+              snoozedUntil: _snoozes[t.id],
+            )
+          : t,
+    );
+    out = snoozedView
+        ? out.where((t) => t.snoozedUntil?.isAfter(now) ?? false)
+        : out.where((t) => !(t.snoozedUntil?.isAfter(now) ?? false));
     for (final tok in q.split(RegExp(r'\s+')).where((t) => t.isNotEmpty)) {
       if (tok == 'is:unread') {
         out = out.where((t) => t.unread);
@@ -348,8 +370,24 @@ class MockRepository implements MailRepository {
   }
 
   @override
-  Future<Thread?> thread(int id) async =>
-      _threads.where((t) => t.id == id).firstOrNull;
+  Future<Thread?> thread(int id) async {
+    final t = _threads.where((t) => t.id == id).firstOrNull;
+    if (t == null || !_snoozes.containsKey(id)) return t;
+    return Thread(
+      id: t.id,
+      accountId: t.accountId,
+      subject: t.subject,
+      participants: t.participants,
+      lastDate: t.lastDate,
+      msgCount: t.msgCount,
+      unreadCount: t.unreadCount,
+      snippet: t.snippet,
+      hasAttachment: t.hasAttachment,
+      starred: t.starred,
+      labels: t.labels,
+      snoozedUntil: _snoozes[id],
+    );
+  }
 
   @override
   Future<List<Message>> messages(int threadId) async {
@@ -397,6 +435,42 @@ class MockRepository implements MailRepository {
 
   @override
   Future<void> trash(int threadId) => archive(threadId);
+
+  final Map<int, DateTime> _snoozes = {};
+
+  @override
+  Future<void> snooze(int threadId, DateTime until) async {
+    _snoozes[threadId] = until;
+    _events.add(const ThreadsChanged());
+  }
+
+  @override
+  Future<void> unsnooze(int threadId) async {
+    _snoozes.remove(threadId);
+    _events.add(const ThreadsChanged());
+  }
+
+  @override
+  Future<List<Folder>> accountFolders(int accountId) async => [
+    for (final (i, (name, role)) in const [
+      ('INBOX', FolderRole.inbox),
+      ('Archive', FolderRole.archive),
+      ('Sent', FolderRole.sent),
+      ('Trash', FolderRole.trash),
+      ('Projects/Flomsi', FolderRole.other),
+      ('Receipts', FolderRole.other),
+      ('Travel', FolderRole.other),
+    ].indexed)
+      Folder(
+        id: accountId * 100 + i,
+        accountId: accountId,
+        name: name,
+        role: role,
+      ),
+  ];
+
+  @override
+  Future<void> moveThread(int threadId, int folderId) => archive(threadId);
 
   @override
   Future<void> markRead(int threadId, bool read) async =>

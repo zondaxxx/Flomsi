@@ -10,7 +10,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -143,6 +143,20 @@ CREATE TABLE settings (
 );
 "#;
 
+/// v5: snoozes, kept on this device. Keyed by the thread's root Message-ID so they survive
+/// a rebuilt cache; `thread_id` is a cached pointer that `rebind_snoozes` refreshes.
+const SCHEMA_V5: &str = r#"
+CREATE TABLE snoozes (
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  thread_key TEXT NOT NULL,
+  thread_id INTEGER NOT NULL,
+  until INTEGER NOT NULL,
+  woke INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(account_id, thread_key)
+);
+CREATE INDEX snoozes_thread ON snoozes(thread_id);
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -205,6 +219,9 @@ impl Store {
         }
         if version < 4 {
             conn.execute_batch(SCHEMA_V4)?;
+        }
+        if version < 5 {
+            conn.execute_batch(SCHEMA_V5)?;
         }
         if version < SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -880,6 +897,12 @@ impl Store {
             snippet: r.get("snippet")?,
             has_attachment: r.get::<_, i64>("has_attachment")? != 0,
             starred: r.get::<_, i64>("starred")? != 0,
+            // Only the list query selects it.
+            snoozed_until: r
+                .get::<_, Option<i64>>("snoozed_until")
+                .ok()
+                .flatten()
+                .map(dt),
         })
     }
 
@@ -888,6 +911,7 @@ impl Store {
         let mut conds: Vec<String> = Vec::new();
         let mut p: Vec<rusqlite::types::Value> = Vec::new();
 
+        let now = Utc::now().timestamp();
         let role = q.folder.unwrap_or(FolderRole::Inbox);
         if role == FolderRole::Starred {
             conds.push("(m.flags & 2) != 0".into());
@@ -941,15 +965,30 @@ impl Store {
                 .push("m.id IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)".into());
             p.push(fts.into());
         }
+        // Snoozed threads leave the inbox until their time; `in:snoozed` lists exactly those.
+        // A thread that woke up sorts by its wake time, so it comes back on top.
+        let snooze_filter = if q.snoozed {
+            "AND EXISTS (SELECT 1 FROM snoozes s WHERE s.thread_id = t.id AND s.until > ?)"
+        } else if role == FolderRole::Inbox && q.folder.is_none() {
+            "AND NOT EXISTS (SELECT 1 FROM snoozes s WHERE s.thread_id = t.id AND s.until > ?)"
+        } else {
+            "AND ? IS NOT NULL"
+        };
+        p.push(now.into());
         let sql = format!(
-            "SELECT t.* FROM threads t WHERE t.id IN (
+            "SELECT t.*, (SELECT s.until FROM snoozes s WHERE s.thread_id = t.id) AS snoozed_until
+             FROM threads t WHERE t.id IN (
                SELECT m.thread_id FROM messages m
                JOIN folders f ON f.id = m.folder_id
                JOIN accounts a ON a.id = m.account_id
                WHERE {}
-             ) ORDER BY t.last_date DESC LIMIT ?",
+             ) {snooze_filter}
+             ORDER BY MAX(t.last_date, COALESCE(
+               (SELECT s.until FROM snoozes s WHERE s.thread_id = t.id AND s.until <= ?), 0
+             )) DESC LIMIT ?",
             conds.join(" AND ")
         );
+        p.push(now.into());
         p.push((limit as i64).into());
         self.with(|c| {
             let mut st = c.prepare(&sql)?;
@@ -958,11 +997,100 @@ impl Store {
         })
     }
 
+    // ---------------- snoozes ----------------
+
+    /// Stable key for a thread: the Message-ID of its first message.
+    fn thread_key(c: &Connection, thread_id: i64) -> Result<(i64, String)> {
+        c.query_row(
+            "SELECT account_id, COALESCE(message_id, 'thread:' || thread_id) FROM messages
+             WHERE thread_id=?1 ORDER BY date ASC, id ASC LIMIT 1",
+            [thread_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("thread {thread_id}")))
+    }
+
+    pub fn snooze(&self, thread_id: i64, until: DateTime<Utc>) -> Result<()> {
+        self.with(|c| {
+            let (account_id, key) = Self::thread_key(c, thread_id)?;
+            c.execute(
+                "INSERT INTO snoozes(account_id, thread_key, thread_id, until, woke) VALUES(?1,?2,?3,?4,0)
+                 ON CONFLICT(account_id, thread_key) DO UPDATE SET thread_id=excluded.thread_id, until=excluded.until, woke=0",
+                params![account_id, key, thread_id, ts(until)],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn unsnooze(&self, thread_id: i64) -> Result<()> {
+        self.with(|c| {
+            c.execute("DELETE FROM snoozes WHERE thread_id=?1", [thread_id])?;
+            Ok(())
+        })
+    }
+
+    /// Snoozes whose time has come and that have not been woken yet: (thread id, until).
+    pub fn due_snoozes(&self, now: DateTime<Utc>) -> Result<Vec<(i64, DateTime<Utc>)>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT thread_id, until FROM snoozes WHERE woke = 0 AND until <= ?1 ORDER BY until",
+            )?;
+            let rows = st.query_map([ts(now)], |r| Ok((r.get(0)?, dt(r.get(1)?))))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Mark woken, and forget snoozes that woke more than a week ago.
+    pub fn mark_woken(&self, thread_id: i64, now: DateTime<Utc>) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE snoozes SET woke = 1 WHERE thread_id=?1",
+                [thread_id],
+            )?;
+            c.execute(
+                "DELETE FROM snoozes WHERE woke = 1 AND until < ?1",
+                [ts(now) - 7 * 86_400],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The next time a snooze ends, for scheduling a wake-up.
+    pub fn next_wake(&self) -> Result<Option<DateTime<Utc>>> {
+        self.with(|c| {
+            Ok(
+                c.query_row("SELECT MIN(until) FROM snoozes WHERE woke = 0", [], |r| {
+                    r.get::<_, Option<i64>>(0)
+                })?
+                .map(dt),
+            )
+        })
+    }
+
+    /// Point snoozes at the current thread ids after a cache rebuild or re-threading.
+    pub fn rebind_snoozes(&self) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE snoozes SET thread_id = COALESCE((SELECT m.thread_id FROM messages m
+                   WHERE m.account_id = snoozes.account_id AND m.message_id = snoozes.thread_key
+                   LIMIT 1), thread_id)",
+                [],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn thread(&self, id: i64) -> Result<Thread> {
         self.with(|c| {
-            c.query_row("SELECT * FROM threads WHERE id=?1", [id], Self::row_thread)
-                .optional()?
-                .ok_or_else(|| Error::NotFound(format!("thread {id}")))
+            c.query_row(
+                "SELECT t.*, (SELECT s.until FROM snoozes s WHERE s.thread_id = t.id) AS snoozed_until
+                 FROM threads t WHERE t.id=?1",
+                [id],
+                Self::row_thread,
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("thread {id}")))
         })
     }
 
@@ -1312,5 +1440,94 @@ mod tests {
         assert_eq!(s.account(1).unwrap().signature, "");
         assert_eq!(s.drafts().unwrap()[0].draft.subject, "kept");
         s.set_setting("theme", "light").unwrap();
+    }
+
+    #[test]
+    fn snoozed_threads_leave_the_inbox_and_come_back_on_top() {
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let inbox = s.upsert_folder(a.id, "INBOX", FolderRole::Inbox).unwrap();
+        let old = s
+            .upsert_message(
+                a.id,
+                inbox.id,
+                1,
+                Flags::SEEN,
+                10,
+                &msg("Old", "old@x.dev", &[], "Anna", "a", 0),
+            )
+            .unwrap();
+        s.upsert_message(
+            a.id,
+            inbox.id,
+            2,
+            Flags::SEEN,
+            10,
+            &msg("New", "new@x.dev", &[], "Bob", "b", 5),
+        )
+        .unwrap();
+        let old_thread = s.message(old).unwrap().thread_id;
+        let subjects = |q: &str| -> Vec<String> {
+            s.threads(&Query::parse(q), 10)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.subject)
+                .collect()
+        };
+        assert_eq!(subjects(""), vec!["New", "Old"]);
+
+        let later = Utc::now() + chrono::Duration::hours(3);
+        s.snooze(old_thread, later).unwrap();
+        assert_eq!(subjects(""), vec!["New"]);
+        assert_eq!(subjects("in:snoozed"), vec!["Old"]);
+        let listed = s.threads(&Query::parse("in:snoozed"), 10).unwrap();
+        assert_eq!(
+            listed[0].snoozed_until.map(|d| d.timestamp()),
+            Some(later.timestamp())
+        );
+        assert_eq!(
+            s.thread(old_thread)
+                .unwrap()
+                .snoozed_until
+                .map(|d| d.timestamp()),
+            Some(later.timestamp())
+        );
+        assert_eq!(
+            s.next_wake().unwrap().map(|d| d.timestamp()),
+            Some(later.timestamp())
+        );
+
+        // Time passes: the thread is back, above newer mail, and waking marks it unread.
+        let past = Utc::now() - chrono::Duration::minutes(1);
+        s.snooze(old_thread, past).unwrap();
+        assert_eq!(subjects(""), vec!["Old", "New"]);
+        assert!(subjects("in:snoozed").is_empty());
+        let actions = crate::sync::Actions { store: &s };
+        assert_eq!(actions.wake_snoozed(Utc::now()).unwrap(), 1);
+        assert!(!s.message(old).unwrap().flags.contains(Flags::SEEN));
+        assert_eq!(s.pending_ops(a.id).unwrap().len(), 1);
+        assert_eq!(actions.wake_snoozed(Utc::now()).unwrap(), 0);
+        assert_eq!(s.next_wake().unwrap(), None);
+    }
+
+    #[test]
+    fn snoozes_follow_the_thread_through_a_cache_rebuild() {
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let inbox = s.upsert_folder(a.id, "INBOX", FolderRole::Inbox).unwrap();
+        let m = msg("Plan", "plan@x.dev", &[], "Anna", "a", 0);
+        let id = s
+            .upsert_message(a.id, inbox.id, 1, Flags::SEEN, 10, &m)
+            .unwrap();
+        let later = Utc::now() + chrono::Duration::days(1);
+        s.snooze(s.message(id).unwrap().thread_id, later).unwrap();
+
+        // UIDVALIDITY reset: rows and threads are rebuilt with new ids.
+        s.reset_folder(inbox.id).unwrap();
+        s.upsert_message(a.id, inbox.id, 100, Flags::SEEN, 10, &m)
+            .unwrap();
+        s.rebind_snoozes().unwrap();
+        assert!(s.threads(&Query::parse(""), 10).unwrap().is_empty());
+        assert_eq!(s.threads(&Query::parse("in:snoozed"), 10).unwrap().len(), 1);
     }
 }

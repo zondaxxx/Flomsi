@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
+import '../thread/snooze.dart';
 import '../../platform.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
@@ -470,10 +471,18 @@ class ThreadRow extends StatelessWidget {
                           child: TagChip(l.name),
                         ),
                       const SizedBox(width: 8),
-                      Text(
-                        formatWhen(t.lastDate),
-                        style: mono(context, size: 11),
-                      ),
+                      if (t.snoozed) ...[
+                        Icon(CupertinoIcons.clock, size: 11, color: s.yellow),
+                        const SizedBox(width: 4),
+                        Text(
+                          snoozeLabel(t.snoozedUntil!, DateTime.now()),
+                          style: mono(context, size: 11, color: s.yellow),
+                        ),
+                      ] else
+                        Text(
+                          formatWhen(t.lastDate),
+                          style: mono(context, size: 11),
+                        ),
                     ],
                   ),
                   const SizedBox(height: 3),

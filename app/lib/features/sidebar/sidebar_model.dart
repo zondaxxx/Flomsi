@@ -55,13 +55,23 @@ List<SidebarEntry> buildSidebar({
   required List<Label> labels,
 }) => [
   const SidebarEntry(label: 'Mailboxes', section: true),
-  for (final f in folders)
+  for (final f in folders) ...[
     SidebarEntry(
       label: labelForRole(f.role),
       query: queryForRole(f.role),
       icon: iconForRole(f.role),
       count: f.unread,
     ),
+    // Snoozed sits right after Starred (after Inbox when there is no Starred).
+    if (f.role == FolderRole.starred ||
+        (f.role == FolderRole.inbox &&
+            !folders.any((x) => x.role == FolderRole.starred)))
+      const SidebarEntry(
+        label: 'Snoozed',
+        query: 'in:snoozed',
+        icon: CupertinoIcons.clock,
+      ),
+  ],
   if (accounts.isNotEmpty) const SidebarEntry(label: 'Accounts', section: true),
   for (final a in accounts)
     SidebarEntry(
@@ -86,6 +96,7 @@ String titleForQuery(String q) {
   final t = q.trim();
   if (t.isEmpty) return 'Inbox';
   if (t == 'is:starred') return 'Starred';
+  if (t == 'in:snoozed') return 'Snoozed';
   if (t == 'is:unread') return 'Unread';
   if (t.startsWith('in:') && !t.contains(' ')) {
     final role = FolderRole.values

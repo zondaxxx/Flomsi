@@ -85,6 +85,7 @@ class Thread {
     this.hasAttachment = false,
     this.starred = false,
     this.labels = const [],
+    this.snoozedUntil,
   });
   final int id;
   final int accountId;
@@ -98,7 +99,12 @@ class Thread {
   final bool starred;
   final List<Label> labels;
 
+  /// When a snooze ends (future: hidden from the inbox) or ended (past).
+  final DateTime? snoozedUntil;
+
   bool get unread => unreadCount > 0;
+  bool get snoozed =>
+      snoozedUntil != null && snoozedUntil!.isAfter(DateTime.now());
   String get sender => participants.isEmpty ? '' : participants.first;
 
   Thread copyWith({int? unreadCount, bool? starred}) => Thread(
@@ -113,6 +119,7 @@ class Thread {
     hasAttachment: hasAttachment,
     starred: starred ?? this.starred,
     labels: labels,
+    snoozedUntil: snoozedUntil,
   );
 }
 

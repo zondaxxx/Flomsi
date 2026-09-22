@@ -62,6 +62,8 @@ pub struct ThreadDto {
     pub snippet: String,
     pub has_attachment: bool,
     pub starred: bool,
+    /// Unix seconds: when a snooze ends (future) or ended (past).
+    pub snoozed_until: Option<i64>,
 }
 
 pub struct MessageDto {
@@ -274,23 +276,33 @@ pub fn list_folders(account_id: i64) -> Result<Vec<FolderDto>> {
 
 // ---------- reading ----------
 
+fn thread_dto(t: mailcore::Thread) -> ThreadDto {
+    ThreadDto {
+        id: t.id,
+        account_id: t.account_id,
+        subject: t.subject,
+        participants: t.participants,
+        last_date: t.last_date.timestamp(),
+        msg_count: t.msg_count,
+        unread_count: t.unread_count,
+        snippet: t.snippet,
+        has_attachment: t.has_attachment,
+        starred: t.starred,
+        snoozed_until: t.snoozed_until.map(|d| d.timestamp()),
+    }
+}
+
 pub fn list_threads(query: String, limit: u32) -> Result<Vec<ThreadDto>> {
-    Ok(core()?
-        .threads(&query, limit)?
-        .into_iter()
-        .map(|t| ThreadDto {
-            id: t.id,
-            account_id: t.account_id,
-            subject: t.subject,
-            participants: t.participants,
-            last_date: t.last_date.timestamp(),
-            msg_count: t.msg_count,
-            unread_count: t.unread_count,
-            snippet: t.snippet,
-            has_attachment: t.has_attachment,
-            starred: t.starred,
-        })
-        .collect())
+    Ok(core()?.threads(&query, limit)?.into_iter().map(thread_dto).collect())
+}
+
+/// One thread by id, wherever it lives (snoozed, archived, any folder); None when gone.
+pub fn get_thread(thread_id: i64) -> Result<Option<ThreadDto>> {
+    match core()?.store().thread(thread_id) {
+        Ok(t) => Ok(Some(thread_dto(t))),
+        Err(mailcore::Error::NotFound(_)) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 pub fn thread_messages(thread_id: i64) -> Result<Vec<MessageDto>> {
@@ -375,6 +387,33 @@ pub fn mark_read(thread_id: i64, read: bool) -> Result<()> {
 
 pub fn star_thread(thread_id: i64, on: bool) -> Result<()> {
     Ok(core()?.actions().star(thread_id, on)?)
+}
+
+/// "Move to…" any folder of the thread's account; returns how many messages moved.
+pub fn move_thread(thread_id: i64, folder_id: i64) -> Result<u32> {
+    Ok(core()?.actions().move_to_folder(thread_id, folder_id)? as u32)
+}
+
+// ---------- snooze (on this device) ----------
+
+/// Hide the thread from the inbox until `until` (Unix seconds).
+pub fn snooze_thread(thread_id: i64, until: i64) -> Result<()> {
+    let until = chrono::DateTime::from_timestamp(until, 0).ok_or_else(|| anyhow!("bad time"))?;
+    Ok(core()?.actions().snooze(thread_id, until)?)
+}
+
+pub fn unsnooze_thread(thread_id: i64) -> Result<()> {
+    Ok(core()?.actions().unsnooze(thread_id)?)
+}
+
+/// Wake threads whose snooze ended; returns how many woke.
+pub fn wake_snoozed() -> Result<u32> {
+    Ok(core()?.actions().wake_snoozed(chrono::Utc::now())? as u32)
+}
+
+/// When the next snooze ends (Unix seconds), to schedule a wake-up.
+pub fn next_snooze_wake() -> Result<Option<i64>> {
+    Ok(core()?.store().next_wake()?.map(|d| d.timestamp()))
 }
 
 // ---------- composing ----------

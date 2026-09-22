@@ -9,6 +9,8 @@ import '../accounts/add_account_sheet.dart';
 import '../list/thread_list.dart';
 import '../palette/command_palette.dart';
 import '../settings/settings_sheet.dart';
+import '../sidebar/sidebar_model.dart';
+import '../thread/snooze.dart';
 
 /// Keyboard actions and palette commands shared by every shell.
 class ShellActions {
@@ -69,6 +71,84 @@ class ShellActions {
     }
   }
 
+  /// "Move to…": a picker over the account's folders (Gmail labels are folders over IMAP).
+  Future<void> moveSelected() => withSelected((id) async {
+    final repo = ref.read(repositoryProvider);
+    final thread = await repo.thread(id);
+    if (thread == null) return;
+    final folders = await repo.accountFolders(thread.accountId);
+    const skip = {FolderRole.sent, FolderRole.drafts, FolderRole.all};
+    ref
+        .read(pickerProvider.notifier)
+        .open(
+          Picker(
+            hint: 'Move to…',
+            items: [
+              for (final f in folders)
+                if (!skip.contains(f.role))
+                  Command(
+                    id: 'move-${f.id}',
+                    title: f.role == FolderRole.other
+                        ? f.name
+                        : labelForRole(f.role),
+                    group: f.role == FolderRole.other ? 'Folders' : 'Mailboxes',
+                    detail: f.role == FolderRole.other ? null : f.name,
+                    run: () async {
+                      await move(1);
+                      await repo.moveThread(id, f.id);
+                      ref
+                          .read(noticeProvider.notifier)
+                          .show(
+                            'Moved to ${f.role == FolderRole.other ? f.name : labelForRole(f.role)}',
+                          );
+                    },
+                  ),
+            ],
+          ),
+        );
+  });
+
+  /// Snooze presets, or bringing a snoozed thread back now.
+  Future<void> snoozeSelected() => withSelected((id) async {
+    final repo = ref.read(repositoryProvider);
+    final thread = await repo.thread(id);
+    final now = DateTime.now();
+    ref
+        .read(pickerProvider.notifier)
+        .open(
+          Picker(
+            hint: 'Snooze until…',
+            items: [
+              if (thread?.snoozed ?? false)
+                Command(
+                  id: 'unsnooze',
+                  title: 'Unsnooze',
+                  group:
+                      'Snoozed until ${snoozeLabel(thread!.snoozedUntil!, now)}',
+                  run: () async {
+                    await repo.unsnooze(id);
+                    ref.read(noticeProvider.notifier).show('Back in the inbox');
+                  },
+                ),
+              for (final (label, at) in snoozeChoices(now))
+                Command(
+                  id: 'snooze-$label',
+                  title: label,
+                  group: 'Snooze',
+                  detail: snoozeLabel(at, now),
+                  run: () async {
+                    await move(1);
+                    await repo.snooze(id, at);
+                    ref
+                        .read(noticeProvider.notifier)
+                        .show('Snoozed until ${snoozeLabel(at, now)}');
+                  },
+                ),
+            ],
+          ),
+        );
+  });
+
   Future<void> archiveSelected() async {
     await withSelected(ref.read(repositoryProvider).archive, advance: true);
     ref.read(noticeProvider.notifier).show('Archived');
@@ -90,6 +170,7 @@ class ShellActions {
       'nav.back': () {
         blurTextInput();
         ref.read(paletteOpenProvider.notifier).close();
+        ref.read(pickerProvider.notifier).close();
         ref.read(composeProvider.notifier).close();
         ref.read(scopeProvider.notifier).set('list');
       },
@@ -102,8 +183,8 @@ class ShellActions {
       'thread.reply': () => openReply(),
       'thread.replyAll': () => openReply(all: true),
       'thread.forward': openForward,
-      'thread.snooze': () {},
-      'thread.label': () {},
+      'thread.snooze': snoozeSelected,
+      'thread.label': moveSelected,
       'search.focus': () => listKey?.currentState?.focusSearch(),
       'palette.open': () => ref.read(paletteOpenProvider.notifier).toggle(),
       'compose.new': openNew,

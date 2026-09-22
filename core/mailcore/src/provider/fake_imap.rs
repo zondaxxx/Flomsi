@@ -649,6 +649,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn move_to_a_custom_folder_reaches_the_server() {
+        let fake = server().await;
+        fake.with(|s| s.add_box("Projects/2026", None));
+        let (store, engine, account) = setup(&fake);
+        let opts = SyncOptions::default();
+        let mut p = connect(&fake, "secret").await.unwrap();
+        engine.sync_account(&account, &mut p, &opts).await.unwrap();
+
+        // The reply lives in Sent and stays there; the INBOX copy moves.
+        let review = store
+            .messages_by_message_id(account.id, "review@studio.dev")
+            .unwrap()[0]
+            .clone();
+        let projects = store
+            .folders(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Projects/2026")
+            .unwrap();
+        let moved = Actions { store: &store }
+            .move_to_folder(review.thread_id, projects.id)
+            .unwrap();
+        assert_eq!(moved, 1);
+        let report = engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        p.logout().await.unwrap();
+        assert_eq!(report.ops_replayed, 1);
+
+        fake.with(|s| {
+            assert_eq!(s.msgs("Projects/2026").len(), 1);
+            assert_eq!(s.msgs("Projects/2026")[0].raw, PLAIN);
+            assert_eq!(s.msgs("Sent").len(), 1);
+            assert!(s.msgs("INBOX").iter().all(|m| m.raw != PLAIN));
+        });
+    }
+
+    #[tokio::test]
     async fn uidvalidity_change_rebuilds_the_folder() {
         let fake = server().await;
         let (store, engine, account) = setup(&fake);

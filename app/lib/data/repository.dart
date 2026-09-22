@@ -14,6 +14,16 @@ abstract class MailRepository {
   Future<String?> messageHtml(int messageId, {bool remoteImages = false});
 
   Future<void> archive(int threadId);
+
+  /// Folders of one account, for "Move to…".
+  Future<List<Folder>> accountFolders(int accountId);
+
+  /// Move the thread to any folder of its account (local first, replayed on sync).
+  Future<void> moveThread(int threadId, int folderId);
+
+  /// Hide the thread from the inbox until [until] (kept on this device).
+  Future<void> snooze(int threadId, DateTime until);
+  Future<void> unsnooze(int threadId);
   Future<void> trash(int threadId);
   Future<void> markRead(int threadId, bool read);
   Future<void> star(int threadId, bool on);

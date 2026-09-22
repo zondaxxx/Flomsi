@@ -78,9 +78,13 @@ class RustRepository implements MailRepository {
   /// Keeps mail fresh without the user asking: a sync on start, an IMAP IDLE loop per account
   /// (the server pushes, we fetch), and a periodic fallback for servers where IDLE misbehaves.
   Future<void> startBackgroundSync() async {
+    await _scheduleWake();
     await sync();
     _periodic?.cancel();
-    _periodic = Timer.periodic(const Duration(minutes: 10), (_) => sync());
+    _periodic = Timer.periodic(const Duration(minutes: 10), (_) {
+      sync();
+      _scheduleWake();
+    });
     await _refreshIdleLoops();
   }
 
@@ -206,7 +210,70 @@ class RustRepository implements MailRepository {
     snippet: t.snippet,
     hasAttachment: t.hasAttachment,
     starred: t.starred,
+    snoozedUntil: t.snoozedUntil == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(
+            t.snoozedUntil!.toInt() * 1000,
+            isUtc: true,
+          ),
   );
+
+  @override
+  Future<List<Folder>> accountFolders(int accountId) async => [
+    for (final f in await rust.listFolders(accountId: accountId))
+      Folder(
+        id: f.id.toInt(),
+        accountId: f.accountId.toInt(),
+        name: f.name,
+        role: FolderRole.values.asNameMap()[f.role] ?? FolderRole.other,
+      ),
+  ];
+
+  @override
+  Future<void> moveThread(int threadId, int folderId) =>
+      _after(rust.moveThread(threadId: threadId, folderId: folderId));
+
+  @override
+  Future<void> snooze(int threadId, DateTime until) async {
+    await rust.snoozeThread(
+      threadId: threadId,
+      until: until.toUtc().millisecondsSinceEpoch ~/ 1000,
+    );
+    _events.add(const ThreadsChanged());
+    _scheduleWake();
+  }
+
+  @override
+  Future<void> unsnooze(int threadId) async {
+    await rust.unsnoozeThread(threadId: threadId);
+    _events.add(const ThreadsChanged());
+    _scheduleWake();
+  }
+
+  Timer? _wakeTimer;
+
+  /// One timer for the next snooze that ends; waking marks threads unread, which then
+  /// goes to the server like any local action.
+  Future<void> _scheduleWake() async {
+    _wakeTimer?.cancel();
+    if (_disposed) return;
+    try {
+      if (await rust.wakeSnoozed() > 0) {
+        _events.add(const ThreadsChanged());
+        _pushSoon();
+      }
+      final next = await rust.nextSnoozeWake();
+      if (next == null) return;
+      final at = DateTime.fromMillisecondsSinceEpoch(next.toInt() * 1000);
+      final wait = at.difference(DateTime.now());
+      _wakeTimer = Timer(
+        wait.isNegative ? Duration.zero : wait + const Duration(seconds: 1),
+        _scheduleWake,
+      );
+    } catch (_) {
+      // The periodic sync retries.
+    }
+  }
 
   @override
   Future<List<Thread>> threads(String query, {int limit = 100}) async =>
@@ -217,15 +284,8 @@ class RustRepository implements MailRepository {
 
   @override
   Future<Thread?> thread(int id) async {
-    // No single-thread call yet: look it up in the current inbox page, then the wider cache.
-    for (final q in const ['', 'in:archive', 'in:sent']) {
-      final hit = (await rust.listThreads(
-        query: q,
-        limit: 500,
-      )).where((t) => t.id.toInt() == id).firstOrNull;
-      if (hit != null) return _thread(hit);
-    }
-    return null;
+    final t = await rust.getThread(threadId: id);
+    return t == null ? null : _thread(t);
   }
 
   @override
@@ -490,6 +550,7 @@ class RustRepository implements MailRepository {
     _disposed = true;
     _pushTimer?.cancel();
     _periodic?.cancel();
+    _wakeTimer?.cancel();
     _sub?.cancel();
     _events.close();
   }

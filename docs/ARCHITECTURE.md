@@ -108,12 +108,18 @@ Enum с данными в DTO не используем: кодогенерат�
 8. **Настройки.** Лист настроек (⌘, · палитра · шестерёнка в сайдбаре · меню «…» на телефоне): имя и подпись аккаунта,
    удаление аккаунта в два клика, пресет клавиш (vim / gmail), тема. Подпись ядро ставит в новое письмо, ответ и пересылку
    под строкой `-- ` над цитатой. Тема и пресет хранятся в `settings` и восстанавливаются при старте.
+10. **Move и Snooze.** `l` / «Move» открывает палитру с папками аккаунта (у Gmail это ярлыки поверх IMAP) и кладёт
+   MOVE в outbox; копии в Sent, Drafts и All Mail не трогаются. `h` / «Snooze» прячет тред из инбокса до выбранного
+   времени (позже сегодня, завтра, выходные, следующая неделя). Отложенное живёт на устройстве в `snoozes` с ключом по
+   Message-ID корня треда, поэтому переживает пересборку кэша; в сайдбаре есть «Snoozed» (`in:snoozed`). В срок тред
+   возвращается в инбокс наверх (сортировка по времени пробуждения) и один раз помечается непрочитанным; архив,
+   удаление и перенос отменяют отложенное. Таймер в `RustRepository` будит к ближайшему сроку.
 9. **Тесты протоколов.** В ядре есть скриптованные IMAP и SMTP серверы поверх TLS (сертификат rcgen в момент теста):
    полный синк, выгрузка outbox (STORE/MOVE), смена UIDVALIDITY, IDLE, APPEND, отправка со STARTTLS и неявным TLS,
    Bcc только в конверте. `connect_trusting` / `send_trusting` добавляют доверенный корень (частный CA, локальный мост);
    обычные вызовы проверяют сертификат по web PKI.
 
-## Схема базы (v4)
+## Схема базы (v5)
 
 ```
 accounts(id, kind, email, display_name, imap_host, imap_port, smtp_host, smtp_port, auth_kind, created_at,
@@ -126,6 +132,7 @@ attachments(message_id, idx, name, mime, size, content_id, inline)   -- v2
 raw_messages(message_id, data)                                        -- v2, zlib RFC 822
 drafts(id, account_id, kind, draft_json, updated_at)                  -- v3
 settings(key, value)                                                  -- v4: theme, keymap
+snoozes(account_id, thread_key, thread_id, until, woke)               -- v5
 threads(id, account_id, subject, subject_norm, last_date, msg_count, unread_count, snippet, has_attachment, starred, participants)
 labels(id, account_id, name, color) ; message_labels(message_id, label_id)
 messages_fts(subject, from_text, to_text, body)   -- FTS5
@@ -134,7 +141,7 @@ outbox(id, account_id, op_json, created_at, attempts, last_error, done)
 
 Миграции по `PRAGMA user_version`. Переход v1 → v2 сбрасывает кэш писем (аккаунты, ярлыки и outbox остаются, у папок
 обнуляется UIDVALIDITY): старые строки не знают своих вложений, а сервер остаётся источником правды, так что следующий синк
-заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`, v3 → v4 добавляет подпись аккаунта и `settings`.
+заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`, v3 → v4 добавляет подпись аккаунта и `settings`, v4 → v5 добавляет `snoozes`.
 
 ## Раскладка UI
 

@@ -128,6 +128,7 @@ impl SyncEngine {
                 }),
             }
         }
+        self.store.rebind_snoozes()?;
         self.emit(SyncEvent::Finished {
             account_id: account.id,
         });
@@ -363,6 +364,69 @@ impl<'a> Actions<'a> {
     }
 
     /// Move every inbox message of the thread to the archive folder (Archive, else Gmail All Mail).
+    /// "Move to…": every copy of the thread goes to `folder_id` of its account. Copies in
+    /// Sent, Drafts and All Mail stay put (Gmail keeps its All Mail copy anyway).
+    /// Returns how many messages moved.
+    pub fn move_to_folder(&self, thread_id: i64, folder_id: i64) -> Result<usize> {
+        let dest = self.store.folder(folder_id)?;
+        let folders = self.store.folders(dest.account_id)?;
+        if dest.role != FolderRole::Inbox {
+            self.store.unsnooze(thread_id)?;
+        }
+        let mut moved = 0;
+        for m in self.store.thread_messages(thread_id)? {
+            if m.account_id != dest.account_id || m.folder_id == dest.id {
+                continue;
+            }
+            let Some(src) = folders.iter().find(|f| f.id == m.folder_id) else {
+                continue;
+            };
+            if matches!(
+                src.role,
+                FolderRole::Sent | FolderRole::Drafts | FolderRole::All
+            ) {
+                continue;
+            }
+            self.store.delete_by_uid(m.folder_id, m.uid)?;
+            self.store.enqueue(
+                m.account_id,
+                &Op::Move {
+                    folder: src.remote_name.clone(),
+                    uid: m.uid,
+                    dest: dest.remote_name.clone(),
+                },
+            )?;
+            moved += 1;
+        }
+        Ok(moved)
+    }
+
+    /// Hide the thread from the inbox until `until` (on this device).
+    pub fn snooze(&self, thread_id: i64, until: chrono::DateTime<chrono::Utc>) -> Result<()> {
+        self.store.snooze(thread_id, until)
+    }
+
+    pub fn unsnooze(&self, thread_id: i64) -> Result<()> {
+        self.store.unsnooze(thread_id)
+    }
+
+    /// Bring back snoozed threads whose time has come: each is marked unread once (like new
+    /// mail) and sorts by its wake time. Returns how many woke.
+    pub fn wake_snoozed(&self, now: chrono::DateTime<chrono::Utc>) -> Result<usize> {
+        let due = self.store.due_snoozes(now)?;
+        for (thread_id, _) in &due {
+            if self
+                .store
+                .thread_messages(*thread_id)
+                .is_ok_and(|m| !m.is_empty())
+            {
+                self.mark_read(*thread_id, false)?;
+            }
+            self.store.mark_woken(*thread_id, now)?;
+        }
+        Ok(due.len())
+    }
+
     pub fn archive(&self, thread_id: i64) -> Result<()> {
         self.move_thread(thread_id, &[FolderRole::Archive, FolderRole::All])
     }
@@ -372,6 +436,7 @@ impl<'a> Actions<'a> {
     }
 
     fn move_thread(&self, thread_id: i64, dest_roles: &[FolderRole]) -> Result<()> {
+        self.store.unsnooze(thread_id)?;
         for m in self.store.thread_messages(thread_id)? {
             let folders = self.store.folders(m.account_id)?;
             let Some(src) = folders.iter().find(|f| f.id == m.folder_id) else {
