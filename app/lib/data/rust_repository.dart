@@ -108,9 +108,8 @@ class RustRepository implements MailRepository {
         backoff = const Duration(seconds: 30);
         if (changed) {
           _events.add(const SyncStarted());
-          final s = await rust.syncAccount(
-            accountId: accountId,
-            inboxOnly: true,
+          final s = await _serial(
+            () => rust.syncAccount(accountId: accountId, inboxOnly: true),
           );
           _events.add(SyncFinished(fetched: s.fetched, errors: s.errors));
           _events.add(const ThreadsChanged());
