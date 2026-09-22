@@ -260,6 +260,12 @@ pub fn thread_messages(thread_id: i64) -> Result<Vec<MessageDto>> {
     Ok(out)
 }
 
+/// Sanitized HTML body of one message; `load_remote_images` keeps http(s) images instead of blocking them.
+pub fn message_html(message_id: i64, load_remote_images: bool) -> Result<Option<String>> {
+    let (_, html) = core()?.store().body(message_id)?;
+    Ok(html.map(|h| sanitize(&h, SanitizeOptions { load_remote_images }).html))
+}
+
 pub fn unread_count() -> Result<u32> {
     Ok(core()?.store().unread_count(None)?)
 }

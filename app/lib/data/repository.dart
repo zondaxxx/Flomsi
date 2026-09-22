@@ -10,6 +10,9 @@ abstract class MailRepository {
   Future<Thread?> thread(int id);
   Future<List<Message>> messages(int threadId);
 
+  /// Sanitized HTML for one message; with [remoteImages] the http(s) images stay in.
+  Future<String?> messageHtml(int messageId, {bool remoteImages = false});
+
   Future<void> archive(int threadId);
   Future<void> trash(int threadId);
   Future<void> markRead(int threadId, bool read);

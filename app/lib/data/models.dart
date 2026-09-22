@@ -122,6 +122,8 @@ class Message {
     required this.to,
     required this.date,
     required this.text,
+    this.html,
+    this.blockedImages = 0,
     this.isMine = false,
     this.attachments = const [],
   });
@@ -132,6 +134,10 @@ class Message {
   final List<String> to;
   final DateTime date;
   final String text;
+
+  /// Sanitized HTML body, when the message has one.
+  final String? html;
+  final int blockedImages;
   final bool isMine;
   final List<Attachment> attachments;
 

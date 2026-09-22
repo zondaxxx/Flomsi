@@ -57,6 +57,15 @@ Future<List<ThreadDto>> listThreads({
 Future<List<MessageDto>> threadMessages({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailThreadMessages(threadId: threadId);
 
+/// Sanitized HTML body of one message; `load_remote_images` keeps http(s) images instead of blocking them.
+Future<String?> messageHtml({
+  required PlatformInt64 messageId,
+  required bool loadRemoteImages,
+}) => RustLib.instance.api.crateApiMailMessageHtml(
+  messageId: messageId,
+  loadRemoteImages: loadRemoteImages,
+);
+
 Future<int> unreadCount() => RustLib.instance.api.crateApiMailUnreadCount();
 
 Future<void> archiveThread({required PlatformInt64 threadId}) =>

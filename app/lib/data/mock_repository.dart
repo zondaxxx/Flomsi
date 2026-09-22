@@ -136,6 +136,22 @@ class MockRepository implements MailRepository {
       ),
     ];
     _messages = {
+      7: [
+        Message(
+          id: 701,
+          threadId: 7,
+          fromName: 'Hetzner',
+          fromAddr: 'billing@hetzner.com',
+          to: ['me'],
+          date: daysAgo(1, 9),
+          text: 'Your invoice for September is paid. Server CX22 · mail-sync-worker.',
+          html: '<p>Hi,</p><p>your invoice for <b>September</b> is paid. Thank you.</p><table cellpadding="6" style="border: 1px solid #444"><tr><th align="left">Item</th><th align="right">Amount</th></tr><tr><td>CX22 · mail-sync-worker</td><td align="right">€ 4.51</td></tr><tr><td>Traffic</td><td align="right">€ 0.00</td></tr></table><p><a href="https://console.hetzner.cloud">Open the console</a></p><p style="color: #888; font-size: 12px">Hetzner Online GmbH · Industriestr. 25 · 91710 Gunzenhausen</p>',
+          blockedImages: 1,
+          attachments: const [
+            Attachment('invoice-2026-09.pdf', '84 KB', kind: 'pdf'),
+          ],
+        ),
+      ],
       2: [
         Message(
           id: 201,
@@ -306,6 +322,12 @@ class MockRepository implements MailRepository {
       ),
     ];
   }
+
+  @override
+  Future<String?> messageHtml(
+    int messageId, {
+    bool remoteImages = false,
+  }) async => null;
 
   void _replace(int id, Thread Function(Thread) f) {
     _threads = _threads.map((t) => t.id == id ? f(t) : t).toList();

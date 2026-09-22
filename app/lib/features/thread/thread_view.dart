@@ -1,6 +1,8 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/models.dart';
 import '../../state/providers.dart';
@@ -272,7 +274,7 @@ class _Meta extends StatelessWidget {
   }
 }
 
-class _MessageBlock extends StatelessWidget {
+class _MessageBlock extends ConsumerStatefulWidget {
   const _MessageBlock({
     required this.message,
     required this.first,
@@ -283,13 +285,46 @@ class _MessageBlock extends StatelessWidget {
   final bool last;
 
   @override
+  ConsumerState<_MessageBlock> createState() => _MessageBlockState();
+}
+
+class _MessageBlockState extends ConsumerState<_MessageBlock> {
+  String? _htmlWithImages;
+  bool _loadingImages = false;
+
+  Future<void> _loadImages() async {
+    setState(() => _loadingImages = true);
+    final html = await ref
+        .read(repositoryProvider)
+        .messageHtml(widget.message.id, remoteImages: true);
+    if (!mounted) return;
+    setState(() {
+      _htmlWithImages = html;
+      _loadingImages = false;
+    });
+  }
+
+  Future<bool> _openLink(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        !(uri.scheme == 'http' ||
+            uri.scheme == 'https' ||
+            uri.scheme == 'mailto')) {
+      return false;
+    }
+    return launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final s = context.s;
-    final m = message;
+    final m = widget.message;
+    final html = _htmlWithImages ?? m.html;
+    final imagesBlocked = _htmlWithImages == null && m.blockedImages > 0;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (!first) ...[
+        if (!widget.first) ...[
           const Hairline(),
           const SizedBox(height: 18),
           Row(
@@ -311,14 +346,41 @@ class _MessageBlock extends StatelessWidget {
           ),
           const SizedBox(height: 10),
         ],
+        if (imagesBlocked)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: [
+                Icon(CupertinoIcons.photo, size: 13, color: s.fg3),
+                const SizedBox(width: 6),
+                Text(
+                  '${m.blockedImages} remote ${m.blockedImages == 1 ? 'image' : 'images'} blocked',
+                  style: mono(context, size: 11, color: s.fg3),
+                ),
+                const SizedBox(width: 10),
+                SmallButton(
+                  label: _loadingImages ? 'Loading…' : 'Load images',
+                  onPressed: _loadingImages ? null : _loadImages,
+                ),
+              ],
+            ),
+          ),
         ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 660),
+          constraints: const BoxConstraints(maxWidth: 680),
           child: Material(
             type: MaterialType.transparency,
-            child: SelectableText(
-              m.text,
-              style: ui(context, size: 14, height: 1.6),
-            ),
+            child: html != null
+                ? HtmlWidget(
+                    html,
+                    textStyle: ui(context, size: 14, height: 1.6),
+                    onTapUrl: _openLink,
+                    onErrorBuilder: (context, element, error) =>
+                        Text(m.text, style: ui(context, size: 14, height: 1.6)),
+                  )
+                : SelectableText(
+                    m.text,
+                    style: ui(context, size: 14, height: 1.6),
+                  ),
           ),
         ),
         if (m.attachments.isNotEmpty) ...[
@@ -361,7 +423,7 @@ class _MessageBlock extends StatelessWidget {
             ],
           ),
         ],
-        SizedBox(height: last ? 0 : 20),
+        SizedBox(height: widget.last ? 0 : 20),
       ],
     );
   }

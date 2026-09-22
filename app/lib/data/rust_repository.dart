@@ -172,12 +172,18 @@ class RustRepository implements MailRepository {
             isUtc: true,
           ),
           text: m.text ?? m.snippet,
+          html: m.html,
+          blockedImages: m.blockedImages,
           attachments: m.hasAttachment
               ? const [Attachment('attachment', '', kind: 'file')]
               : const [],
         ),
     ];
   }
+
+  @override
+  Future<String?> messageHtml(int messageId, {bool remoteImages = false}) =>
+      rust.messageHtml(messageId: messageId, loadRemoteImages: remoteImages);
 
   Future<void> _after(Future<void> f) async {
     await f;

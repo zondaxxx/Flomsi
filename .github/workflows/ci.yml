@@ -81,7 +81,7 @@ jobs:
           path: app/build/macos/Build/Products/Release/Flomsi-macOS.zip
 
   ios:
-    name: build iOS (simulator, no codesign)
+    name: build iOS (device, no codesign)
     runs-on: macos-15
     needs: [core, app-check]
     steps:
@@ -100,7 +100,7 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: app
-      - run: flutter build ios --simulator --no-codesign --release
+      - run: flutter build ios --release --no-codesign
         working-directory: app
 
   android:
