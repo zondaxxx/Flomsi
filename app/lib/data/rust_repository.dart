@@ -21,6 +21,15 @@ class RustRepository implements MailRepository {
   final _idleLoops = <int, bool>{}; // account id → keep running
   Timer? _periodic;
   bool _disposed = false;
+  Future<void> _syncLock = Future.value();
+
+  /// One sync at a time: the IDLE loops, the timer and the user share the same IMAP quota.
+  Future<T> _serial<T>(Future<T> Function() body) {
+    final previous = _syncLock;
+    final completer = Completer<void>();
+    _syncLock = completer.future;
+    return previous.then((_) => body()).whenComplete(completer.complete);
+  }
 
   /// Desktop: `~/.mail_` (shared with the `mailctl` CLI). Mobile: app support dir.
   static Future<String> defaultDataDir() async {
@@ -249,7 +258,9 @@ class RustRepository implements MailRepository {
       if (_disposed) return;
       try {
         for (final a in await rust.listAccounts()) {
-          await rust.syncAccount(accountId: a.id.toInt(), inboxOnly: true);
+          await _serial(
+            () => rust.syncAccount(accountId: a.id.toInt(), inboxOnly: true),
+          );
         }
         _events.add(const ThreadsChanged());
       } catch (_) {
@@ -371,7 +382,7 @@ class RustRepository implements MailRepository {
   Future<void> sync() async {
     _events.add(const SyncStarted());
     try {
-      final s = await rust.syncAll(inboxOnly: false);
+      final s = await _serial(() => rust.syncAll(inboxOnly: false));
       _events.add(SyncFinished(fetched: s.fetched, errors: s.errors));
     } catch (e) {
       _events.add(SyncFinished(fetched: 0, errors: ['$e']));
