@@ -176,9 +176,15 @@ class _TopBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final s = context.s;
     final query = ref.watch(queryProvider);
+    final drafts = query.trim() == 'in:drafts'
+        ? ref.watch(draftsProvider).asData?.value.length ?? 0
+        : null;
     final threads = ref.watch(threadsProvider).asData?.value;
     final unread = threads?.where((t) => t.unread).length ?? 0;
     final total = threads?.length ?? 0;
+    final count = drafts != null
+        ? '$drafts ${drafts == 1 ? 'draft' : 'drafts'}'
+        : '$total · $unread new';
     final sync = ref.watch(syncStatusProvider);
     final mac = Platform.isMacOS;
 
@@ -200,8 +206,8 @@ class _TopBar extends ConsumerWidget {
         AnimatedSwitcher(
           duration: Motion.of(context, Motion.fast),
           child: Text(
-            '$total · $unread new',
-            key: ValueKey('$total-$unread'),
+            count,
+            key: ValueKey(count),
             style: mono(context, size: 11),
           ),
         ),
@@ -523,7 +529,13 @@ class _StatusBar extends ConsumerWidget {
     final selected = ref.watch(selectedThreadIdProvider);
     final accounts =
         ref.watch(accountsProvider).asData?.value ?? const <Account>[];
+    final drafts = query.trim() == 'in:drafts'
+        ? ref.watch(draftsProvider).asData?.value.length
+        : null;
     final pos = threads.indexWhere((t) => t.id == selected);
+    final position = drafts != null
+        ? '$drafts'
+        : (pos >= 0 ? '${pos + 1}/${threads.length}' : '${threads.length}');
     final scope = ref.watch(scopeProvider);
     final notice = ref.watch(noticeProvider);
     return Container(
@@ -540,8 +552,8 @@ class _StatusBar extends ConsumerWidget {
           AnimatedSwitcher(
             duration: Motion.of(context, Motion.fast),
             child: Text(
-              pos >= 0 ? '${pos + 1}/${threads.length}' : '${threads.length}',
-              key: ValueKey('$pos-${threads.length}'),
+              position,
+              key: ValueKey(position),
               style: mono(context, size: 11),
             ),
           ),

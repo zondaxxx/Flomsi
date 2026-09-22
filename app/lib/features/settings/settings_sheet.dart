@@ -249,7 +249,7 @@ class _AccountEditorState extends ConsumerState<_AccountEditor> {
             label: 'signature',
             controller: _signature,
             hint: 'Added under “-- ” in new messages',
-            lines: 4,
+            lines: 2,
           ),
           const SizedBox(height: 8),
           Row(
