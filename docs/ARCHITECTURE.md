@@ -85,7 +85,9 @@ Enum с данными в DTO не используем: кодогенерат�
 1. **Local-first.** Любое действие сначала применяется к локальной базе и пишется в `outbox`. Синк проигрывает outbox на сервер с идемпотентными ключами. Ожидающая локальная операция побеждает до подтверждения сервером; флаги сверяются по `MODSEQ`.
 2. **Инкрементальный синк.** IMAP: `UIDVALIDITY` + `UIDNEXT` + `CONDSTORE`/`QRESYNC` где поддерживается. Gmail API: `historyId`. Graph: delta-ссылки. JMAP: `state`.
 3. **Пуш.** Десктоп: IMAP `IDLE` на выбранных папках. Мобильные: периодический фоновый фетч. Настоящий пуш на iOS без сервера невозможен; опциональный self-hosted relay в поздней фазе.
-4. **Безопасность писем.** HTML чистится (`ammonia`), рендерится в WebView без JavaScript и с CSP, внешние картинки блокируются по умолчанию.
+4. **Безопасность писем.** HTML чистится в ядре (`ammonia`, модуль `sanitize`): без script/style/form/iframe и обработчиков, ссылки только http/https/mailto/cid,
+   внешние картинки заменяются на `data-blocked-src` и грузятся только по кнопке «Load images». Рендер в приложении через `flutter_widget_from_html_core`
+   (чистый Dart, без WebView и без JavaScript), ссылки открываются во внешнем браузере через `url_launcher`.
 5. **Секреты.** Refresh-токены и пароли приложений только в keychain/keystore/Credential Manager.
 
 ## Схема базы (v1)
@@ -124,7 +126,9 @@ outbox(id, account_id, op_json, created_at, attempts, last_error)
 ## Сборки и CI
 
 Репозиторий: https://github.com/zondaxxx/Flomsi. Все сборки идут через GitHub Actions (`.github/workflows/ci.yml`):
-`core` (fmt, clippy, tests, mailctl для Linux), `app-check` (analyze, tests), `macos` (release-сборка, артефакт `Flomsi-macOS`).
+`core` (fmt, clippy, tests, mailctl для Linux), `app-check` (analyze, tests), `macos` (release, артефакт `Flomsi-macOS`),
+`ios` (release без подписи), `android` (apk, артефакт `Flomsi-android`), `windows` (zip, артефакт `Flomsi-windows`).
+Симуляторная сборка iOS в release невозможна («Release mode is not supported for simulators»), поэтому CI собирает device-бинарник.
 Локальные сборки нужны только для скриншотов. В коммитах только авторство владельца репозитория, без атрибуции ассистента.
 
 ## Известные риски
