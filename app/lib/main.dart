@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:macos_window_utils/macos_window_utils.dart';
 
@@ -20,6 +22,12 @@ const _useMock = bool.fromEnvironment('MAIL_MOCK');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // IBM Plex ships under the SIL Open Font License; it shows in the licenses page.
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks(const [
+      'IBM Plex',
+    ], await rootBundle.loadString('assets/fonts/OFL.txt'));
+  });
   if (Platform.isMacOS) {
     // The window chrome is ours: traffic lights sit inside the top bar, no native title.
     await WindowManipulator.initialize();

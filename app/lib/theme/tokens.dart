@@ -120,6 +120,9 @@ TextStyle ui(
   fontFamily: kSans,
   fontSize: size,
   fontWeight: weight,
+  // The bundled Sans is a variable font: fontWeight picks nothing by itself, the
+  // wght axis does.
+  fontVariations: [FontVariation.weight(weight.value.toDouble())],
   color: color ?? context.s.fg,
   height: height,
   letterSpacing: letterSpacing,
