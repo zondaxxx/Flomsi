@@ -239,9 +239,29 @@ class RustRepository implements MailRepository {
   Future<String?> messageHtml(int messageId, {bool remoteImages = false}) =>
       rust.messageHtml(messageId: messageId, loadRemoteImages: remoteImages);
 
+  Timer? _pushTimer;
+
+  /// Local-first actions land in the outbox; push them to the servers shortly after, debounced,
+  /// so a message read here shows as read on the phone in seconds rather than at the next timer.
+  void _pushSoon() {
+    _pushTimer?.cancel();
+    _pushTimer = Timer(const Duration(seconds: 2), () async {
+      if (_disposed) return;
+      try {
+        for (final a in await rust.listAccounts()) {
+          await rust.syncAccount(accountId: a.id.toInt(), inboxOnly: true);
+        }
+        _events.add(const ThreadsChanged());
+      } catch (_) {
+        // Offline: the outbox keeps the ops; the next sync replays them.
+      }
+    });
+  }
+
   Future<void> _after(Future<void> f) async {
     await f;
     _events.add(const ThreadsChanged());
+    _pushSoon();
   }
 
   @override
@@ -361,6 +381,7 @@ class RustRepository implements MailRepository {
 
   void dispose() {
     _disposed = true;
+    _pushTimer?.cancel();
     _periodic?.cancel();
     _sub?.cancel();
     _events.close();
