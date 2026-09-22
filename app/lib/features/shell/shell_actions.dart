@@ -77,7 +77,13 @@ class ShellActions {
     final thread = await repo.thread(id);
     if (thread == null) return;
     final folders = await repo.accountFolders(thread.accountId);
-    const skip = {FolderRole.sent, FolderRole.drafts, FolderRole.all};
+    final skip = {
+      FolderRole.sent,
+      FolderRole.drafts,
+      FolderRole.all,
+      // Already there.
+      if (ref.read(queryProvider).trim().isEmpty) FolderRole.inbox,
+    };
     ref
         .read(pickerProvider.notifier)
         .open(
