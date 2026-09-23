@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 
 import '../../data/models.dart';
+import '../../theme/app_icons.dart';
 
 /// One navigable row in the sidebar. Sections carry no query.
 class SidebarEntry {
@@ -33,6 +34,19 @@ IconData iconForRole(FolderRole r) => switch (r) {
   FolderRole.junk => CupertinoIcons.xmark_shield,
   FolderRole.trash => CupertinoIcons.trash,
   _ => CupertinoIcons.folder,
+};
+
+/// The role's icon on a phone, in the platform's own glyphs.
+IconData phoneIconForRole(FolderRole r) => switch (r) {
+  FolderRole.inbox => AppIcons.inbox,
+  FolderRole.starred => AppIcons.star,
+  FolderRole.drafts => AppIcons.drafts,
+  FolderRole.sent => AppIcons.sent,
+  FolderRole.archive => AppIcons.archive,
+  FolderRole.junk => AppIcons.junk,
+  FolderRole.trash => AppIcons.delete,
+  FolderRole.all => AppIcons.mail,
+  FolderRole.other => AppIcons.folder,
 };
 
 String queryForRole(FolderRole r) => switch (r) {
@@ -95,6 +109,99 @@ List<SidebarEntry> buildSidebar({
       color: l.color,
     ),
 ];
+
+/// A mailbox: its role (Inbox when none), the account it is scoped to (all when null),
+/// or a label, or the snoozed list.
+typedef Mailbox = ({
+  FolderRole? role,
+  String? scope,
+  String? label,
+  bool snoozed,
+});
+
+/// The query that shows [role] on [scope] (an address), a label, or the snoozed list. A
+/// scoped Inbox is `account:<email>` alone: `in:inbox` would also show snoozed mail.
+String mailboxQuery(
+  FolderRole? role,
+  String? scope, {
+  String? label,
+  bool snoozed = false,
+}) {
+  final base = label != null
+      ? '#$label'
+      : snoozed
+      ? 'in:snoozed'
+      : queryForRole(role ?? FolderRole.inbox);
+  if (scope == null) return base;
+  return base.isEmpty ? 'account:$scope' : 'account:$scope $base';
+}
+
+/// The mailbox a query shows, or null for a search (words, senders, filters).
+Mailbox? parseMailbox(String q) {
+  final tokens = q.trim().split(RegExp(r'\s+')).where((t) => t.isNotEmpty);
+  String? scope;
+  final rest = <String>[];
+  for (final t in tokens) {
+    if (t.startsWith('account:') && scope == null) {
+      scope = t.substring(8);
+    } else {
+      rest.add(t);
+    }
+  }
+  if (rest.isEmpty) {
+    return (role: FolderRole.inbox, scope: scope, label: null, snoozed: false);
+  }
+  if (rest.length > 1) return null;
+  final t = rest.single;
+  if (t == 'is:starred') {
+    return (
+      role: FolderRole.starred,
+      scope: scope,
+      label: null,
+      snoozed: false,
+    );
+  }
+  if (t == 'in:snoozed') {
+    return (role: null, scope: scope, label: null, snoozed: true);
+  }
+  if (t.startsWith('#')) {
+    return (role: null, scope: scope, label: t.substring(1), snoozed: false);
+  }
+  if (t.startsWith('in:')) {
+    final role = FolderRole.values
+        .where((r) => r.name == t.substring(3))
+        .firstOrNull;
+    if (role != null) {
+      return (role: role, scope: scope, label: null, snoozed: false);
+    }
+  }
+  return null;
+}
+
+/// The mailbox under the list's filter: [query] without the `is:unread` or `is:starred`
+/// the filter added to its end.
+String withoutFilter(String query, String filter) {
+  final token = switch (filter) {
+    'unread' => 'is:unread',
+    'starred' => 'is:starred',
+    _ => null,
+  };
+  final parts = query.trim().split(RegExp(r'\s+'))
+    ..removeWhere((t) => t.isEmpty);
+  if (token != null && parts.isNotEmpty && parts.last == token) {
+    parts.removeLast();
+  }
+  return parts.join(' ');
+}
+
+/// The mailbox's name for a title: Inbox, Sent, a label… (the account shown apart).
+String mailboxTitle(String q) {
+  final m = parseMailbox(q);
+  if (m == null) return 'Search';
+  if (m.snoozed) return 'Snoozed';
+  if (m.label != null) return m.label!;
+  return labelForRole(m.role ?? FolderRole.inbox);
+}
 
 /// Title for the toolbar / list header, from the active query.
 String titleForQuery(String q) {

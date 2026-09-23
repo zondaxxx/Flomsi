@@ -693,8 +693,8 @@ class RustRepository implements MailRepository {
   );
 
   @override
-  Future<Draft> newDraft() async =>
-      _draft(await rust.newDraft(), DraftKind.fresh);
+  Future<Draft> newDraft({int? accountId}) async =>
+      _draft(await rust.newDraft(accountId: accountId), DraftKind.fresh);
 
   @override
   Future<Draft> replyDraft(int threadId, {bool all = false}) async => _draft(

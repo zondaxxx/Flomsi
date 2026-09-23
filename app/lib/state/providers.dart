@@ -56,12 +56,43 @@ class ListLimit extends Notifier<int> {
   void grow([int by = page]) => state = state + by;
 }
 
-final threadsProvider = FutureProvider<List<Thread>>((ref) async {
+/// The conversations the query finds in the database on this device.
+final storedThreadsProvider = FutureProvider<List<Thread>>((ref) async {
   ref.watch(repoTickProvider);
   final q = ref.watch(queryProvider);
   final limit = ref.watch(listLimitProvider);
   return ref.watch(repositoryProvider).threads(q, limit: limit);
 });
+
+/// What the list shows: the stored conversations, less those a phone has filed and is
+/// holding for Undo (or has just filed, until the database stops listing them).
+/// Filtered in step with the stored list, so a hidden row never comes back for a frame.
+final threadsProvider = Provider<AsyncValue<List<Thread>>>((ref) {
+  final hidden = ref.watch(hiddenThreadsProvider);
+  final stored = ref.watch(storedThreadsProvider);
+  if (hidden.isEmpty) return stored;
+  return stored.whenData(
+    (list) => [
+      for (final t in list)
+        if (!hidden.contains(t.id)) t,
+    ],
+  );
+});
+
+/// Conversations off the list while their filing waits for Undo. Always empty on a
+/// computer, where filing happens at once.
+final hiddenThreadsProvider = NotifierProvider<HiddenThreads, Set<int>>(
+  HiddenThreads.new,
+);
+
+class HiddenThreads extends Notifier<Set<int>> {
+  @override
+  Set<int> build() => const {};
+  void hide(int id) => state = {...state, id};
+  void show(int id) {
+    if (state.contains(id)) state = {...state}..remove(id);
+  }
+}
 
 final accountsProvider = FutureProvider<List<Account>>((ref) async {
   ref.watch(repoTickProvider);
@@ -185,6 +216,28 @@ final isMac =
 String? keyHintFor(WidgetRef ref, String action) =>
     kTouch ? null : ref.watch(keymapProvider).value?.hint(action, mac: isMac);
 
+/// The account the phone's mail screen is narrowed to (its address), or null for all.
+final accountScopeProvider = NotifierProvider<AccountScope, String?>(
+  AccountScope.new,
+);
+
+class AccountScope extends Notifier<String?> {
+  @override
+  String? build() => null;
+  void set(String? email) => state = email;
+}
+
+/// All mail, only unread, or only starred: narrows whatever mailbox is shown. Back to
+/// all when another mailbox is chosen.
+final listFilterProvider = NotifierProvider<ListFilter, String>(ListFilter.new);
+
+class ListFilter extends Notifier<String> {
+  @override
+  String build() => 'all';
+  void set(String f) => state = f;
+  void toggleUnread() => state = state == 'unread' ? 'all' : 'unread';
+}
+
 /// A conversation to open, asked for from outside the list (a tapped notification). The
 /// shell selects it and, on a phone, opens its page.
 final openThreadProvider = NotifierProvider<OpenThread, int?>(OpenThread.new);
@@ -219,17 +272,67 @@ final noticeProvider = NotifierProvider<NoticeController, String?>(
   NoticeController.new,
 );
 
+/// A notice with what it offers: an action (Undo), and whether it reports a failure.
+class Notice {
+  const Notice(
+    this.text, {
+    this.action,
+    this.onAction,
+    this.error = false,
+    this.ttl,
+  });
+  final String text;
+  final String? action;
+  final void Function()? onAction;
+  final bool error;
+  final Duration? ttl;
+}
+
 class NoticeController extends Notifier<String?> {
   Timer? _t;
+
+  /// The notice on screen, with its action; [state] is its text.
+  Notice? current;
+
   @override
   String? build() {
     ref.onDispose(() => _t?.cancel());
     return null;
   }
 
-  void show(String text, {Duration ttl = const Duration(milliseconds: 2500)}) {
+  /// Show [text] for [ttl]: 2.5 s, 5 s with an action, 8 s for an error, unless given.
+  void show(
+    String text, {
+    Duration? ttl,
+    String? action,
+    void Function()? onAction,
+    bool error = false,
+  }) {
+    final time =
+        ttl ??
+        (error
+            ? const Duration(seconds: 8)
+            : action != null
+            ? const Duration(seconds: 5)
+            : const Duration(milliseconds: 2500));
+    current = Notice(
+      text,
+      action: action,
+      onAction: onAction,
+      error: error,
+      ttl: time,
+    );
+    // The same words again still count as a new notice.
+    state = null;
     state = text;
     _t?.cancel();
-    _t = Timer(ttl, () => state = null);
+    _t = Timer(time, hide);
+  }
+
+  /// Take the notice down now (its Undo no longer applies).
+  void hide() {
+    _t?.cancel();
+    current = null;
+    state = null;
   }
 }

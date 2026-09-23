@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../platform.dart';
 import 'providers.dart';
 
 /// Light / dark / follow the system. Nothing else: the platform draws the chrome.
@@ -19,7 +20,9 @@ class AppearanceController extends Notifier<ThemeMode> {
         // No database yet: keep the default.
       }
     });
-    return ThemeMode.dark;
+    // Phones follow the system (people switch it by the time of day); computers start
+    // in the editor's dark.
+    return kTouch ? ThemeMode.system : ThemeMode.dark;
   }
 
   void set(ThemeMode m) {

@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
 import '../../keymap/key_scope.dart';
+import '../../platform.dart';
 import '../../state/appearance.dart';
 import '../../state/providers.dart';
 import '../accounts/add_account_sheet.dart';
 import '../list/thread_list.dart';
 import '../palette/command_palette.dart';
+import '../phone/sheets.dart';
+import '../phone/undo.dart';
 import '../settings/settings_sheet.dart';
 import '../sidebar/sidebar_model.dart';
 import '../thread/snooze.dart';
@@ -20,11 +23,26 @@ class ShellActions {
     required this.context,
     this.listKey,
     this.onOpen,
-  });
+    this.onLeave,
+  }) : phone = isPhone(context);
   final WidgetRef ref;
   final BuildContext context;
   final GlobalKey<ThreadListBodyState>? listKey;
   final VoidCallback? onOpen;
+
+  /// A phone's thread page closes itself before its conversation is filed away.
+  final VoidCallback? onLeave;
+
+  /// Phones file with Undo and choose in sheets; computers go on to the next thread.
+  final bool phone;
+
+  /// A one-off choice: a sheet from the bottom on a phone, the palette's popover
+  /// elsewhere.
+  void presentPicker(Picker p) => phone
+      ? showPickerSheet(context, p)
+      : ref.read(pickerProvider.notifier).open(p);
+
+  PendingFilings get _filings => ref.read(pendingFilingProvider.notifier);
 
   Future<void> move(int delta) async {
     final threads = ref.read(threadsProvider).value;
@@ -63,14 +81,27 @@ class ShellActions {
     ref.read(composeProvider.notifier).open(d);
   });
 
-  Future<void> openNew() async {
+  /// A new message, from [accountId] when the list is narrowed to one account.
+  Future<void> openNew({int? accountId}) async {
     try {
-      final d = await ref.read(repositoryProvider).newDraft();
+      final d = await ref
+          .read(repositoryProvider)
+          .newDraft(accountId: accountId);
       ref.read(composeProvider.notifier).open(d);
     } catch (e) {
       ref.read(noticeProvider.notifier).show('Add an account first');
     }
   }
+
+  /// Mark the selected conversation unread; a phone goes back to the list, where it
+  /// shows as new again.
+  Future<void> markUnread() => withSelected((id) async {
+    await ref.read(repositoryProvider).markRead(id, false);
+    if (phone) {
+      onLeave?.call();
+      ref.read(noticeProvider.notifier).show('Marked as unread');
+    }
+  });
 
   /// "Move to…": a picker over the account's folders (Gmail labels are folders over IMAP).
   Future<void> moveSelected() => withSelected((id) async {
@@ -85,34 +116,41 @@ class ShellActions {
       // Already there.
       if (ref.read(queryProvider).trim().isEmpty) FolderRole.inbox,
     };
-    ref
-        .read(pickerProvider.notifier)
-        .open(
-          Picker(
-            hint: 'Move to…',
-            items: [
-              for (final f in folders)
-                if (!skip.contains(f.role))
-                  Command(
-                    id: 'move-${f.id}',
-                    title: f.role == FolderRole.other
-                        ? f.name
-                        : labelForRole(f.role),
-                    group: f.role == FolderRole.other ? 'Folders' : 'Mailboxes',
-                    detail: f.role == FolderRole.other ? null : f.name,
-                    run: () async {
-                      await move(1);
-                      await repo.moveThread(id, f.id);
-                      ref
-                          .read(noticeProvider.notifier)
-                          .show(
-                            'Moved to ${f.role == FolderRole.other ? f.name : labelForRole(f.role)}',
-                          );
-                    },
-                  ),
-            ],
-          ),
-        );
+    presentPicker(
+      Picker(
+        hint: 'Move to…',
+        items: [
+          for (final f in folders)
+            if (!skip.contains(f.role))
+              Command(
+                id: 'move-${f.id}',
+                title: f.role == FolderRole.other
+                    ? f.name
+                    : labelForRole(f.role),
+                group: f.role == FolderRole.other ? 'Folders' : 'Mailboxes',
+                detail: f.role == FolderRole.other ? null : f.name,
+                run: () async {
+                  final name = f.role == FolderRole.other
+                      ? f.name
+                      : labelForRole(f.role);
+                  if (phone) {
+                    onLeave?.call();
+                    await _filings.start(
+                      id,
+                      FilingKind.move,
+                      folderId: f.id,
+                      folderName: name,
+                    );
+                    return;
+                  }
+                  await move(1);
+                  await repo.moveThread(id, f.id);
+                  ref.read(noticeProvider.notifier).show('Moved to $name');
+                },
+              ),
+        ],
+      ),
+    );
   });
 
   /// Snooze presets, or bringing a snoozed thread back now.
@@ -120,40 +158,47 @@ class ShellActions {
     final repo = ref.read(repositoryProvider);
     final thread = await repo.thread(id);
     final now = DateTime.now();
-    ref
-        .read(pickerProvider.notifier)
-        .open(
-          Picker(
-            hint: 'Snooze until…',
-            items: [
-              if (thread?.snoozed ?? false)
-                Command(
-                  id: 'unsnooze',
-                  title: 'Unsnooze',
-                  group:
-                      'Snoozed until ${snoozeLabel(thread!.snoozedUntil!, now)}',
-                  run: () async {
-                    await repo.unsnooze(id);
-                    ref.read(noticeProvider.notifier).show('Back in the inbox');
-                  },
-                ),
-              for (final (label, at) in snoozeChoices(now))
-                Command(
-                  id: 'snooze-$label',
-                  title: label,
-                  group: 'Snooze',
-                  detail: snoozeLabel(at, now),
-                  run: () async {
-                    await move(1);
-                    await repo.snooze(id, at);
-                    ref
-                        .read(noticeProvider.notifier)
-                        .show('Snoozed until ${snoozeLabel(at, now)}');
-                  },
-                ),
-            ],
-          ),
-        );
+    presentPicker(
+      Picker(
+        hint: 'Snooze until…',
+        items: [
+          if (thread?.snoozed ?? false)
+            Command(
+              id: 'unsnooze',
+              title: 'Unsnooze',
+              group: 'Snoozed until ${snoozeLabel(thread!.snoozedUntil!, now)}',
+              run: () async {
+                await repo.unsnooze(id);
+                ref.read(noticeProvider.notifier).show('Back in the inbox');
+              },
+            ),
+          for (final (label, at) in snoozeChoices(now))
+            Command(
+              id: 'snooze-$label',
+              title: label,
+              group: 'Snooze',
+              detail: snoozeLabel(at, now),
+              run: () async {
+                final notice = ref.read(noticeProvider.notifier);
+                if (phone) {
+                  // Snoozing is local and quick to take back: it happens now.
+                  onLeave?.call();
+                  await repo.snooze(id, at);
+                  notice.show(
+                    'Snoozed until ${snoozeLabel(at, now)}',
+                    action: 'Undo',
+                    onAction: () => repo.unsnooze(id),
+                  );
+                  return;
+                }
+                await move(1);
+                await repo.snooze(id, at);
+                notice.show('Snoozed until ${snoozeLabel(at, now)}');
+              },
+            ),
+        ],
+      ),
+    );
   });
 
   Future<void> archiveSelected() => _fileSelected(archive: true);
@@ -165,6 +210,11 @@ class ShellActions {
   Future<void> _fileSelected({required bool archive}) async {
     final id = ref.read(selectedThreadIdProvider);
     if (id == null) return;
+    if (phone) {
+      onLeave?.call();
+      await _filings.start(id, archive ? FilingKind.archive : FilingKind.trash);
+      return;
+    }
     final notice = ref.read(noticeProvider.notifier);
     final threads = ref.read(threadsProvider).value ?? const <Thread>[];
     final i = threads.indexWhere((t) => t.id == id);
@@ -175,7 +225,13 @@ class ShellActions {
         : i > 0
         ? threads[i - 1].id
         : null;
-    final n = await fileAway(context, ref, id, archive: archive);
+    final n = await fileAway(
+      context,
+      ref.read(repositoryProvider),
+      notice,
+      id,
+      archive: archive,
+    );
     if (n == null || !context.mounted) return;
     if (next != null && ref.read(selectedThreadIdProvider) == id) {
       ref.read(selectedThreadIdProvider.notifier).select(next);
@@ -247,6 +303,13 @@ class ShellActions {
         group: 'Message',
         hint: key('thread.delete'),
         run: trashSelected,
+      ),
+      Command(
+        id: 'reply-all',
+        title: 'Reply All',
+        group: 'Message',
+        hint: key('thread.replyAll'),
+        run: () => openReply(all: true),
       ),
       Command(
         id: 'star',

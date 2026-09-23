@@ -47,7 +47,8 @@ abstract class MailRepository {
   Future<void> sync();
   Stream<RepoEvent> get events;
 
-  Future<Draft> newDraft();
+  /// A new message from [accountId] (the first account when null).
+  Future<Draft> newDraft({int? accountId});
   Future<Draft> replyDraft(int threadId, {bool all = false});
   Future<Draft> forwardDraft(int threadId);
 

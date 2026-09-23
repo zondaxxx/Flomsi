@@ -94,10 +94,11 @@ class MailNotifications {
     required void Function(int threadId) onOpen,
   }) async {
     if (!supported || _ready) return;
+    // Asked later ([askOnce]): not over the start screen, only once there is mail.
     const darwin = DarwinInitializationSettings(
-      requestAlertPermission: true,
+      requestAlertPermission: false,
       requestBadgePermission: false,
-      requestSoundPermission: true,
+      requestSoundPermission: false,
     );
     try {
       await _plugin.initialize(
@@ -120,15 +121,36 @@ class MailNotifications {
       final launch = await _plugin.getNotificationAppLaunchDetails();
       final id = int.tryParse(launch?.notificationResponse?.payload ?? '');
       if ((launch?.didNotificationLaunchApp ?? false) && id != null) onOpen(id);
-      // Android 13 and later ask once.
+      _ready = true;
+    } catch (e) {
+      debugPrint('notifications unavailable: $e');
+    }
+  }
+
+  static bool _asked = false;
+
+  /// Ask to show notifications, once per run (the system itself asks only once).
+  static Future<void> askOnce() async {
+    if (!_ready || _asked) return;
+    _asked = true;
+    try {
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >()
+          ?.requestPermissions(alert: true, sound: true);
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+            MacOSFlutterLocalNotificationsPlugin
+          >()
+          ?.requestPermissions(alert: true, sound: true);
       await _plugin
           .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin
           >()
           ?.requestNotificationsPermission();
-      _ready = true;
     } catch (e) {
-      debugPrint('notifications unavailable: $e');
+      debugPrint('notification permission: $e');
     }
   }
 

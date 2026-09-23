@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
 
 /// F1 · Editor. Palette after One Dark / One Light; IBM Plex Sans for UI, Plex Mono for data.
@@ -20,6 +21,7 @@ class Scheme extends ThemeExtension<Scheme> {
     required this.red,
     required this.purple,
     required this.cyan,
+    required this.accentStrong,
   });
 
   final Brightness brightness;
@@ -39,6 +41,10 @@ class Scheme extends ThemeExtension<Scheme> {
   final Color red;
   final Color purple;
   final Color cyan;
+
+  /// The accent where it fills a button or colours a text button on a phone: dark keeps
+  /// One Dark's blue; light needs a deeper one to read at 4.5:1 on the page.
+  final Color accentStrong;
 
   Color get accent => blue;
 
@@ -60,6 +66,7 @@ class Scheme extends ThemeExtension<Scheme> {
     red: Color(0xFFD07277),
     purple: Color(0xFFB477CF),
     cyan: Color(0xFF6FB3C9),
+    accentStrong: Color(0xFF74ADE8),
   );
 
   static const light = Scheme(
@@ -80,6 +87,7 @@ class Scheme extends ThemeExtension<Scheme> {
     red: Color(0xFFE45649),
     purple: Color(0xFFA626A4),
     cyan: Color(0xFF0184BC),
+    accentStrong: Color(0xFF2F5FCC),
   );
 
   bool get isDark => brightness == Brightness.dark;
@@ -103,6 +111,19 @@ class Scheme extends ThemeExtension<Scheme> {
 
 extension SchemeContext on BuildContext {
   Scheme get s => Theme.of(this).extension<Scheme>() ?? Scheme.dark;
+}
+
+/// Sizes for fingers (phones and tablets): one target size everywhere.
+abstract final class Touch {
+  static const target = 48.0;
+  static const appBar = 56.0;
+  static const bottomBar = 56.0;
+  static const row = 48.0;
+  static const threadRow = 76.0;
+  static const button = 50.0;
+  static const radius = 8.0;
+  static const sheetRadius = 12.0;
+  static const gutter = 16.0;
 }
 
 const kSans = 'IBM Plex Sans';
@@ -185,6 +206,111 @@ ThemeData buildTheme(Scheme s) {
       thumbColor: WidgetStateProperty.all(s.fg3.withValues(alpha: 0.5)),
       thickness: WidgetStateProperty.all(5),
       radius: const Radius.circular(3),
+    ),
+    // Menus, sheets, buttons and notices on phones: the same quiet surfaces as the rest.
+    menuTheme: MenuThemeData(
+      style: MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(s.bg2),
+        surfaceTintColor: const WidgetStatePropertyAll(Colors.transparent),
+        elevation: const WidgetStatePropertyAll(6),
+        shadowColor: WidgetStatePropertyAll(
+          Colors.black.withValues(alpha: s.isDark ? 0.5 : 0.3),
+        ),
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(vertical: 6),
+        ),
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+            side: BorderSide(color: s.border),
+          ),
+        ),
+      ),
+    ),
+    menuButtonTheme: MenuButtonThemeData(
+      style: ButtonStyle(
+        minimumSize: const WidgetStatePropertyAll(Size(180, Touch.row)),
+        padding: const WidgetStatePropertyAll(
+          EdgeInsets.symmetric(horizontal: 16),
+        ),
+        foregroundColor: WidgetStatePropertyAll(s.fg),
+        iconColor: WidgetStatePropertyAll(s.fg2),
+        iconSize: const WidgetStatePropertyAll(20),
+        overlayColor: WidgetStatePropertyAll(s.hover),
+        textStyle: const WidgetStatePropertyAll(
+          TextStyle(fontFamily: kSans, fontSize: 16),
+        ),
+      ),
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: s.bg2,
+      surfaceTintColor: Colors.transparent,
+      modalBackgroundColor: s.bg2,
+      modalBarrierColor: Colors.black.withValues(alpha: 0.25),
+      dragHandleColor: s.border,
+      dragHandleSize: const Size(36, 4),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(Touch.sheetRadius),
+        ),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: s.accentStrong,
+        foregroundColor: s.bg,
+        disabledBackgroundColor: s.raised,
+        disabledForegroundColor: s.fg3,
+        minimumSize: const Size(48, Touch.target),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Touch.radius),
+        ),
+        textStyle: const TextStyle(
+          fontFamily: kSans,
+          fontSize: 15,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: s.accentStrong,
+        minimumSize: const Size(48, Touch.target),
+        textStyle: const TextStyle(
+          fontFamily: kSans,
+          fontSize: 15,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: s.fg,
+        side: BorderSide(color: s.border),
+        minimumSize: const Size(48, Touch.target),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(Touch.radius),
+        ),
+        textStyle: const TextStyle(
+          fontFamily: kSans,
+          fontSize: 15,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.fixed,
+      backgroundColor: s.raised,
+      elevation: 0,
+      shape: Border(top: BorderSide(color: s.border)),
+      contentTextStyle: TextStyle(fontFamily: kSans, fontSize: 14, color: s.fg),
+      actionTextColor: s.accentStrong,
+    ),
+    pageTransitionsTheme: const PageTransitionsTheme(
+      builders: {
+        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+        TargetPlatform.android: PredictiveBackPageTransitionsBuilder(),
+      },
     ),
   );
 }

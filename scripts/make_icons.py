@@ -107,6 +107,11 @@ def main():
             '    <color name="ic_launcher_background">#16181D</color>\n'
             '</resources>\n'
         )
+    # The mark on the start screen: 56 pt at 1x, 2x and 3x.
+    mark = artwork(1024, 0.0, 0.22, False)
+    for folder, n in [("", 56), ("2.0x/", 112), ("3.0x/", 168)]:
+        os.makedirs(f"{APP}/assets/brand/{folder}", exist_ok=True)
+        mark.resize((n, n), Image.LANCZOS).save(f"{APP}/assets/brand/{folder}flomsi_mark.png")
     square.save(f"{APP}/windows/runner/resources/app_icon.ico",
                 sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 

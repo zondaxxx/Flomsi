@@ -10,9 +10,10 @@ import 'package:macos_window_utils/macos_window_utils.dart';
 import 'data/mock_repository.dart';
 import 'data/repository.dart';
 import 'data/rust_repository.dart';
+import 'app_keys.dart';
+import 'data/models.dart';
 import 'features/notify/new_mail.dart';
-import 'features/shell/editor_shell.dart';
-import 'features/shell/notice_host.dart';
+import 'features/onboarding/app_gate.dart';
 import 'features/shell/startup_error.dart';
 import 'platform.dart';
 import 'state/appearance.dart';
@@ -87,6 +88,15 @@ Future<void> _announceNewMail(ProviderContainer c, MailRepository repo) async {
     inFront: () =>
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
   ).start();
+  // Permission is asked once there is mail to announce: after the first sync that
+  // worked, never over the start screen.
+  late final StreamSubscription<RepoEvent> sub;
+  sub = repo.events.listen((e) {
+    if (e is SyncFinished && e.errors.isEmpty) {
+      unawaited(MailNotifications.askOnce());
+      sub.cancel();
+    }
+  });
 }
 
 class MailApp extends ConsumerWidget {
@@ -95,17 +105,38 @@ class MailApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final mode = ref.watch(appearanceProvider);
+    // Touch screens show notices as a docked SnackBar (with Undo where there is one);
+    // computers keep them in the status line.
+    ref.listen<String?>(noticeProvider, (_, text) {
+      if (!kTouch || text == null) return;
+      showNoticeSnackBar(ref.read(noticeProvider.notifier).current);
+    });
     return MaterialApp(
       title: 'Flomsi',
       debugShowCheckedModeBanner: false,
+      navigatorKey: rootNavigatorKey,
+      scaffoldMessengerKey: messengerKey,
       theme: buildTheme(Scheme.light),
       darkTheme: buildTheme(Scheme.dark),
       themeMode: mode,
-      // Phones show notices as a pill over every route; desktop uses the status line.
-      builder: (context, child) => kTouch
-          ? NoticeHost(child: child ?? const SizedBox.shrink())
-          : child ?? const SizedBox.shrink(),
-      home: const EditorShell(),
+      home: const AppGate(),
     );
   }
+}
+
+/// The notice as a SnackBar: the one before it goes first; its action (Undo) stays
+/// until the notice's own time is up.
+void showNoticeSnackBar(Notice? n) {
+  final m = messengerKey.currentState;
+  if (m == null || n == null) return;
+  m.hideCurrentSnackBar();
+  m.showSnackBar(
+    SnackBar(
+      content: Text(n.text),
+      duration: n.ttl ?? const Duration(milliseconds: 2500),
+      action: n.action == null
+          ? null
+          : SnackBarAction(label: n.action!, onPressed: n.onAction ?? () {}),
+    ),
+  );
 }

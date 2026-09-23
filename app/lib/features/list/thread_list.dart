@@ -9,17 +9,49 @@ import '../../state/providers.dart';
 import '../accounts/add_account_sheet.dart';
 import '../settings/settings_sheet.dart';
 import '../shell/file_away.dart';
+import '../phone/phone_list_parts.dart';
+import '../phone/phone_thread_row.dart';
+import '../../theme/app_icons.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
 
 /// Filter row + animated thread rows. The search field itself lives in the top bar on desktop.
 class ThreadListBody extends ConsumerStatefulWidget {
-  const ThreadListBody({super.key, this.onOpen, this.showSearch = false});
+  const ThreadListBody({
+    super.key,
+    this.onOpen,
+    this.showSearch = false,
+    this.phone = false,
+    this.searching = false,
+    this.refreshKey,
+    this.pressedId,
+    this.onRowMenu,
+    this.rowWrapper,
+  });
   final void Function(int threadId)? onOpen;
 
-  /// Phones have no top-bar field, so the list carries its own.
+  /// Narrow windows have no top-bar field, so the list carries its own.
   final bool showSearch;
+
+  /// The phone list: big rows, no filter chips (the bottom bar has them), states and
+  /// "Load older mail" inside the scroll view.
+  final bool phone;
+
+  /// Phones: the search bar is up. An empty field shows what can be searched for.
+  final bool searching;
+
+  /// Phones: the pull-to-refresh, so "Check for new mail" can show it.
+  final GlobalKey<RefreshIndicatorState>? refreshKey;
+
+  /// Phones: the row whose menu is open, highlighted meanwhile.
+  final int? pressedId;
+
+  /// Phones: a long press on a row, at that point on the screen.
+  final void Function(Thread thread, Offset position)? onRowMenu;
+
+  /// Phones: what a row is wrapped in (swipe actions).
+  final Widget Function(Thread thread, Widget row)? rowWrapper;
 
   @override
   ConsumerState<ThreadListBody> createState() => ThreadListBodyState();
@@ -28,7 +60,9 @@ class ThreadListBody extends ConsumerStatefulWidget {
 class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   final searchController = TextEditingController();
   final searchFocus = FocusNode(debugLabel: 'search');
-  var _listKey = GlobalKey<AnimatedListState>();
+
+  /// An AnimatedList's state, or a SliverAnimatedList's on phones.
+  var _listKey = GlobalKey();
   final _items = <Thread>[];
 
   /// The query [_items] shows. A different query is a different list: it starts at its
@@ -37,7 +71,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   // A new list for a new query starts at its top; nothing to restore.
   final _scroll = ScrollController(keepScrollOffset: false);
   final _selectedRowKey = GlobalKey(debugLabel: 'selected row');
-  String _filter = 'all';
+  String get _filter => ref.read(listFilterProvider);
 
   /// The folder, account or label the list shows (set from outside: sidebar, keys,
   /// notifications). Filters narrow it; typed search looks everywhere.
@@ -66,6 +100,13 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   }
 
   void focusSearch() => searchFocus.requestFocus();
+
+  /// The folder, account or label under the filter and the search.
+  String get base => _base;
+
+  void scrollToTop() {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+  }
 
   void onSearchChanged(String v) => _setQuery(_compose(v));
 
@@ -103,16 +144,28 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     });
   }
 
+  void _removeRow(int i, AnimatedRemovedItemBuilder builder, Duration d) {
+    final st = _listKey.currentState;
+    if (st is AnimatedListState) st.removeItem(i, builder, duration: d);
+    if (st is SliverAnimatedListState) st.removeItem(i, builder, duration: d);
+  }
+
+  void _insertRow(int i, Duration d) {
+    final st = _listKey.currentState;
+    if (st is AnimatedListState) st.insertItem(i, duration: d);
+    if (st is SliverAnimatedListState) st.insertItem(i, duration: d);
+  }
+
+  Widget _plainRow(Thread t) => widget.phone
+      ? PhoneThreadRow(thread: t)
+      : ThreadRow(thread: t, selected: false);
+
   /// A swiped row leaves the list at once; the repository event that follows finds it already gone.
   void dismissLocally(int threadId) {
     final i = _items.indexWhere((t) => t.id == threadId);
     if (i < 0) return;
     _items.removeAt(i);
-    _listKey.currentState?.removeItem(
-      i,
-      (context, anim) => const SizedBox.shrink(),
-      duration: Duration.zero,
-    );
+    _removeRow(i, (context, anim) => const SizedBox.shrink(), Duration.zero);
   }
 
   /// Diff the provider's list into the AnimatedList: removals collapse, insertions rise in.
@@ -121,13 +174,10 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     for (var i = _items.length - 1; i >= 0; i--) {
       if (!next.any((t) => t.id == _items[i].id)) {
         final removed = _items.removeAt(i);
-        _listKey.currentState?.removeItem(
+        _removeRow(
           i,
-          (context, anim) => _Transition(
-            anim: anim,
-            child: ThreadRow(thread: removed, selected: false),
-          ),
-          duration: d,
+          (context, anim) => _Transition(anim: anim, child: _plainRow(removed)),
+          d,
         );
       }
     }
@@ -139,14 +189,14 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
       final existing = _items.indexWhere((t) => t.id == next[j].id);
       if (existing >= 0) {
         _items.removeAt(existing);
-        _listKey.currentState?.removeItem(
+        _removeRow(
           existing,
           (context, anim) => const SizedBox.shrink(),
-          duration: Duration.zero,
+          Duration.zero,
         );
       }
       _items.insert(j, next[j]);
-      _listKey.currentState?.insertItem(j, duration: d);
+      _insertRow(j, d);
     }
   }
 
@@ -175,7 +225,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
           ..clear()
           ..addAll(list);
         _itemsQuery = query;
-        _listKey = GlobalKey<AnimatedListState>();
+        _listKey = GlobalKey();
       }
     }
     ref.listen(selectedThreadIdProvider, (_, id) => _revealFar(id));
@@ -185,16 +235,31 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
       if (next == _composed) return;
       _composed = null;
       _base = next;
-      if (_filter != 'all' || searchController.text.isNotEmpty) {
-        setState(() => _filter = 'all');
-        searchController.clear();
-      }
+      searchController.clear();
+      ref.read(listFilterProvider.notifier).set('all');
     });
+    // The filter changed (chips here, the phone's Unread button): narrow the mailbox.
+    ref.listen(listFilterProvider, (_, _) {
+      _setQuery(_compose(searchController.text));
+    });
+    final filter = ref.watch(listFilterProvider);
+    if (widget.phone) {
+      return _phoneBody(
+        context,
+        threads: threads,
+        sameQuery: sameQuery,
+        selected: selected,
+        accounts: accounts,
+        locked: locked,
+        syncError: syncError,
+        query: query,
+        filter: filter,
+        draftsView: draftsView,
+      );
+    }
     // Counts only where they mean what they say: over a filtered list they would not.
-    final unread = _filter == 'all'
-        ? list?.where((t) => t.unread).length
-        : null;
-    final starred = _filter == 'all'
+    final unread = filter == 'all' ? list?.where((t) => t.unread).length : null;
+    final starred = filter == 'all'
         ? list?.where((t) => t.starred).length
         : null;
 
@@ -230,20 +295,20 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
               else ...[
                 _FilterButton(
                   label: 'All',
-                  count: _filter == 'all' ? list?.length : null,
-                  active: _filter == 'all',
+                  count: filter == 'all' ? list?.length : null,
+                  active: filter == 'all',
                   onTap: () => _setFilter('all'),
                 ),
                 _FilterButton(
                   label: 'Unread',
                   count: unread,
-                  active: _filter == 'unread',
+                  active: filter == 'unread',
                   onTap: () => _setFilter('unread'),
                 ),
                 _FilterButton(
                   label: 'Starred',
                   count: starred,
-                  active: _filter == 'starred',
+                  active: filter == 'starred',
                   onTap: () => _setFilter('starred'),
                 ),
               ],
@@ -347,6 +412,157 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     );
   }
 
+  /// The phone list: banners, the rows (or what an empty mailbox says), then older mail,
+  /// all in one scroll view that pulls down to check for mail.
+  Widget _phoneBody(
+    BuildContext context, {
+    required AsyncValue<List<Thread>> threads,
+    required bool sameQuery,
+    required int? selected,
+    required List<Account>? accounts,
+    required List<Account> locked,
+    required String? syncError,
+    required String query,
+    required String filter,
+    required bool draftsView,
+  }) {
+    final repo = ref.read(repositoryProvider);
+    final s = context.s;
+    final many = (accounts?.length ?? 0) > 1;
+    final typed = searchController.text.trim();
+    // Accounts that stopped for another reason than their sign-in.
+    final failing = [
+      ...?accounts?.where((a) => a.problem != null && !a.needsPassword),
+    ];
+    final syncText = failing.length > 1
+        ? '${failing.length} accounts didn’t update'
+        : failing.length == 1
+        ? '${failing.single.email}: ${failing.single.problem!.title}'
+        : locked.isEmpty
+        ? syncError
+        : null;
+    final scoped = query.contains('account:');
+    Color? colorOf(Thread t) => many && !scoped
+        ? accounts!.where((a) => a.id == t.accountId).firstOrNull?.color
+        : null;
+    Widget fill(Widget child) =>
+        SliverFillRemaining(hasScrollBody: false, child: child);
+    final slivers = <Widget>[
+      for (final a in locked)
+        SliverToBoxAdapter(
+          child: PhoneSignInBanner(key: ValueKey('signin-${a.id}'), account: a),
+        ),
+      if (syncText != null && (accounts?.isNotEmpty ?? false))
+        SliverToBoxAdapter(child: PhoneSyncBanner(text: syncText)),
+    ];
+    if (widget.searching && typed.isEmpty) {
+      slivers.add(
+        fill(
+          PhoneSearchHint(
+            onExample: (example) {
+              searchController.text = example;
+              searchController.selection = TextSelection.collapsed(
+                offset: example.length,
+              );
+              onSearchChanged(example);
+            },
+          ),
+        ),
+      );
+    } else if (draftsView) {
+      slivers.add(const SliverFillRemaining(child: _DraftList()));
+    } else {
+      slivers.add(
+        threads.when(
+          skipLoadingOnReload: sameQuery,
+          loading: () => fill(const DelayedSpinner()),
+          error: (e, _) => fill(
+            PhoneEmpty(
+              title: 'Couldn’t open the mail stored on this phone',
+              detail: '$e',
+              action: 'Try again',
+              onAction: () => ref.invalidate(storedThreadsProvider),
+            ),
+          ),
+          data: (_) => _items.isEmpty
+              ? fill(PhoneEmptyMailbox(query: query, filter: filter))
+              : SliverMainAxisGroup(
+                  slivers: [
+                    if (widget.searching)
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(28, 8, 16, 4),
+                          child: Text(
+                            'On this phone',
+                            style: ui(context, size: 13, color: s.fg2),
+                          ),
+                        ),
+                      ),
+                    SliverAnimatedList(
+                      key: _listKey,
+                      initialItemCount: _items.length,
+                      itemBuilder: (context, i, anim) {
+                        if (i >= _items.length) return const SizedBox.shrink();
+                        final t = _items[i];
+                        final Widget row = PhoneThreadRow(
+                          thread: t,
+                          selected: t.id == widget.pressedId,
+                          accountColor: colorOf(t),
+                          onTap: () {
+                            ref
+                                .read(selectedThreadIdProvider.notifier)
+                                .select(t.id);
+                            widget.onOpen?.call(t.id);
+                          },
+                          onLongPress: widget.onRowMenu == null
+                              ? null
+                              : (at) => widget.onRowMenu!(t, at),
+                        );
+                        return _Transition(
+                          anim: anim,
+                          child: Column(
+                            children: [
+                              widget.rowWrapper?.call(t, row) ?? row,
+                              Padding(
+                                padding: const EdgeInsets.only(left: 28),
+                                child: Divider(height: 1, color: s.border),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+        ),
+      );
+      if ((accounts?.isNotEmpty ?? false) &&
+          MoreFromServer.offered(query) &&
+          _items.isNotEmpty) {
+        slivers.add(
+          SliverToBoxAdapter(
+            child: MoreFromServer(
+              key: ValueKey('more-$query'),
+              query: query,
+              shown: threads.value?.length ?? 0,
+              phone: true,
+            ),
+          ),
+        );
+      }
+    }
+    slivers.add(const SliverToBoxAdapter(child: SizedBox(height: 8)));
+    return RefreshIndicator.adaptive(
+      key: widget.refreshKey,
+      onRefresh: repo.sync,
+      child: CustomScrollView(
+        controller: _scroll,
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: slivers,
+      ),
+    );
+  }
+
   static bool get _touch => kTouch;
 
   /// Phones: pull the list down to sync now (the platform's own spinner).
@@ -379,7 +595,13 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
         dismissLocally(t.id);
         final notice = ref.read(noticeProvider.notifier);
         final archive = direction == DismissDirection.startToEnd;
-        final n = await fileAway(context, ref, t.id, archive: archive);
+        final n = await fileAway(
+          context,
+          ref.read(repositoryProvider),
+          notice,
+          t.id,
+          archive: archive,
+        );
         if (n != null && n > 0) {
           notice.show(archive ? 'Archived' : 'Deleted');
           return;
@@ -389,16 +611,13 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
         if (n == 0) {
           notice.show(archive ? 'Not in the inbox' : 'Nothing to delete');
         }
-        if (mounted) ref.invalidate(threadsProvider);
+        if (mounted) ref.invalidate(storedThreadsProvider);
       },
       child: row,
     );
   }
 
-  void _setFilter(String f) {
-    setState(() => _filter = f);
-    _setQuery(_compose(searchController.text));
-  }
+  void _setFilter(String f) => ref.read(listFilterProvider.notifier).set(f);
 }
 
 /// An account the server stopped letting in: say which and why, and where to fix it.
@@ -874,8 +1093,16 @@ class DraftRow extends StatelessWidget {
 /// The foot of the list: more of what is here, older mail of this folder from the
 /// server, or the same search on the server.
 class MoreFromServer extends ConsumerStatefulWidget {
-  const MoreFromServer({super.key, required this.query, required this.shown});
+  const MoreFromServer({
+    super.key,
+    required this.query,
+    required this.shown,
+    this.phone = false,
+  });
   final String query;
+
+  /// The last item of the phone list: taller, in reading type.
+  final bool phone;
 
   /// How many conversations the list holds now.
   final int shown;
@@ -963,11 +1190,14 @@ class _MoreFromServerState extends ConsumerState<MoreFromServer> {
         : _done
         ? (searching ? 'Searched the server' : 'All mail is here')
         : (searching ? 'Search on the server' : 'Load older mail');
+    final phone = widget.phone;
     return Container(
-      height: 32,
-      decoration: BoxDecoration(
-        border: Border(top: BorderSide(color: s.border)),
-      ),
+      height: phone ? 52 : 32,
+      decoration: phone
+          ? null
+          : BoxDecoration(
+              border: Border(top: BorderSide(color: s.border)),
+            ),
       child: HoverRegion(
         onTap: _busy || _done ? null : _run,
         builder: (context, hovered) => Container(
@@ -978,8 +1208,8 @@ class _MoreFromServerState extends ConsumerState<MoreFromServer> {
             children: [
               if (_busy) ...[
                 SizedBox(
-                  width: 10,
-                  height: 10,
+                  width: phone ? 14 : 10,
+                  height: phone ? 14 : 10,
                   child: CircularProgressIndicator(
                     strokeWidth: 1.5,
                     color: s.fg3,
@@ -988,17 +1218,21 @@ class _MoreFromServerState extends ConsumerState<MoreFromServer> {
                 const SizedBox(width: 8),
               ] else if (!_done) ...[
                 Icon(
-                  searching
-                      ? CupertinoIcons.cloud
-                      : CupertinoIcons.arrow_down_circle,
-                  size: 12,
-                  color: s.fg3,
+                  phone
+                      ? (searching ? AppIcons.cloud : AppIcons.olderMail)
+                      : (searching
+                            ? CupertinoIcons.cloud
+                            : CupertinoIcons.arrow_down_circle),
+                  size: phone ? 16 : 12,
+                  color: phone ? s.fg2 : s.fg3,
                 ),
                 const SizedBox(width: 6),
               ],
               Text(
                 label,
-                style: mono(context, size: 11.5, color: _done ? s.fg3 : s.fg2),
+                style: phone
+                    ? ui(context, size: 15, color: _done ? s.fg3 : s.fg2)
+                    : mono(context, size: 11.5, color: _done ? s.fg3 : s.fg2),
               ),
             ],
           ),

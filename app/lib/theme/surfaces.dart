@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../platform.dart';
+import 'app_icons.dart';
 import 'motion.dart';
 import 'tokens.dart';
 
@@ -138,13 +139,15 @@ class IconBtn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = context.s;
+    // Fingers need 48: the same glyph, a larger place to press.
+    final touch = kTouch;
     return Tooltip(
       message: label,
       child: HoverRegion(
         onTap: onTap,
         builder: (context, hovered) => Container(
-          width: 28,
-          height: 26,
+          width: touch ? Touch.target : 28,
+          height: touch ? Touch.target : 26,
           alignment: Alignment.center,
           decoration: (active || hovered)
               ? BoxDecoration(
@@ -190,7 +193,8 @@ class SmallButton extends StatelessWidget {
       onTap: onPressed,
       builder: (context, hovered) => AnimatedContainer(
         duration: const Duration(milliseconds: 120),
-        height: height,
+        height: kTouch && height < 44 ? 44 : height,
+        alignment: Alignment.center,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
           color: primary || danger
@@ -229,8 +233,9 @@ class SmallButton extends StatelessWidget {
   }
 }
 
-/// Text field in a hairline box.
-class QuietField extends StatelessWidget {
+/// Text field in a hairline box. On touch screens it is at least 48 tall, and it tells the
+/// keyboard what it is for (type, return key, autofill).
+class QuietField extends StatefulWidget {
   const QuietField({
     super.key,
     this.controller,
@@ -245,6 +250,13 @@ class QuietField extends StatelessWidget {
     this.onSubmitted,
     this.fontSize = 13,
     this.keyboardType,
+    this.textInputAction,
+    this.autofillHints,
+    this.onEditingComplete,
+    this.textCapitalization = TextCapitalization.none,
+    this.autocorrect = false,
+    this.enableSuggestions = false,
+    this.reveal = false,
   });
   final TextEditingController? controller;
   final FocusNode? focusNode;
@@ -258,46 +270,83 @@ class QuietField extends StatelessWidget {
   final ValueChanged<String>? onSubmitted;
   final double fontSize;
   final TextInputType? keyboardType;
+  final TextInputAction? textInputAction;
+  final Iterable<String>? autofillHints;
+  final VoidCallback? onEditingComplete;
+  final TextCapitalization textCapitalization;
+  final bool autocorrect;
+  final bool enableSuggestions;
+
+  /// With [obscure]: an eye to show what was typed.
+  final bool reveal;
+
+  @override
+  State<QuietField> createState() => _QuietFieldState();
+}
+
+class _QuietFieldState extends State<QuietField> {
+  bool _shown = false;
+
   @override
   Widget build(BuildContext context) {
     final s = context.s;
+    final w = widget;
+    final touch = kTouch;
+    final size = touch && w.fontSize < 16 ? 16.0 : w.fontSize;
+    final trailing = w.obscure && w.reveal
+        ? IconBtn(
+            icon: _shown ? AppIcons.hide : AppIcons.reveal,
+            label: _shown ? 'Hide password' : 'Show password',
+            size: 18,
+            onTap: () => setState(() => _shown = !_shown),
+          )
+        : w.trailing;
     return Container(
-      height: height,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
+      constraints: BoxConstraints(
+        minHeight: touch ? Touch.target : w.height,
+        maxHeight: touch ? double.infinity : w.height,
+      ),
+      padding: EdgeInsets.symmetric(horizontal: touch ? 12 : 8),
       decoration: BoxDecoration(
         color: s.raised,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(touch ? Touch.radius : 6),
         border: Border.all(color: s.border),
       ),
       child: Material(
         type: MaterialType.transparency,
         child: Row(
           children: [
-            if (leading != null) ...[leading!, const SizedBox(width: 6)],
+            if (w.leading != null) ...[w.leading!, const SizedBox(width: 6)],
             Expanded(
               child: TextField(
-                controller: controller,
-                focusNode: focusNode,
-                autofocus: autofocus,
-                obscureText: obscure,
-                keyboardType: keyboardType,
-                autocorrect: false,
-                enableSuggestions: false,
-                style: ui(context, size: fontSize),
+                controller: w.controller,
+                focusNode: w.focusNode,
+                autofocus: w.autofocus,
+                obscureText: w.obscure && !_shown,
+                keyboardType: w.keyboardType,
+                textInputAction: w.textInputAction,
+                autofillHints: w.autofillHints,
+                onEditingComplete: w.onEditingComplete,
+                textCapitalization: w.textCapitalization,
+                autocorrect: w.autocorrect,
+                enableSuggestions: w.enableSuggestions,
+                style: ui(context, size: size),
                 cursorColor: s.fg,
                 cursorWidth: 1.5,
                 decoration: InputDecoration(
                   isDense: true,
                   border: InputBorder.none,
-                  contentPadding: EdgeInsets.zero,
-                  hintText: hint,
-                  hintStyle: ui(context, size: fontSize, color: s.fg3),
+                  contentPadding: EdgeInsets.symmetric(
+                    vertical: touch ? 12 : 0,
+                  ),
+                  hintText: w.hint,
+                  hintStyle: ui(context, size: size, color: s.fg3),
                 ),
-                onChanged: onChanged,
-                onSubmitted: onSubmitted,
+                onChanged: w.onChanged,
+                onSubmitted: w.onSubmitted,
               ),
             ),
-            if (trailing != null) ...[const SizedBox(width: 6), trailing!],
+            if (trailing != null) ...[const SizedBox(width: 6), trailing],
           ],
         ),
       ),

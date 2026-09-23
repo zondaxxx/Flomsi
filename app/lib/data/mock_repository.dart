@@ -8,7 +8,9 @@ import 'repository.dart';
 
 /// In-memory data matching the design mockups. Swapped for the Rust core later.
 class MockRepository implements MailRepository {
-  MockRepository() {
+  /// With [empty], no accounts: the start screen, for tests and design work.
+  MockRepository({bool empty = false}) {
+    if (empty) _accountRows.clear();
     final now = DateTime.now();
     DateTime today(int h, int m) =>
         DateTime(now.year, now.month, now.day, h, m);
@@ -391,6 +393,13 @@ class MockRepository implements MailRepository {
       } else if (tok.startsWith('#') || tok.startsWith('label:')) {
         final v = tok.startsWith('#') ? tok.substring(1) : tok.substring(6);
         out = out.where((t) => t.labels.any((l) => l.name == v));
+      } else if (tok.startsWith('account:')) {
+        final email = tok.substring(8);
+        final ids = {
+          for (final (id, e, _, _, _) in _accountRows)
+            if (e.toLowerCase() == email) id,
+        };
+        out = out.where((t) => ids.contains(t.accountId));
       } else if (tok.startsWith('in:')) {
         // mock has only an inbox
       } else {
@@ -488,15 +497,21 @@ class MockRepository implements MailRepository {
       signInFails = null;
       throw fail;
     }
-    final a = Account(
-      id: 90 + providers.indexOf(provider),
-      email: provider == 'google' ? 'you@gmail.com' : 'you@outlook.com',
-      kind: provider == 'google' ? 'gmail' : 'outlook',
-      color: const Color(0xFF74ADE8),
-    );
-    signedIn.add(a.email);
+    final email = provider == 'google' ? 'you@gmail.com' : 'you@outlook.com';
+    final kind = provider == 'google' ? 'gmail' : 'outlook';
+    final id = _accountRows.fold(0, (m, a) => a.$1 > m ? a.$1 : m) + 1;
+    if (!_accountRows.any((a) => a.$2 == email)) {
+      _accountRows.add((id, email, kind, Swatch.blue, 'imap.gmail.com:993'));
+    }
+    signedIn.add(email);
     _events.add(const ThreadsChanged());
-    return a;
+    return Account(
+      id: id,
+      email: email,
+      kind: kind,
+      color: const Color(0xFF74ADE8),
+      auth: 'xoauth2',
+    );
   }
 
   /// Addresses signed in through [signIn], for tests.
@@ -596,8 +611,12 @@ class MockRepository implements MailRepository {
       _replace(threadId, (t) => t.copyWith(starred: on));
 
   @override
-  Future<Draft> newDraft() async =>
-      const Draft(accountId: 1, from: 'dev@gmail.com');
+  Future<Draft> newDraft({int? accountId}) async {
+    final all = await accounts();
+    if (all.isEmpty) throw StateError('no account');
+    final a = all.where((a) => a.id == accountId).firstOrNull ?? all.first;
+    return Draft(accountId: a.id, from: a.email);
+  }
 
   @override
   Future<Draft> replyDraft(int threadId, {bool all = false}) async {

@@ -60,6 +60,17 @@ const _proton = Preset(
   'Proton Bridge must be running on this computer. Use the password Bridge shows for this address, not your Proton password.',
 );
 
+/// The presets by provider, for guides that pick the provider first.
+const providerPresets = <String, Preset>{
+  'gmail': _gmail,
+  'icloud': _icloud,
+  'yandex': _yandex,
+  'yandex_com': _yandexCom,
+  'mailru': _mailru,
+  'fastmail': _fastmail,
+  'proton': _proton,
+};
+
 const presets = <String, Preset>{
   'gmail.com': _gmail,
   'googlemail.com': _gmail,
