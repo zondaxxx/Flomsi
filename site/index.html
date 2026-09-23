@@ -681,7 +681,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
           <img class="shot-d" src="img/phone-welcome-dark.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, Sign in with Microsoft, and Other email account.">
           <img class="shot-l" src="img/phone-welcome-light.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, Sign in with Microsoft, and Other email account.">
         </div>
-        <div class="cap"><h3>Sign in</h3><p>Continue with Google or Microsoft on the provider's own page, or add any IMAP account with step-by-step app-password instructions. The Google button comes with the next build; Microsoft sign-in follows later.</p></div>
+        <div class="cap"><h3>Sign in</h3><p>Continue with Google or Microsoft on the provider's own page, or add any IMAP account with step-by-step app-password instructions. Microsoft sign-in comes later.</p></div>
       </li>
     </ul>
   </div>
@@ -746,18 +746,18 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       <a href="https://github.com/zondaxxx/Flomsi/commits/main">Full history on GitHub</a>
     </div>
     <div class="log">
+      <article class="entry"><time class="mono" datetime="2026-09-24">Sep 24</time><h3>0.2.1: Google sign-in and a new icon</h3><p>Continue with Google works in every download. A new mark, an fl ligature whose l is the text cursor, on all four platforms and on this site. Android builds now use one permanent key.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T15:57+03:00">Sep 23</time><h3>Undo on phones</h3><p>Archive, delete and move wait five seconds with Undo before they reach the server. A conversation, a new message and settings each get a screen of their own.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T14:38+03:00">Sep 23</time><h3>A phone layout</h3><p>A bottom bar with Mailboxes, Search, Unread and Compose, and dropdown menus for accounts and the rest. Swipe right to archive, left to delete, long press for everything else.</p></article>
-      <article class="entry"><time class="mono" datetime="2026-09-23T14:38+03:00">Sep 23</time><h3>Sign in with Google and Microsoft</h3><p>A start screen with Continue with Google, Sign in with Microsoft and Other email account. Sign-in happens on the provider's page and tokens refresh by themselves. The Google button reaches the downloads with the next build; Microsoft follows later.</p></article>
+      <article class="entry"><time class="mono" datetime="2026-09-23T14:38+03:00">Sep 23</time><h3>Sign in with Google and Microsoft</h3><p>A start screen with Continue with Google, Sign in with Microsoft and Other email account. Sign-in happens on the provider's page and tokens refresh by themselves. Google sign-in is in the downloads from 0.2.1; Microsoft follows later.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T14:12+03:00">Sep 23</time><h3>New-mail notifications</h3><p>On macOS, Windows and Android while Flomsi runs, one per conversation. On macOS, closing the window keeps mail coming in.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T14:12+03:00">Sep 23</time><h3>Older mail and server search</h3><p>Load older mail at the end of the list brings 200 more messages. Search on the server looks past what is on the device.</p></article>
-      <article class="entry"><time class="mono" datetime="2026-09-23T02:46+03:00">Sep 23</time><h3>Move and snooze</h3><p><kbd>l</kbd> moves a thread to any folder of its account. <kbd data-key="snooze">h</kbd> hides it until later today, tomorrow, the weekend or next week.</p></article>
     </div>
 
     <div class="stand">
       <div>
         <h3>Where Flomsi stands</h3>
-        <p class="sub">Version 0.2.0, an early build. Here is what works and what comes next.</p>
+        <p class="sub">Version 0.2.1, an early build. Here is what works and what comes next.</p>
       </div>
       <div>
         <h4>Works today</h4>
@@ -774,7 +774,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       <div class="next">
         <h4>Coming next</h4>
         <ul>
-          <li>Google sign-in in the downloads with the next build: it is in the code, but 0.2.0 was built before the app ID was added. Microsoft sign-in, which Outlook, Hotmail and Microsoft 365 need, comes after it.</li>
+          <li>Microsoft sign-in, which Outlook, Hotmail and Microsoft 365 need.</li>
           <li>Drafts synced with the server's Drafts folder</li>
           <li>Gmail labels and your own folders in the sidebar</li>
           <li>Gmail API, JMAP and Microsoft Graph</li>
@@ -790,7 +790,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
   <div class="wrap">
     <div class="get-head">
       <div>
-        <p class="ver mono">Version 0.2.0 · 23 Sep 2026</p>
+        <p class="ver mono">Version 0.2.1 · 24 Sep 2026</p>
         <h2 id="h-get">Get Flomsi</h2>
         <p>Builds for macOS, Windows, Android and iOS. They are not signed by Apple, Microsoft or Google yet: macOS, Windows and Android ask once before they open them, and on iOS you sign the app yourself with AltStore or Sideloadly.</p>
       </div>
@@ -831,7 +831,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
           <li>Open the APK on the phone and allow installs from that source when Android asks.</li>
           <li>Allow notifications to get new-mail alerts.</li>
         </ol>
-        <p class="aside">0.2.0 is signed with a one-off key, so the next release will not install over it: uninstall 0.2.0 first and add your accounts again. Later releases use a permanent key.</p>
+        <p class="aside">From 0.2.1 every release is signed with one permanent key, so updates install over the last version. 0.2.0 used a one-off key: uninstall it before installing 0.2.1, then add your accounts again.</p>
       </li>
       <li class="os" data-os="ios">
         <h3>iOS</h3>
@@ -850,8 +850,8 @@ kbd.changed{animation:flash 1.4s var(--ease)}
     <div class="get-notes">
       <div>
         <h3>Sign-in</h3>
-        <p>The 0.2.0 files were built before the app's sign-in IDs were added, so they have no sign-in buttons: add accounts with an app password. Google sign-in comes with the next build. Outlook, Hotmail and Microsoft 365 need Microsoft sign-in, which comes later.</p>
-        <p>When the buttons arrive, and until Google has verified Flomsi, Google's page will warn that the app is unverified: choose Advanced, then Go to Flomsi.</p>
+        <p>Continue with Google works from 0.2.1. Outlook, Hotmail and Microsoft 365 need Microsoft sign-in, which comes later; other providers use an app password.</p>
+        <p>Until Google has verified Flomsi, Google's page warns that the app is unverified: choose Advanced, then Go to Flomsi.</p>
       </div>
       <div>
         <h3>Checksums</h3>
@@ -891,7 +891,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
 <div class="wrap">
   <div class="wordmark" aria-hidden="true">Flomsi<i class="dot"></i></div>
   <footer class="foot mono">
-    <span>Flomsi 0.2.0 · GPL-3.0</span>
+    <span>Flomsi 0.2.1 · GPL-3.0</span>
     <span>Rust core · Flutter interface · IBM Plex</span>
     <nav aria-label="Legal"><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a></nav>
     <a href="https://github.com/zondaxxx/Flomsi">github.com/zondaxxx/Flomsi</a>

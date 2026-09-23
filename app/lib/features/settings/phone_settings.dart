@@ -20,8 +20,8 @@ import '../sidebar/sidebar_model.dart';
 
 /// The version the About section shows. Keep it in step with `version:` in pubspec.yaml
 /// (the app does not read its own package info).
-const appVersion = '0.2.0';
-const appBuild = 2;
+const appVersion = '0.2.1';
+const appBuild = 3;
 
 /// Settings on a phone, as a screen of its own: the accounts, the theme, and what this
 /// build is. Key presets are for keyboards, so they are not here.
