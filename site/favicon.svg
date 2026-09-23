@@ -1,11 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <!-- A dark tile so the mark reads on light and dark tab strips alike; the hairline keeps its edge on dark ones. -->
-  <rect x=".5" y=".5" width="31" height="31" rx="7" fill="#16181d" stroke="#2c3038"/>
-  <!-- The nav logo (#i-mark in index.html) redrawn on this grid: every stroke lands on whole pixels at 16 and 32 px,
-       so the two lines stay apart in a tab. -->
-  <g fill="none" stroke="#d7dae0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="5" y="7" width="22" height="18" rx="4.5"/>
-    <path d="M14 13h7M14 19h7"/>
-  </g>
-  <circle cx="9.5" cy="13" r="2" fill="#74ade8"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#16181D"/>
+  <path fill="#D7DAE0" d="M8 28V16H6V12H8V10C8 6.16 10.16 4 14 4H18V8H12V12H24V16H12V28Z"/>
+  <path fill="#74ADE8" d="M22 4H26V28H22Z"/>
 </svg>

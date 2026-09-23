@@ -44,7 +44,7 @@ a{color:inherit}
 .nav{position:sticky;top:0;z-index:40;background:var(--page);border-bottom:1px solid var(--line)}
 .nav .wrap{height:60px;display:flex;align-items:center;gap:32px}
 .logo{display:flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.01em;color:var(--ink-strong);text-decoration:none}
-.logo svg{width:20px;height:20px}
+.logo svg{width:13.7px;height:20px}
 .nav-end{margin-left:auto;display:flex;align-items:center;gap:18px;font-size:14.5px}
 .nav-end .gh{color:var(--ink2);text-decoration:none}
 .nav-end .gh:hover{color:var(--ink-strong)}
