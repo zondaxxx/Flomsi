@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 9;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -194,6 +194,19 @@ ALTER TABLE accounts ADD COLUMN smtp_security TEXT NOT NULL DEFAULT '';
 ALTER TABLE accounts ADD COLUMN local_bridge INTEGER NOT NULL DEFAULT 0;
 "#;
 
+/// v9: UIDs a sync asked for and did not get (no body, or the server refused that one),
+/// fetched again next time even below the lowest cached UID; an index for the outbox,
+/// whose finished rows are no longer kept.
+const SCHEMA_V9: &str = r#"
+CREATE TABLE fetch_holes (
+  folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+  uid INTEGER NOT NULL,
+  PRIMARY KEY (folder_id, uid)
+);
+CREATE INDEX outbox_account_done ON outbox(account_id, done);
+DELETE FROM outbox WHERE done IN (1, 3);
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -279,6 +292,9 @@ impl Store {
             }
             if version < 8 {
                 tx.execute_batch(SCHEMA_V8)?;
+            }
+            if version < 9 {
+                tx.execute_batch(SCHEMA_V9)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -509,6 +525,7 @@ impl Store {
                 rusqlite::TransactionBehavior::Immediate,
             )?;
             tx.execute("DELETE FROM messages WHERE folder_id=?1", [folder_id])?;
+            tx.execute("DELETE FROM fetch_holes WHERE folder_id=?1", [folder_id])?;
             tx.execute(
                 "UPDATE folders SET uidvalidity=NULL, uidnext=NULL, highest_modseq=NULL WHERE id=?1",
                 [folder_id],
@@ -550,10 +567,20 @@ impl Store {
         size: u64,
         m: &ParsedMessage,
     ) -> Result<i64> {
-        self.upsert_fetched(account_id, folder_id, uid, flags, size, None, m)
+        self.with(|conn| {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            let id =
+                Self::upsert_message_in(&tx, account_id, folder_id, uid, flags, size, None, m)?;
+            tx.commit()?;
+            Ok(id)
+        })
     }
 
-    /// Like `upsert_message`, with Gmail's X-GM-MSGID when the server gave one.
+    /// Like `upsert_message`, with Gmail's X-GM-MSGID when the server gave one, for a message
+    /// a sync fetched: None when a waiting op moved it out meanwhile (then it is not stored).
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_fetched(
         &self,
@@ -564,7 +591,7 @@ impl Store {
         size: u64,
         gm_msgid: Option<u64>,
         m: &ParsedMessage,
-    ) -> Result<i64> {
+    ) -> Result<Option<i64>> {
         self.with(|conn| {
             // Message, body, parts, index row and thread counters land together or not at all.
             // IMMEDIATE takes the write lock up front, so another process writing (mailctl
@@ -574,10 +601,24 @@ impl Store {
                 conn,
                 rusqlite::TransactionBehavior::Immediate,
             )?;
+            // Moved out here while this sync was fetching it: the move is on its way to the
+            // server; storing the message again would bring it back.
+            let folder: Option<String> = tx
+                .query_row(
+                    "SELECT remote_name FROM folders WHERE id=?1",
+                    [folder_id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(folder) = folder {
+                if Self::pending_in(&tx, account_id, &folder)?.1.contains(&uid) {
+                    return Ok(None);
+                }
+            }
             let id =
                 Self::upsert_message_in(&tx, account_id, folder_id, uid, flags, size, gm_msgid, m)?;
             tx.commit()?;
-            Ok(id)
+            Ok(Some(id))
         })
     }
 
@@ -816,39 +857,97 @@ impl Store {
     }
 
     pub fn set_flags_by_uid(&self, folder_id: i64, uid: u32, flags: Flags) -> Result<()> {
-        self.with(|c| {
-            let tid: Option<i64> = c
-                .query_row(
-                    "SELECT thread_id FROM messages WHERE folder_id=?1 AND uid=?2",
-                    params![folder_id, uid],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            c.execute(
-                "UPDATE messages SET flags=?3 WHERE folder_id=?1 AND uid=?2",
-                params![folder_id, uid, flags.0],
-            )?;
-            if let Some(tid) = tid {
-                Self::refresh_thread(c, tid)?;
-            }
-            Ok(())
-        })
+        self.with(|c| Self::set_flags_in(c, folder_id, uid, flags))
+    }
+
+    fn set_flags_in(c: &Connection, folder_id: i64, uid: u32, flags: Flags) -> Result<()> {
+        let tid: Option<i64> = c
+            .query_row(
+                "SELECT thread_id FROM messages WHERE folder_id=?1 AND uid=?2",
+                params![folder_id, uid],
+                |r| r.get(0),
+            )
+            .optional()?;
+        c.execute(
+            "UPDATE messages SET flags=?3 WHERE folder_id=?1 AND uid=?2",
+            params![folder_id, uid, flags.0],
+        )?;
+        if let Some(tid) = tid {
+            Self::refresh_thread(c, tid)?;
+        }
+        Ok(())
     }
 
     pub fn delete_by_uid(&self, folder_id: i64, uid: u32) -> Result<()> {
+        self.with(|c| Self::delete_in(c, folder_id, uid))
+    }
+
+    fn delete_in(c: &Connection, folder_id: i64, uid: u32) -> Result<()> {
+        let row: Option<(i64, i64)> = c
+            .query_row(
+                "SELECT id, thread_id FROM messages WHERE folder_id=?1 AND uid=?2",
+                params![folder_id, uid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((id, tid)) = row {
+            c.execute("DELETE FROM messages WHERE id=?1", [id])?;
+            Self::refresh_thread(c, tid)?;
+        }
+        Ok(())
+    }
+
+    /// Several local changes and the ops that carry them to the server, as one step: a sync
+    /// running at the same time sees either none of it or all of it, so it never finds a
+    /// changed message without the op that protects the change.
+    pub fn batch<T>(&self, f: impl FnOnce(&Batch<'_>) -> Result<T>) -> Result<T> {
         self.with(|c| {
-            let row: Option<(i64, i64)> = c
-                .query_row(
-                    "SELECT id, thread_id FROM messages WHERE folder_id=?1 AND uid=?2",
-                    params![folder_id, uid],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?;
-            if let Some((id, tid)) = row {
-                c.execute("DELETE FROM messages WHERE id=?1", [id])?;
-                Self::refresh_thread(c, tid)?;
+            let tx =
+                rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)?;
+            let out = f(&Batch { c: &tx })?;
+            tx.commit()?;
+            Ok(out)
+        })
+    }
+
+    /// Write flags the server reported, except for messages a waiting op is about to change
+    /// (checked now, under the same lock the actions take, not from a snapshot taken when
+    /// the sync began). Returns how many were held back.
+    pub fn apply_server_flags(
+        &self,
+        account_id: i64,
+        folder_id: i64,
+        folder: &str,
+        changes: &[(u32, Flags)],
+    ) -> Result<FlagsApplied> {
+        self.with(|c| {
+            let tx =
+                rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)?;
+            let (flags_waiting, moves_waiting) = Self::pending_in(&tx, account_id, folder)?;
+            let mut outcome = FlagsApplied::default();
+            let mut current =
+                tx.prepare_cached("SELECT flags FROM messages WHERE folder_id=?1 AND uid=?2")?;
+            for (uid, flags) in changes {
+                if flags_waiting.contains(uid) || moves_waiting.contains(uid) {
+                    outcome.held += 1;
+                } else if flags.contains(Flags::DELETED) {
+                    // Marked for deletion (another client, or our own move on a server
+                    // without UIDPLUS): as good as gone.
+                    Self::delete_in(&tx, folder_id, *uid)?;
+                    outcome.deleted += 1;
+                } else {
+                    // Unchanged flags cost nothing: most syncs change none of them.
+                    let now: Option<u32> = current
+                        .query_row(params![folder_id, uid], |r| r.get(0))
+                        .optional()?;
+                    if now.is_some_and(|f| f != flags.0) {
+                        Self::set_flags_in(&tx, folder_id, *uid, *flags)?;
+                    }
+                }
             }
-            Ok(())
+            drop(current);
+            tx.commit()?;
+            Ok(outcome)
         })
     }
 
@@ -1394,13 +1493,15 @@ impl Store {
     // ---------------- outbox ----------------
 
     pub fn enqueue(&self, account_id: i64, op: &Op) -> Result<i64> {
-        self.with(|c| {
-            c.execute(
-                "INSERT INTO outbox(account_id, op_json, created_at) VALUES(?1,?2,?3)",
-                params![account_id, serde_json::to_string(op)?, ts(Utc::now())],
-            )?;
-            Ok(c.last_insert_rowid())
-        })
+        self.with(|c| Self::enqueue_in(c, account_id, op))
+    }
+
+    fn enqueue_in(c: &Connection, account_id: i64, op: &Op) -> Result<i64> {
+        c.execute(
+            "INSERT INTO outbox(account_id, op_json, created_at) VALUES(?1,?2,?3)",
+            params![account_id, serde_json::to_string(op)?, ts(Utc::now())],
+        )?;
+        Ok(c.last_insert_rowid())
     }
 
     /// Ops that waited in vain and whose local change is still to be taken back: kept in
@@ -1410,12 +1511,10 @@ impl Store {
     }
 
     /// The given-up op is undone (its folders synced from the server again).
+    /// The given-up op is undone (its folders synced from the server again): forget it.
     pub fn mark_undone(&self, id: i64) -> Result<()> {
         self.with(|c| {
-            c.execute(
-                "UPDATE outbox SET done=?2 WHERE id=?1",
-                params![id, OUTBOX_UNDONE],
-            )?;
+            c.execute("DELETE FROM outbox WHERE id=?1", [id])?;
             Ok(())
         })
     }
@@ -1450,14 +1549,50 @@ impl Store {
         self.ops_in_state(account_id, OUTBOX_PENDING)
     }
 
+    /// The op reached the server: nothing left to keep.
     pub fn mark_done(&self, id: i64) -> Result<()> {
         self.with(|c| {
-            c.execute(
-                "UPDATE outbox SET done=?2 WHERE id=?1",
-                params![id, OUTBOX_DONE],
-            )?;
+            c.execute("DELETE FROM outbox WHERE id=?1", [id])?;
             Ok(())
         })
+    }
+
+    /// UIDs of [folder_id] a sync asked for and did not get.
+    pub fn fetch_holes(&self, folder_id: i64) -> Result<HashSet<u32>> {
+        self.with(|c| {
+            let mut st = c.prepare_cached("SELECT uid FROM fetch_holes WHERE folder_id=?1")?;
+            let rows = st.query_map([folder_id], |r| r.get::<_, u32>(0))?;
+            Ok(rows.collect::<rusqlite::Result<HashSet<u32>>>()?)
+        })
+    }
+
+    /// After a fetch: [missing] were asked for and did not come, [got] came.
+    pub fn update_fetch_holes(&self, folder_id: i64, missing: &[u32], got: &[u32]) -> Result<()> {
+        self.with(|c| {
+            for uid in missing {
+                c.execute(
+                    "INSERT OR IGNORE INTO fetch_holes(folder_id, uid) VALUES(?1, ?2)",
+                    params![folder_id, uid],
+                )?;
+            }
+            for uid in got {
+                c.execute(
+                    "DELETE FROM fetch_holes WHERE folder_id=?1 AND uid=?2",
+                    params![folder_id, uid],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Holes the server no longer has are no longer holes.
+    pub fn forget_fetch_holes(&self, folder_id: i64, keep: &HashSet<u32>) -> Result<()> {
+        for uid in self.fetch_holes(folder_id)? {
+            if !keep.contains(&uid) {
+                self.update_fetch_holes(folder_id, &[], &[uid])?;
+            }
+        }
+        Ok(())
     }
 
     /// Record a failed replay: [Failure::Retry] counts an attempt, [Failure::Refused]
@@ -1488,11 +1623,25 @@ impl Store {
         account_id: i64,
         folder: &str,
     ) -> Result<(HashSet<u32>, HashSet<u32>)> {
+        self.with(|c| Self::pending_in(c, account_id, folder))
+    }
+
+    fn pending_in(
+        c: &Connection,
+        account_id: i64,
+        folder: &str,
+    ) -> Result<(HashSet<u32>, HashSet<u32>)> {
         let mut flags = HashSet::new();
         let mut moves = HashSet::new();
-        for item in self.pending_ops(account_id)? {
-            let removes = item.op.removes();
-            for copy in item.op.touched() {
+        let mut st =
+            c.prepare_cached("SELECT op_json FROM outbox WHERE account_id=?1 AND done=?2")?;
+        let rows = st.query_map(params![account_id, OUTBOX_PENDING], |r| {
+            r.get::<_, String>(0)
+        })?;
+        for row in rows {
+            let op: Op = serde_json::from_str(&row?)?;
+            let removes = op.removes();
+            for copy in op.touched() {
                 if copy.folder != folder {
                     continue;
                 }
@@ -1504,6 +1653,32 @@ impl Store {
             }
         }
         Ok((flags, moves))
+    }
+}
+
+/// What [Store::apply_server_flags] did.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FlagsApplied {
+    /// Left alone because a waiting op is about to change them.
+    pub held: usize,
+    /// Removed because the server marked them \\Deleted.
+    pub deleted: usize,
+}
+
+/// Local changes made inside [Store::batch].
+pub struct Batch<'a> {
+    c: &'a Connection,
+}
+
+impl Batch<'_> {
+    pub fn set_flags(&self, folder_id: i64, uid: u32, flags: Flags) -> Result<()> {
+        Store::set_flags_in(self.c, folder_id, uid, flags)
+    }
+    pub fn delete(&self, folder_id: i64, uid: u32) -> Result<()> {
+        Store::delete_in(self.c, folder_id, uid)
+    }
+    pub fn enqueue(&self, account_id: i64, op: &Op) -> Result<i64> {
+        Store::enqueue_in(self.c, account_id, op)
     }
 }
 
@@ -2097,6 +2272,7 @@ mod tests {
             .unwrap(); // cached by v6
         let new = s
             .upsert_fetched(a.id, inbox.id, 3, Flags::SEEN, 1, Some(42), &m)
+            .unwrap()
             .unwrap();
         assert_eq!(s.dedup_key(old).unwrap(), "gm:42");
         assert_eq!(s.dedup_key(new).unwrap(), "gm:42");

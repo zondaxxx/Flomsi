@@ -3,9 +3,8 @@
 use super::{FetchedMessage, FlagChange, FolderState, IdleOutcome, Provider, RemoteFolder};
 use crate::error::{Error, Result};
 use crate::model::{Flags, FolderRole};
-use async_imap::types::Flag;
-use futures::TryStreamExt;
 use rustls::pki_types::CertificateDer;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -175,21 +174,6 @@ pub struct Transport {
     pub local_bridge: bool,
 }
 
-fn to_flags<'a>(it: impl Iterator<Item = Flag<'a>>) -> Flags {
-    let mut f = Flags::default();
-    for flag in it {
-        f = match flag {
-            Flag::Seen => f.with(Flags::SEEN),
-            Flag::Flagged => f.with(Flags::FLAGGED),
-            Flag::Answered => f.with(Flags::ANSWERED),
-            Flag::Draft => f.with(Flags::DRAFT),
-            Flag::Deleted => f.with(Flags::DELETED),
-            _ => f,
-        };
-    }
-    f
-}
-
 /// Folder names travel in IMAP's modified UTF-7 (RFC 3501 5.1.3): `&BBoEPgRABDcEOAQ9BDA-` is
 /// "Корзина". Decode for display; commands keep the raw name. Malformed input stays as is.
 pub fn decode_folder_name(raw: &str) -> String {
@@ -232,6 +216,148 @@ pub fn decode_folder_name(raw: &str) -> String {
 }
 
 /// Map special-use attributes and well-known names to a role.
+/// Run [command] and collect what [take] picks from its untagged responses.
+///
+/// async-imap's own readers for SEARCH, LIST and FETCH stop at the tagged reply without
+/// looking at it, and at a closed stream they return what they have so far. A NO to
+/// `UID SEARCH ALL`, or a connection lost halfway through it, would then read as "the folder
+/// is empty" and the sync would delete the whole cache. Here a NO or BAD is an error and a
+/// stream that ends early is a lost connection.
+async fn checked<T>(
+    s: &mut Session,
+    command: &str,
+    take: impl FnMut(&async_imap::imap_proto::Response<'_>) -> Option<T>,
+) -> Result<Vec<T>> {
+    match checked_partial(s, command, take).await? {
+        (out, None) => Ok(out),
+        (_, Some(refused)) => Err(refused),
+    }
+}
+
+/// Like [checked], but a NO or BAD comes back next to what arrived before it (a server
+/// may deliver every message of a FETCH it can and refuse only one).
+async fn checked_partial<T>(
+    s: &mut Session,
+    command: &str,
+    mut take: impl FnMut(&async_imap::imap_proto::Response<'_>) -> Option<T>,
+) -> Result<(Vec<T>, Option<Error>)> {
+    use async_imap::imap_proto::{Response, Status};
+    let tag = s.run_command(command).await?;
+    let verb = command.split(' ').take(2).collect::<Vec<_>>().join(" ");
+    let mut out = Vec::new();
+    loop {
+        let Some(resp) = s.read_response().await? else {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("the connection closed during {verb}"),
+            )));
+        };
+        match resp.parsed() {
+            Response::Done {
+                tag: done,
+                status,
+                code,
+                information,
+            } if *done == tag => {
+                return match status {
+                    Status::Ok => Ok((out, None)),
+                    // The same wording async-imap uses, so diagnose() and the outbox read
+                    // both alike.
+                    Status::No => Ok((
+                        out,
+                        Some(Error::Imap(format!(
+                            "no response: code: {code:?}, info: {information:?}"
+                        ))),
+                    )),
+                    Status::Bad => Ok((
+                        out,
+                        Some(Error::Imap(format!(
+                            "bad response: code: {code:?}, info: {information:?}"
+                        ))),
+                    )),
+                    other => Err(Error::Io(std::io::Error::other(format!(
+                        "{verb}: {other:?} {information:?}"
+                    )))),
+                };
+            }
+            // The server says goodbye mid-command: the connection is going away.
+            Response::Data {
+                status: Status::Bye,
+                information,
+                ..
+            } => {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    format!("the server closed the connection: {information:?}"),
+                )))
+            }
+            other => {
+                if let Some(v) = take(other) {
+                    out.push(v);
+                }
+            }
+        }
+    }
+}
+
+/// UIDs from `* SEARCH` lines.
+fn search_ids(r: &async_imap::imap_proto::Response<'_>) -> Option<Vec<u32>> {
+    use async_imap::imap_proto::{MailboxDatum, Response};
+    match r {
+        Response::MailboxData(MailboxDatum::Search(ids)) => Some(ids.clone()),
+        _ => None,
+    }
+}
+
+fn flags_from(names: &[std::borrow::Cow<'_, str>]) -> Flags {
+    let mut f = Flags::default();
+    for n in names {
+        f = match n.to_ascii_lowercase().as_str() {
+            "\\seen" => f.with(Flags::SEEN),
+            "\\flagged" => f.with(Flags::FLAGGED),
+            "\\answered" => f.with(Flags::ANSWERED),
+            "\\draft" => f.with(Flags::DRAFT),
+            "\\deleted" => f.with(Flags::DELETED),
+            _ => f,
+        };
+    }
+    f
+}
+
+/// One FETCH response, as far as it carries these items.
+#[derive(Default)]
+struct FetchParts {
+    uid: Option<u32>,
+    flags: Option<Flags>,
+    size: Option<u32>,
+    body: Option<Vec<u8>>,
+    gm_msgid: Option<u64>,
+}
+
+fn fetch_parts(r: &async_imap::imap_proto::Response<'_>) -> Option<FetchParts> {
+    use async_imap::imap_proto::{AttributeValue, Response};
+    let Response::Fetch(_, attrs) = r else {
+        return None;
+    };
+    let mut p = FetchParts::default();
+    for a in attrs {
+        match a {
+            AttributeValue::Uid(u) => p.uid = Some(*u),
+            AttributeValue::Flags(f) => p.flags = Some(flags_from(f)),
+            AttributeValue::Rfc822Size(n) => p.size = Some(*n),
+            AttributeValue::GmailMsgId(id) => p.gm_msgid = Some(*id),
+            AttributeValue::BodySection {
+                section: None,
+                data: Some(d),
+                ..
+            }
+            | AttributeValue::Rfc822(Some(d)) => p.body = Some(d.to_vec()),
+            _ => {}
+        }
+    }
+    Some(p)
+}
+
 fn role_for(name: &str, attrs_debug: &str) -> FolderRole {
     let a = attrs_debug.to_lowercase();
     if a.contains("sent") {
@@ -433,8 +559,13 @@ impl ImapProvider {
         );
         let r: Result<Vec<u32>> = async {
             let s = self.s()?;
-            let mut v: Vec<u32> = s.uid_search(&query).await?.into_iter().collect();
+            let mut v: Vec<u32> = checked(s, &format!("UID SEARCH {query}"), search_ids)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
             v.sort_unstable();
+            v.dedup();
             Ok(v)
         }
         .await;
@@ -445,22 +576,35 @@ impl ImapProvider {
 impl Provider for ImapProvider {
     async fn list_folders(&mut self) -> Result<Vec<RemoteFolder>> {
         let r: Result<Vec<RemoteFolder>> = async {
+            use async_imap::imap_proto::{MailboxDatum, Response};
             let s = self.s()?;
-            let names: Vec<async_imap::types::Name> =
-                s.list(Some(""), Some("*")).await?.try_collect().await?;
-            Ok(names
-                .iter()
-                .map(|n| {
-                    let attrs = format!("{:?}", n.attributes());
+            let folders = checked(s, "LIST \"\" \"*\"", |r| match r {
+                Response::MailboxData(MailboxDatum::List {
+                    name_attributes,
+                    name,
+                    ..
+                }) => {
+                    let attrs = format!("{name_attributes:?}");
                     let selectable = !attrs.to_lowercase().contains("noselect");
-                    RemoteFolder {
-                        name: n.name().to_string(),
-                        // Roles match on the readable name ("Корзина"), commands use the raw one.
-                        role: role_for(&decode_folder_name(n.name()), &attrs),
+                    Some(RemoteFolder {
+                        name: name.to_string(),
+                        // Roles match on the readable name ("Корзина"), commands use the
+                        // raw one.
+                        role: role_for(&decode_folder_name(name), &attrs),
                         selectable,
-                    }
-                })
-                .collect())
+                    })
+                }
+                _ => None,
+            })
+            .await?;
+            // Every server has an INBOX. A list without one is not the folder list.
+            if !folders.iter().any(|f| f.name.eq_ignore_ascii_case("INBOX")) {
+                return Err(Error::Imap(format!(
+                    "the folder list came back without INBOX ({} folders)",
+                    folders.len()
+                )));
+            }
+            Ok(folders)
         }
         .await;
         self.after(r)
@@ -494,9 +638,13 @@ impl Provider for ImapProvider {
     async fn uids(&mut self) -> Result<Vec<u32>> {
         let r: Result<Vec<u32>> = async {
             let s = self.s()?;
-            let set = s.uid_search("ALL").await?;
-            let mut v: Vec<u32> = set.into_iter().collect();
+            let mut v: Vec<u32> = checked(s, "UID SEARCH ALL", search_ids)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
             v.sort_unstable();
+            v.dedup();
             Ok(v)
         }
         .await;
@@ -504,11 +652,12 @@ impl Provider for ImapProvider {
     }
 
     async fn fetch(&mut self, uids: &[u32]) -> Result<Vec<FetchedMessage>> {
+        let gmail = self.gmail;
         let r: Result<Vec<FetchedMessage>> = async {
             if uids.is_empty() {
                 return Ok(vec![]);
             }
-            let query = if self.gmail {
+            let query = if gmail {
                 "(UID FLAGS RFC822.SIZE X-GM-MSGID BODY.PEEK[])"
             } else {
                 "(UID FLAGS RFC822.SIZE BODY.PEEK[])"
@@ -521,16 +670,53 @@ impl Provider for ImapProvider {
                     .map(|u| u.to_string())
                     .collect::<Vec<_>>()
                     .join(",");
-                let fetches: Vec<async_imap::types::Fetch> =
-                    s.uid_fetch(&set, query).await?.try_collect().await?;
-                for f in fetches {
-                    let Some(uid) = f.uid else { continue };
+                let wanted: HashSet<u32> = chunk.iter().copied().collect();
+                // A NO for the batch may be about one broken message: keep what came, ask
+                // for the rest one by one, and leave out only what the server cannot give,
+                // so newer mail still arrives.
+                let (mut lines, refused) =
+                    checked_partial(s, &format!("UID FETCH {set} {query}"), fetch_parts).await?;
+                if let Some(e) = refused {
+                    log::warn!("FETCH {set} refused ({e}); asking one by one");
+                    let came: HashSet<u32> = lines
+                        .iter()
+                        .filter(|p| p.body.is_some())
+                        .filter_map(|p| p.uid)
+                        .collect();
+                    for uid in chunk.iter().filter(|u| !came.contains(u)) {
+                        match checked_partial(s, &format!("UID FETCH {uid} {query}"), fetch_parts)
+                            .await?
+                        {
+                            (more, None) => lines.extend(more),
+                            (_, Some(e)) => log::warn!("UID {uid} cannot be fetched: {e}"),
+                        }
+                    }
+                }
+                // A server may split one message over several FETCH lines, and another
+                // session's flag change may arrive in between as an extra FETCH: merge by
+                // UID, keep only what was asked for, and only messages that came with a body.
+                let mut parts: BTreeMap<u32, FetchParts> = BTreeMap::new();
+                for p in lines {
+                    let Some(uid) = p.uid.filter(|u| wanted.contains(u)) else {
+                        continue;
+                    };
+                    let e = parts.entry(uid).or_default();
+                    e.uid = Some(uid);
+                    e.flags = p.flags.or(e.flags);
+                    e.size = p.size.or(e.size);
+                    e.gm_msgid = p.gm_msgid.or(e.gm_msgid);
+                    if p.body.is_some() {
+                        e.body = p.body;
+                    }
+                }
+                for (uid, p) in parts {
+                    let Some(raw) = p.body else { continue };
                     out.push(FetchedMessage {
                         uid,
-                        flags: to_flags(f.flags()),
-                        size: f.size.unwrap_or(0),
-                        raw: f.body().map(|b| b.to_vec()).unwrap_or_default(),
-                        gm_msgid: f.gmail_msg_id().copied(),
+                        flags: p.flags.unwrap_or_default(),
+                        size: p.size.unwrap_or(raw.len() as u32),
+                        raw,
+                        gm_msgid: p.gm_msgid,
                     });
                 }
             }
@@ -551,16 +737,15 @@ impl Provider for ImapProvider {
                 Some(m) => format!("(UID FLAGS) (CHANGEDSINCE {m})"),
                 None => "(UID FLAGS)".to_string(),
             };
-            let fetches: Vec<async_imap::types::Fetch> =
-                s.uid_fetch(uid_set, &query).await?.try_collect().await?;
-            Ok(fetches
-                .iter()
-                .filter_map(|f| {
-                    f.uid.map(|uid| FlagChange {
-                        uid,
-                        flags: to_flags(f.flags()),
-                    })
-                })
+            let mut by_uid: BTreeMap<u32, Flags> = BTreeMap::new();
+            for p in checked(s, &format!("UID FETCH {uid_set} {query}"), fetch_parts).await? {
+                if let (Some(uid), Some(flags)) = (p.uid, p.flags) {
+                    by_uid.insert(uid, flags);
+                }
+            }
+            Ok(by_uid
+                .into_iter()
+                .map(|(uid, flags)| FlagChange { uid, flags })
                 .collect())
         }
         .await;
@@ -634,7 +819,11 @@ impl Provider for ImapProvider {
             // clients (mutt, Thunderbird's "mark as deleted") leave some there on purpose.
             // Expunge only when ours is the only one; otherwise it stays marked, which every
             // client (this one too) treats as gone.
-            let marked = s.uid_search("DELETED").await?;
+            let marked: Vec<u32> = checked(s, "UID SEARCH DELETED", search_ids)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
             if marked.iter().all(|u| *u == uid) {
                 s.run_command_and_check_ok("EXPUNGE").await?;
             }

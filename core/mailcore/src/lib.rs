@@ -952,6 +952,10 @@ mod tests {
         append_once(&mut p, "Sent", &raw, Some(&id)).await.unwrap();
         // A retry, or a server that filed it already: still one copy.
         append_once(&mut p, "Sent", &raw, Some(&id)).await.unwrap();
+        // A search the server refuses is not "not there": no blind second copy.
+        fake.with(|s| s.refuse_search = true);
+        assert!(append_once(&mut p, "Sent", &raw, Some(&id)).await.is_err());
+        fake.with(|s| s.refuse_search = false);
         p.logout().await.unwrap();
         assert_eq!(fake.with(|s| s.msgs("Sent").len()), 1);
         // Each message gets its own id.

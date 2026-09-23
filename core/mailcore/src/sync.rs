@@ -226,20 +226,34 @@ impl SyncEngine {
             }
         }
 
-        // Local actions still waiting for the server (a replay that failed this time)
-        // must not be undone by the server's older state: flags stay, moved mail stays out.
-        let (flags_waiting, moves_waiting) =
-            self.store.pending_uids(account.id, &folder.remote_name)?;
+        // Moves still waiting for the server: that mail stays out (checked again when each
+        // message is stored, in case one is made while this sync runs).
+        let (_, moves_waiting) = self.store.pending_uids(account.id, &folder.remote_name)?;
 
-        // Reconcile UID set: what's gone remotely goes locally too.
+        // Reconcile UID set: what's gone remotely goes locally too. A SEARCH that lists fewer
+        // messages than SELECT counted is not trusted to delete anything (a server that
+        // expunged meanwhile is simply caught up next time).
         let remote_uids = provider.uids().await?;
         let remote_set: HashSet<u32> = remote_uids.iter().copied().collect();
         let mut removed = 0;
-        for uid in self.store.uids(folder.id)? {
-            if !remote_set.contains(&uid) {
-                self.store.delete_by_uid(folder.id, uid)?;
-                removed += 1;
+        // A server may count messages in EXISTS that SEARCH never lists (some hide the ones
+        // marked deleted): a second SEARCH that agrees with the first is believed.
+        let trusted =
+            remote_uids.len() >= state.exists as usize || provider.uids().await? == remote_uids;
+        if trusted {
+            for uid in self.store.uids(folder.id)? {
+                if !remote_set.contains(&uid) {
+                    self.store.delete_by_uid(folder.id, uid)?;
+                    removed += 1;
+                }
             }
+        } else {
+            log::warn!(
+                "{}: SEARCH listed {} of {} messages; nothing deleted this time",
+                folder.remote_name,
+                remote_uids.len(),
+                state.exists
+            );
         }
 
         let mut held_back = false;
@@ -256,29 +270,39 @@ impl SyncEngine {
                 format!("{lo}:{hi}")
             };
             let local: HashSet<u32> = local_uids.iter().copied().collect();
-            for fc in provider.fetch_flags(&set, since).await? {
-                if !local.contains(&fc.uid) {
-                    continue;
-                }
-                if flags_waiting.contains(&fc.uid) {
-                    // Skipped for now; with CHANGEDSINCE it must be offered again.
+            // A server that refuses the flag fetch must not also stop new mail: skip the flags
+            // this time and keep HIGHESTMODSEQ, so they all come again.
+            let reported = match provider.fetch_flags(&set, since).await {
+                Ok(v) => v,
+                Err(e @ crate::Error::Io(_)) => return Err(e),
+                Err(e) => {
+                    log::warn!("{}: flags not fetched ({e})", folder.remote_name);
                     held_back = true;
-                } else if fc.flags.contains(Flags::DELETED) {
-                    // Marked for deletion (another client, or our own move on a server
-                    // without UIDPLUS): as good as gone.
-                    self.store.delete_by_uid(folder.id, fc.uid)?;
-                    removed += 1;
-                } else {
-                    self.store.set_flags_by_uid(folder.id, fc.uid, fc.flags)?;
+                    Vec::new()
                 }
-            }
+            };
+            let changes: Vec<(u32, Flags)> = reported
+                .into_iter()
+                .filter(|fc| local.contains(&fc.uid))
+                .map(|fc| (fc.uid, fc.flags))
+                .collect();
+            // Messages a waiting op is about to change keep their local flags; with
+            // CHANGEDSINCE such a change must be offered again next time.
+            let applied = self.store.apply_server_flags(
+                account.id,
+                folder.id,
+                &folder.remote_name,
+                &changes,
+            )?;
+            held_back |= applied.held > 0;
+            removed += applied.deleted;
             // Given-up flag changes: the server did not change, so CHANGEDSINCE will not
             // mention them. Ask for exactly those.
             let mut again: Vec<u32> = undo
                 .refresh
                 .iter()
                 .copied()
-                .filter(|u| local.contains(u) && !flags_waiting.contains(u))
+                .filter(|u| local.contains(u))
                 .collect();
             if !again.is_empty() {
                 again.sort_unstable();
@@ -287,11 +311,20 @@ impl SyncEngine {
                     .map(u32::to_string)
                     .collect::<Vec<_>>()
                     .join(",");
-                for fc in provider.fetch_flags(&set, None).await? {
-                    if again.contains(&fc.uid) {
-                        self.store.set_flags_by_uid(folder.id, fc.uid, fc.flags)?;
-                    }
-                }
+                let changes: Vec<(u32, Flags)> = provider
+                    .fetch_flags(&set, None)
+                    .await?
+                    .into_iter()
+                    .filter(|fc| again.contains(&fc.uid))
+                    .map(|fc| (fc.uid, fc.flags))
+                    .collect();
+                let applied = self.store.apply_server_flags(
+                    account.id,
+                    folder.id,
+                    &folder.remote_name,
+                    &changes,
+                )?;
+                removed += applied.deleted;
             }
         }
         let local: HashSet<u32> = local_uids.into_iter().collect();
@@ -306,12 +339,15 @@ impl SyncEngine {
         } else {
             local.iter().min().copied().or(folder.uidnext)
         };
+        // UIDs asked for before and not received are asked for again, whatever the floor.
+        let holes = self.store.fetch_holes(folder.id)?;
+        self.store.forget_fetch_holes(folder.id, &remote_set)?;
         let mut new_uids: Vec<u32> = remote_uids
             .into_iter()
             .filter(|u| {
                 !local.contains(u)
                     && !moves_waiting.contains(u)
-                    && (floor.is_none_or(|f| *u >= f) || restore.contains(u))
+                    && (floor.is_none_or(|f| *u >= f) || restore.contains(u) || holes.contains(u))
             })
             .collect();
         let window = if matches!(folder.role, FolderRole::Junk | FolderRole::Trash) {
@@ -326,12 +362,29 @@ impl SyncEngine {
         let now = Utc::now();
         for chunk in new_uids.chunks(50) {
             let mut batch = 0;
-            for fm in provider.fetch(chunk).await? {
-                if fm.flags.contains(Flags::DELETED) {
+            let got = provider.fetch(chunk).await?;
+            // Asked for and not received (no body, or the server refused that one): a hole,
+            // tried again next sync even if it lies below every cached UID.
+            let received: HashSet<u32> = got
+                .iter()
+                .filter(|m| !m.raw.is_empty())
+                .map(|m| m.uid)
+                .collect();
+            let missing: Vec<u32> = chunk
+                .iter()
+                .copied()
+                .filter(|u| !received.contains(u))
+                .collect();
+            let arrived: Vec<u32> = received.iter().copied().collect();
+            self.store
+                .update_fetch_holes(folder.id, &missing, &arrived)?;
+            for fm in got {
+                // Marked deleted, or a body that came back empty: nothing to keep.
+                if fm.flags.contains(Flags::DELETED) || fm.raw.is_empty() {
                     continue;
                 }
                 let parsed = parse_rfc822(&fm.raw, now);
-                let id = self.store.upsert_fetched(
+                let Some(id) = self.store.upsert_fetched(
                     account.id,
                     folder.id,
                     fm.uid,
@@ -339,7 +392,10 @@ impl SyncEngine {
                     fm.size as u64,
                     fm.gm_msgid,
                     &parsed,
-                )?;
+                )?
+                else {
+                    continue;
+                };
                 if !parsed.attachments.is_empty()
                     && fm.raw.len() <= opts.keep_raw_below
                     && !self
@@ -508,6 +564,7 @@ impl<'a> Actions<'a> {
     /// Set or clear one flag on every copy locally; queue the remote STORE once per message
     /// on Gmail (on the All Mail copy when cached), once per changed copy elsewhere.
     fn set_flag(&self, copies_by_message: Vec<Vec<Message>>, flag: Flags, on: bool) -> Result<()> {
+        let mut plan = Vec::new();
         for group in copies_by_message {
             let Some(first) = group.first() else { continue };
             let gmail = self.is_gmail(first.account_id)?;
@@ -528,7 +585,7 @@ impl<'a> Actions<'a> {
             for m in &group {
                 let new = changed(m);
                 if new != m.flags {
-                    self.store.set_flags_by_uid(m.folder_id, m.uid, new)?;
+                    plan.push(Change::Flags(m.folder_id, m.uid, new));
                 }
                 let send = match anchor {
                     // Gmail: flags belong to the message; one STORE on the anchor copy.
@@ -553,9 +610,9 @@ impl<'a> Actions<'a> {
                 } else {
                     Vec::new()
                 };
-                self.store.enqueue(
+                plan.push(Change::Enqueue(
                     m.account_id,
-                    &Op::SetFlags {
+                    Op::SetFlags {
                         folder: folder.remote_name.clone(),
                         uid: m.uid,
                         add,
@@ -563,10 +620,10 @@ impl<'a> Actions<'a> {
                         uidvalidity: folder.uidvalidity,
                         also,
                     },
-                )?;
+                ));
             }
         }
-        Ok(())
+        self.commit(plan)
     }
 
     pub fn mark_read(&self, thread_id: i64, read: bool) -> Result<()> {
@@ -586,23 +643,43 @@ impl<'a> Actions<'a> {
     }
 
     fn enqueue_move(
-        &self,
+        plan: &mut Vec<Change>,
         m: &Message,
         src: &Folder,
         dest: &Folder,
         also: Vec<LocalCopy>,
-    ) -> Result<()> {
-        self.store.enqueue(
+    ) {
+        plan.push(Change::Enqueue(
             m.account_id,
-            &Op::Move {
+            Op::Move {
                 folder: src.remote_name.clone(),
                 uid: m.uid,
                 dest: dest.remote_name.clone(),
                 uidvalidity: src.uidvalidity,
                 also,
             },
-        )?;
-        Ok(())
+        ));
+    }
+
+    /// Apply the planned local changes and queue their ops as one step (see [Store::batch]).
+    fn commit(&self, plan: Vec<Change>) -> Result<()> {
+        if plan.is_empty() {
+            return Ok(());
+        }
+        self.store.batch(|b| {
+            for c in &plan {
+                match c {
+                    Change::Delete(folder_id, uid) => b.delete(*folder_id, *uid)?,
+                    Change::Flags(folder_id, uid, flags) => {
+                        b.set_flags(*folder_id, *uid, *flags)?
+                    }
+                    Change::Enqueue(account_id, op) => {
+                        b.enqueue(*account_id, op)?;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     /// The copies of a message other than [m], as (folder, UID).
@@ -624,6 +701,7 @@ impl<'a> Actions<'a> {
     pub fn archive(&self, thread_id: i64) -> Result<usize> {
         self.store.unsnooze(thread_id)?;
         let mut moved = 0;
+        let mut plan = Vec::new();
         for group in self.groups(thread_id)? {
             let Some(first) = group.first() else { continue };
             let folders = self.store.folders(first.account_id)?;
@@ -638,11 +716,12 @@ impl<'a> Actions<'a> {
                     .iter()
                     .find_map(|r| folders.iter().find(|f| f.role == *r && f.selectable))
                     .ok_or_else(|| crate::error::Error::NotFound("archive folder".into()))?;
-                self.store.delete_by_uid(m.folder_id, m.uid)?;
-                self.enqueue_move(m, src, dest, Vec::new())?;
+                plan.push(Change::Delete(m.folder_id, m.uid));
+                Self::enqueue_move(&mut plan, m, src, dest, Vec::new());
                 moved += 1;
             }
         }
+        self.commit(plan)?;
         Ok(moved)
     }
 
@@ -652,6 +731,7 @@ impl<'a> Actions<'a> {
     pub fn trash(&self, thread_id: i64) -> Result<usize> {
         self.store.unsnooze(thread_id)?;
         let mut moved = 0;
+        let mut plan = Vec::new();
         for group in self.groups(thread_id)? {
             let Some(first) = group.first() else { continue };
             let folders = self.store.folders(first.account_id)?;
@@ -660,7 +740,7 @@ impl<'a> Actions<'a> {
                 .find(|f| f.role == FolderRole::Trash && f.selectable)
                 .ok_or_else(|| crate::error::Error::NotFound("trash folder".into()))?;
             if self.is_gmail(first.account_id)? {
-                moved += self.gmail_leave_everything(&group, &folders, trash)?;
+                moved += Self::gmail_leave_everything(&mut plan, &group, &folders, trash)?;
                 continue;
             }
             for m in &group {
@@ -673,18 +753,19 @@ impl<'a> Actions<'a> {
                 ) {
                     continue;
                 }
-                self.store.delete_by_uid(m.folder_id, m.uid)?;
-                self.enqueue_move(m, src, trash, Vec::new())?;
+                plan.push(Change::Delete(m.folder_id, m.uid));
+                Self::enqueue_move(&mut plan, m, src, trash, Vec::new());
                 moved += 1;
             }
         }
+        self.commit(plan)?;
         Ok(moved)
     }
 
     /// Gmail: one MOVE into Trash or Spam removes the message from all labels, so every local
     /// copy goes; the copy in `dest` arrives with the next sync.
     fn gmail_leave_everything(
-        &self,
+        plan: &mut Vec<Change>,
         group: &[Message],
         folders: &[Folder],
         dest: &Folder,
@@ -698,9 +779,9 @@ impl<'a> Actions<'a> {
         let Some(src) = Self::folder_of(folders, m) else {
             return Ok(0);
         };
-        self.enqueue_move(m, src, dest, Self::other_copies(group, m, folders))?;
+        Self::enqueue_move(plan, m, src, dest, Self::other_copies(group, m, folders));
         for c in group {
-            self.store.delete_by_uid(c.folder_id, c.uid)?;
+            plan.push(Change::Delete(c.folder_id, c.uid));
         }
         Ok(1)
     }
@@ -724,6 +805,7 @@ impl<'a> Actions<'a> {
         };
         let restore = groups.iter().flatten().all(binned);
         let mut moved = 0;
+        let mut plan = Vec::new();
         for group in groups {
             let Some(first) = group.first() else { continue };
             if first.account_id != dest.account_id || group.iter().any(|m| m.folder_id == dest.id) {
@@ -731,7 +813,7 @@ impl<'a> Actions<'a> {
             }
             if gmail {
                 if matches!(dest.role, FolderRole::Trash | FolderRole::Junk) {
-                    moved += self.gmail_leave_everything(&group, &folders, &dest)?;
+                    moved += Self::gmail_leave_everything(&mut plan, &group, &folders, &dest)?;
                     continue;
                 }
                 let source = group.iter().find_map(|m| {
@@ -741,9 +823,9 @@ impl<'a> Actions<'a> {
                     usable.then_some((m, f))
                 });
                 let Some((m, src)) = source else { continue };
-                self.enqueue_move(m, src, &dest, Vec::new())?;
+                Self::enqueue_move(&mut plan, m, src, &dest, Vec::new());
                 if src.role != FolderRole::All {
-                    self.store.delete_by_uid(m.folder_id, m.uid)?;
+                    plan.push(Change::Delete(m.folder_id, m.uid));
                 }
                 moved += 1;
                 continue;
@@ -759,11 +841,12 @@ impl<'a> Actions<'a> {
                 {
                     continue;
                 }
-                self.store.delete_by_uid(m.folder_id, m.uid)?;
-                self.enqueue_move(m, src, &dest, Vec::new())?;
+                plan.push(Change::Delete(m.folder_id, m.uid));
+                Self::enqueue_move(&mut plan, m, src, &dest, Vec::new());
                 moved += 1;
             }
         }
+        self.commit(plan)?;
         Ok(moved)
     }
 
@@ -792,6 +875,13 @@ impl<'a> Actions<'a> {
         }
         Ok(due.len())
     }
+}
+
+/// One local change an action makes, applied with the op that carries it to the server.
+enum Change {
+    Delete(i64, u32),
+    Flags(i64, u32, Flags),
+    Enqueue(i64, Op),
 }
 
 /// Given-up local changes of one folder to take back during its sync.

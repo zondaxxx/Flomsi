@@ -20,6 +20,8 @@ pub struct FakeMsg {
     pub raw: Vec<u8>,
     /// X-GM-MSGID: the same number for a message's copy in every Gmail label.
     pub gm: u64,
+    /// CONDSTORE: bumped whenever the message's flags change.
+    pub modseq: u64,
 }
 
 #[derive(Debug)]
@@ -47,6 +49,66 @@ pub struct FakeState {
     pub old_server: bool,
     /// Answer every UID STORE with a NO that may pass (a flaky server).
     pub refuse_store: bool,
+    /// Answer UID SEARCH with NO.
+    pub refuse_search: bool,
+    /// Send part of a SEARCH answer, then close the connection.
+    pub close_mid_search: bool,
+    /// Answer LIST with NO.
+    pub refuse_list: bool,
+    /// Say BYE instead of answering UID SEARCH.
+    pub bye_on_search: bool,
+    /// Leave this UID out of SEARCH answers while SELECT still counts it; with
+    /// `hide_once`, only from the next answer.
+    pub hide_from_search: Option<u32>,
+    pub hide_once: bool,
+    /// Answer NO to any body FETCH that includes this UID (a message the server cannot
+    /// read back).
+    pub broken_uid: Option<u32>,
+    /// Answer NO to flag-only FETCHes.
+    pub refuse_flag_fetch: bool,
+    /// Another session's flag change (a FETCH without UID) in the middle of a body FETCH.
+    pub unsolicited_fetch: bool,
+    /// Once, after answering the named command in the named folder: tell `paused`, then
+    /// wait for `resume` before reading the next command.
+    pub pause: Option<Pause>,
+    /// CONDSTORE: HIGHESTMODSEQ in SELECT, MODSEQ in FETCH, CHANGEDSINCE honoured.
+    pub condstore: bool,
+    pub modseq: u64,
+}
+
+/// Where the fake stops for a test to act in the middle of a sync.
+#[derive(Debug)]
+pub struct Pause {
+    /// `SELECT` or `SEARCH` (after the reply is out), or `before SEARCH` (the command is
+    /// read, the reply not sent yet).
+    pub after: &'static str,
+    pub folder: String,
+    pub paused: Arc<tokio::sync::Notify>,
+    pub resume: Arc<tokio::sync::Notify>,
+}
+
+impl Pause {
+    pub fn new(after: &'static str, folder: &str) -> Pause {
+        Pause {
+            after,
+            folder: folder.to_string(),
+            paused: Arc::new(tokio::sync::Notify::new()),
+            resume: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+/// Take the pause if it is set for this command in this folder.
+fn take_pause(st: &mut FakeState, after: &str, folder: &str) -> Option<Pause> {
+    if st
+        .pause
+        .as_ref()
+        .is_some_and(|p| p.after == after && p.folder == folder)
+    {
+        st.pause.take()
+    } else {
+        None
+    }
 }
 
 /// Marks a reply the server sends only in part before going silent.
@@ -77,6 +139,8 @@ impl FakeState {
     }
 
     fn put(&mut self, name: &str, raw: &[u8], flags: Vec<String>, gm: u64) -> u32 {
+        self.modseq += 1;
+        let modseq = self.modseq;
         let b = self.boxes.get_mut(name).expect("mailbox exists");
         let uid = b.next_uid;
         b.next_uid += 1;
@@ -85,9 +149,25 @@ impl FakeState {
             flags,
             raw: raw.to_vec(),
             gm,
+            modseq,
         });
         self.version += 1;
         uid
+    }
+
+    /// Another client changes a message's flags.
+    pub fn set_flags(&mut self, name: &str, uid: u32, flags: &[&str]) {
+        self.modseq += 1;
+        let modseq = self.modseq;
+        let b = self.boxes.get_mut(name).expect("mailbox exists");
+        let m = b
+            .msgs
+            .iter_mut()
+            .find(|m| m.uid == uid)
+            .expect("message exists");
+        m.flags = flags.iter().map(|f| f.to_string()).collect();
+        m.modseq = modseq;
+        self.version += 1;
     }
 
     /// Gmail's folder tree: INBOX plus `[Gmail]/…` special-use boxes under a `\\Noselect` parent.
@@ -424,12 +504,17 @@ where
     let w: Writer<S> = Arc::new(tokio::sync::Mutex::new(w));
     let caps = {
         let st = state.lock().unwrap();
-        if st.old_server {
+        let base = if st.old_server {
             "IMAP4rev1 IDLE"
         } else if st.gmail {
             "IMAP4rev1 IDLE MOVE UIDPLUS X-GM-EXT-1"
         } else {
             "IMAP4rev1 IDLE MOVE UIDPLUS"
+        };
+        if st.condstore {
+            format!("{base} CONDSTORE")
+        } else {
+            base.to_string()
         }
     };
     if greet {
@@ -490,6 +575,13 @@ where
                 };
                 send(&w, &reply).await?;
             }
+            "LIST" if state.lock().unwrap().refuse_list => {
+                send(
+                    &w,
+                    format!("{tag} NO [UNAVAILABLE] list failed\r\n").as_bytes(),
+                )
+                .await?;
+            }
             "LIST" => {
                 let mut reply = String::new();
                 for (name, b) in &state.lock().unwrap().boxes {
@@ -504,19 +596,38 @@ where
             }
             "SELECT" | "EXAMINE" => {
                 let name = unquote(args.get(1).map(String::as_str).unwrap_or(""));
-                let reply = match state.lock().unwrap().boxes.get(&name) {
-                    None => format!("{tag} NO no such mailbox\r\n"),
-                    Some(b) => {
-                        selected = Some(name.clone());
-                        format!(
-                            "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* {} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] next\r\n{tag} OK [READ-WRITE] SELECT completed\r\n",
-                            b.msgs.len(),
-                            b.uidvalidity,
-                            b.next_uid
-                        )
-                    }
+                let reply = {
+                    let mut st = state.lock().unwrap();
+                    let modseq = if st.condstore {
+                        format!("* OK [HIGHESTMODSEQ {}] modseq\r\n", st.modseq.max(1))
+                    } else {
+                        String::new()
+                    };
+                    let pause = if st.boxes.contains_key(&name) {
+                        take_pause(&mut st, "SELECT", &name)
+                    } else {
+                        None
+                    };
+                    let reply = match st.boxes.get(&name) {
+                        None => format!("{tag} NO no such mailbox\r\n"),
+                        Some(b) => {
+                            selected = Some(name.clone());
+                            format!(
+                                "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* {} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] next\r\n{modseq}{tag} OK [READ-WRITE] SELECT completed\r\n",
+                                b.msgs.len(),
+                                b.uidvalidity,
+                                b.next_uid
+                            )
+                        }
+                    };
+                    (reply, pause)
                 };
+                let (reply, pause) = reply;
                 send(&w, reply.as_bytes()).await?;
+                if let Some(p) = pause {
+                    p.paused.notify_one();
+                    p.resume.notified().await;
+                }
             }
             "UID" => {
                 let Some(name) = selected.clone() else {
@@ -528,13 +639,61 @@ where
                     .map(|a| a.to_ascii_uppercase())
                     .unwrap_or_default();
                 let set = args.get(2).cloned().unwrap_or_default();
+                // What to do once the reply is out: close the connection, or pause.
+                let mut hang_up = false;
+                let mut pause = None;
+                let mut pre_pause = None;
                 let reply: Vec<u8> = {
                     let mut st = state.lock().unwrap();
                     let old_server = st.old_server;
                     let refuse_store = st.refuse_store;
+                    let refuse_search = st.refuse_search;
+                    let close_mid_search = st.close_mid_search;
+                    let unsolicited = st.unsolicited_fetch;
+                    let condstore = st.condstore;
+                    let modseq_base = st.modseq;
+                    let mut modseq_after = 0;
+                    let bye = sub == "SEARCH" && st.bye_on_search;
+                    let hidden = if sub == "SEARCH" && st.hide_once {
+                        st.hide_from_search.take()
+                    } else {
+                        st.hide_from_search
+                    };
+                    let broken = st.broken_uid;
+                    let refuse_flags = st.refuse_flag_fetch;
+                    if sub == "SEARCH" {
+                        pause = take_pause(&mut st, "SEARCH", &name);
+                        pre_pause = take_pause(&mut st, "before SEARCH", &name);
+                    }
+                    // `(CHANGEDSINCE n)` in a FETCH.
+                    let changed_since = line
+                        .to_ascii_uppercase()
+                        .split("CHANGEDSINCE ")
+                        .nth(1)
+                        .and_then(|t| {
+                            t.chars()
+                                .take_while(char::is_ascii_digit)
+                                .collect::<String>()
+                                .parse::<u64>()
+                                .ok()
+                        });
                     let b = st.boxes.get_mut(&name).expect("selected box");
                     let max = b.msgs.iter().map(|m| m.uid).max().unwrap_or(0);
                     match sub.as_str() {
+                        "SEARCH" if refuse_search => {
+                            format!("{tag} NO [UNAVAILABLE] search failed\r\n").into_bytes()
+                        }
+                        "SEARCH" if bye => {
+                            hang_up = true;
+                            b"* BYE server shutting down\r\n".to_vec()
+                        }
+                        "SEARCH" if close_mid_search => {
+                            // One whole line of the answer, then a clean TLS close: no error
+                            // from the transport, only a missing tagged reply.
+                            hang_up = true;
+                            let first = b.msgs.first().map(|m| m.uid).unwrap_or(1);
+                            format!("* SEARCH {first}\r\n").into_bytes()
+                        }
                         "SEARCH" => {
                             // `HEADER Message-ID "<id>"` narrows to that message; anything
                             // else is ALL.
@@ -551,6 +710,7 @@ where
                                 .filter(|m| {
                                     !deleted_only || m.flags.iter().any(|f| f == "\\Deleted")
                                 })
+                                .filter(|m| hidden != Some(m.uid))
                                 .filter(|m| {
                                     wanted.as_ref().is_none_or(|w| {
                                         String::from_utf8_lossy(&m.raw)
@@ -571,16 +731,53 @@ where
                             out.push_str(&ok("SEARCH"));
                             out.into_bytes()
                         }
+                        "FETCH"
+                            if broken.is_some_and(|u| in_set(&set, u, max))
+                                && args[3..].join(" ").to_ascii_uppercase().contains("BODY") =>
+                        {
+                            format!("{tag} NO [UNAVAILABLE] message cannot be read\r\n")
+                                .into_bytes()
+                        }
+                        "FETCH"
+                            if refuse_flags
+                                && !args[3..].join(" ").to_ascii_uppercase().contains("BODY") =>
+                        {
+                            format!("{tag} NO [UNAVAILABLE] flags not available\r\n").into_bytes()
+                        }
                         "FETCH" => {
                             let items = args[3..].join(" ").to_ascii_uppercase();
                             let body = items.contains("BODY.PEEK[]") || items.contains("BODY[]");
                             let gm = items.contains("X-GM-MSGID");
                             let mut out = Vec::new();
+                            if body && unsolicited {
+                                // Another session marks the first requested message read,
+                                // mid-command, before its body line.
+                                let uid = b
+                                    .msgs
+                                    .iter()
+                                    .find(|m| in_set(&set, m.uid, max))
+                                    .map(|m| m.uid)
+                                    .unwrap_or(1);
+                                out.extend_from_slice(
+                                    format!("* 1 FETCH (UID {uid} FLAGS (\\Seen))\r\n").as_bytes(),
+                                );
+                            }
                             if max > 0 {
                                 for (i, m) in b.msgs.iter().enumerate() {
-                                    if in_set(&set, m.uid, max) {
-                                        out.extend(fetch_line(i + 1, m, body, gm));
+                                    if !in_set(&set, m.uid, max)
+                                        || changed_since.is_some_and(|c| m.modseq <= c)
+                                    {
+                                        continue;
                                     }
+                                    let mut l = fetch_line(i + 1, m, body, gm);
+                                    if condstore {
+                                        // `... FLAGS (...))` → `... FLAGS (...) MODSEQ (n))`
+                                        l.truncate(l.len() - 3);
+                                        l.extend_from_slice(
+                                            format!(" MODSEQ ({}))\r\n", m.modseq).as_bytes(),
+                                        );
+                                    }
+                                    out.extend(l);
                                 }
                             }
                             if body && st.stall_fetch {
@@ -606,6 +803,7 @@ where
                                 if !in_set(&set, m.uid, max) {
                                     continue;
                                 }
+                                let before = m.flags.clone();
                                 if op.starts_with('+') {
                                     for f in &flags {
                                         if !m.flags.contains(f) {
@@ -617,10 +815,15 @@ where
                                 } else {
                                     m.flags = flags.clone();
                                 }
+                                if m.flags != before {
+                                    modseq_after += 1;
+                                    m.modseq = modseq_base + modseq_after;
+                                }
                                 if !op.contains("SILENT") {
                                     out.extend(fetch_line(i + 1, m, false, false));
                                 }
                             }
+                            st.modseq = modseq_base + modseq_after;
                             if st.gmail {
                                 // Gmail: flags belong to the message, in every label.
                                 let changed: Vec<(u64, Vec<String>)> = st.boxes[&name]
@@ -724,11 +927,24 @@ where
                         _ => format!("{tag} BAD unsupported UID command\r\n").into_bytes(),
                     }
                 };
+                if let Some(p) = pre_pause {
+                    p.paused.notify_one();
+                    p.resume.notified().await;
+                }
                 if let Some(rest) = reply.strip_prefix(STALLED) {
                     send(&w, rest).await?;
                     std::future::pending::<()>().await;
                 }
                 send(&w, &reply).await?;
+                if hang_up {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = w.lock().await.shutdown().await;
+                    return Ok(());
+                }
+                if let Some(p) = pause {
+                    p.paused.notify_one();
+                    p.resume.notified().await;
+                }
             }
             "APPEND" => {
                 let name = unquote(args.get(1).map(String::as_str).unwrap_or(""));
@@ -1253,6 +1469,366 @@ mod tests {
             .iter()
             .any(|m| m.folder_id == trash.id));
         assert!(store.given_up_ops(account.id).unwrap().is_empty());
+    }
+
+    fn cached(store: &Store, account: &crate::model::Account) -> usize {
+        store
+            .folders(account.id)
+            .unwrap()
+            .iter()
+            .map(|f| store.uids(f.id).unwrap().len())
+            .sum()
+    }
+
+    #[tokio::test]
+    async fn a_refused_search_leaves_the_cache_alone() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let before = cached(&store, &account);
+        assert!(before > 0);
+        fake.with(|s| s.refuse_search = true);
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(!report.errors.is_empty());
+        // A NO used to read as "no messages" and emptied every folder.
+        assert_eq!(cached(&store, &account), before);
+    }
+
+    #[tokio::test]
+    async fn a_search_cut_short_leaves_the_cache_alone() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let before = cached(&store, &account);
+        fake.with(|s| s.close_mid_search = true);
+        let r = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await;
+        assert!(matches!(r, Err(Error::Io(_))), "{r:?}");
+        assert_eq!(cached(&store, &account), before);
+    }
+
+    #[tokio::test]
+    async fn a_refused_folder_list_is_an_error_not_an_empty_account() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let folders = store.folders(account.id).unwrap().len();
+        let before = cached(&store, &account);
+        fake.with(|s| s.refuse_list = true);
+        let r = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await;
+        assert!(r.is_err(), "{r:?}");
+        assert_eq!(store.folders(account.id).unwrap().len(), folders);
+        assert_eq!(cached(&store, &account), before);
+    }
+
+    #[tokio::test]
+    async fn another_sessions_flag_change_mid_fetch_does_not_make_an_empty_message() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        fake.with(|s| {
+            s.unsolicited_fetch = true;
+            s.deliver("INBOX", LATER, &[]);
+        });
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        let later = store
+            .messages_by_message_id(account.id, "ci@github.com")
+            .unwrap();
+        assert_eq!(later.len(), 1);
+        // The new message has its body, and the old one the stray line named kept its own.
+        let (text, _) = store.body(later[0].id).unwrap();
+        assert!(text.is_some_and(|t| t.contains("All six jobs green")));
+        let review = store
+            .messages_by_message_id(account.id, "review@studio.dev")
+            .unwrap();
+        let (text, _) = store.body(review[0].id).unwrap();
+        assert!(text.is_some_and(|t| t.contains("Moving it to 15:00")));
+    }
+
+    /// Run a sync in the background up to the pause, let [act] work, then finish it.
+    async fn sync_around(
+        fake: &FakeImap,
+        engine: SyncEngine,
+        account: &crate::model::Account,
+        p: ImapProvider,
+        pause: Pause,
+        act: impl FnOnce(),
+    ) -> crate::sync::SyncReport {
+        let (paused, resume) = (pause.paused.clone(), pause.resume.clone());
+        fake.with(|s| s.pause = Some(pause));
+        let task = {
+            let account = account.clone();
+            tokio::spawn(async move {
+                let mut p = p;
+                engine
+                    .sync_account(&account, &mut p, &SyncOptions::default())
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), paused.notified())
+            .await
+            .expect("the sync never reached the pause");
+        act();
+        resume.notify_one();
+        task.await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_read_mark_made_during_a_sync_is_not_rolled_back() {
+        let fake = server().await;
+        let (store, engine, account, p, _) = synced(&fake).await;
+        let invoice = store
+            .threads(&crate::search::Query::parse(""), 10)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.unread_count > 0)
+            .unwrap();
+        // After INBOX's SEARCH the sync has decided what is pending; the person reads the
+        // invoice before the server's (unread) flags come in.
+        sync_around(
+            &fake,
+            engine,
+            &account,
+            p,
+            Pause::new("SEARCH", "INBOX"),
+            || {
+                Actions { store: &store }
+                    .mark_read(invoice.id, true)
+                    .unwrap();
+            },
+        )
+        .await;
+        assert_eq!(store.thread(invoice.id).unwrap().unread_count, 0);
+    }
+
+    #[tokio::test]
+    async fn a_message_archived_during_a_sync_is_not_fetched_back() {
+        let fake = server().await;
+        let (store, engine, account, p, _) = synced(&fake).await;
+        let invoice = store
+            .threads(&crate::search::Query::parse(""), 10)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.unread_count > 0)
+            .unwrap();
+        let inbox = store
+            .folder_by_role(account.id, FolderRole::Inbox)
+            .unwrap()
+            .unwrap();
+        // While INBOX's SEARCH is on its way the invoice (not the lowest UID, so the
+        // refill would reach it) is archived here; the server still lists it.
+        sync_around(
+            &fake,
+            engine,
+            &account,
+            p,
+            Pause::new("before SEARCH", "INBOX"),
+            || {
+                assert_eq!(Actions { store: &store }.archive(invoice.id).unwrap(), 1);
+            },
+        )
+        .await;
+        assert!(store
+            .thread_copies(invoice.id)
+            .unwrap_or_default()
+            .iter()
+            .all(|m| m.folder_id != inbox.id));
+        assert!(!store
+            .threads(&crate::search::Query::parse(""), 10)
+            .unwrap()
+            .iter()
+            .any(|t| t.id == invoice.id && t.unread_count > 0));
+    }
+
+    #[tokio::test]
+    async fn with_condstore_a_change_held_back_for_a_waiting_op_comes_again() {
+        let fake = server().await;
+        fake.with(|s| s.condstore = true);
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let invoice_uid = fake.with(|s| {
+            s.msgs("INBOX")
+                .iter()
+                .find(|m| m.raw == INVOICE_EML)
+                .unwrap()
+                .uid
+        });
+        let invoice = store
+            .threads(&crate::search::Query::parse(""), 10)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.unread_count > 0)
+            .unwrap();
+        // Starred here; the server says "later" for now.
+        fake.with(|s| s.refuse_store = true);
+        Actions { store: &store }.star(invoice.id, true).unwrap();
+        // Another device reads it and stars it too.
+        fake.with(|s| s.set_flags("INBOX", invoice_uid, &["\\Seen", "\\Flagged"]));
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(store.thread(invoice.id).unwrap().starred);
+        // The star goes through but changes nothing on the server (already starred), so
+        // MODSEQ does not move: only the kept HIGHESTMODSEQ brings the read mark here.
+        fake.with(|s| s.refuse_store = false);
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        let t = store.thread(invoice.id).unwrap();
+        assert!(t.starred);
+        assert_eq!(t.unread_count, 0, "the other device's read mark was lost");
+    }
+
+    #[tokio::test]
+    async fn search_that_ends_early_or_says_bye_is_an_error_not_a_list() {
+        let fake = server().await;
+        fake.with(|s| s.close_mid_search = true);
+        let mut p = connect(&fake, "secret").await.unwrap();
+        p.select("INBOX").await.unwrap();
+        // One whole `* SEARCH 1` line and a clean close: async-imap's own reader called
+        // that a complete answer.
+        assert!(matches!(p.uids().await, Err(Error::Io(_))));
+
+        fake.with(|s| {
+            s.close_mid_search = false;
+            s.bye_on_search = true;
+        });
+        let mut p = connect(&fake, "secret").await.unwrap();
+        p.select("INBOX").await.unwrap();
+        assert!(matches!(p.uids().await, Err(Error::Io(_))));
+    }
+
+    #[tokio::test]
+    async fn a_stray_fetch_line_does_not_become_a_message() {
+        let fake = server().await;
+        fake.with(|s| {
+            s.unsolicited_fetch = true;
+            s.deliver("INBOX", LATER, &[]);
+        });
+        let mut p = connect(&fake, "secret").await.unwrap();
+        p.select("INBOX").await.unwrap();
+        let got = p.fetch(&[3]).await.unwrap();
+        // Only what was asked for, with its body; UID 1's flag line is not a message.
+        assert_eq!(got.iter().map(|m| m.uid).collect::<Vec<_>>(), vec![3]);
+        assert!(!got[0].raw.is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_unreadable_message_does_not_hold_back_newer_mail() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let broken = fake.with(|s| s.deliver("INBOX", PLAIN, &[]));
+        fake.with(|s| {
+            s.deliver("INBOX", LATER, &[]);
+            s.broken_uid = Some(broken);
+        });
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        // The good message came; the broken one stays a hole for next time.
+        assert_eq!(
+            store
+                .messages_by_message_id(account.id, "ci@github.com")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_message_the_server_could_not_give_comes_later_even_below_the_floor() {
+        let fake = server().await;
+        // The oldest message (UID 1) cannot be read on the first sync.
+        fake.with(|s| s.broken_uid = Some(1));
+        let (store, engine, account) = setup(&fake);
+        let mut p = connect(&fake, "secret").await.unwrap();
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(store
+            .messages_by_message_id(account.id, "review@studio.dev")
+            .unwrap()
+            .iter()
+            .all(|m| store.folder(m.folder_id).unwrap().role != FolderRole::Inbox));
+        // Readable again: fetched although every cached UID is above it.
+        fake.with(|s| s.broken_uid = None);
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        let inbox = store
+            .folder_by_role(account.id, FolderRole::Inbox)
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .messages_by_message_id(account.id, "review@studio.dev")
+            .unwrap()
+            .iter()
+            .any(|m| m.folder_id == inbox.id));
+        assert!(store.fetch_holes(inbox.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_flag_fetch_does_not_stop_new_mail() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        fake.with(|s| {
+            s.refuse_flag_fetch = true;
+            s.deliver("INBOX", LATER, &[]);
+        });
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(
+            store
+                .messages_by_message_id(account.id, "ci@github.com")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_search_that_leaves_one_out_once_deletes_nothing() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let before = cached(&store, &account);
+        // SELECT counts 2 in INBOX, the first SEARCH lists 1, the second 2: not trusted.
+        fake.with(|s| {
+            s.hide_from_search = Some(1);
+            s.hide_once = true;
+        });
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(cached(&store, &account), before);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_always_leaves_one_out_is_believed() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let before = cached(&store, &account);
+        // Two SEARCHes agree that UID 1 is not there (some servers count hidden, deleted
+        // mail in EXISTS): the cache follows them instead of never deleting again.
+        fake.with(|s| s.hide_from_search = Some(1));
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(cached(&store, &account) < before);
     }
 
     #[tokio::test]
