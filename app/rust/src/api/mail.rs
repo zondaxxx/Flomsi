@@ -17,7 +17,10 @@ fn core() -> Result<&'static Core> {
 
 #[frb(init)]
 pub fn init_app() {
-    flutter_rust_bridge::setup_default_user_utils();
+    // Not setup_default_user_utils(): it logs at trace to the system log, and async-imap
+    // traces every command, LOGIN with its password included.
+    flutter_rust_bridge::setup_backtrace();
+    flutter_rust_bridge::setup_log_to_console(mailcore::logging::max_level());
 }
 
 /// Open (or create) the profile database under `data_dir`. Idempotent.

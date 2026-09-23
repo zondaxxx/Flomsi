@@ -111,6 +111,9 @@ fn builder<'a>() -> Builder<'a> {
         .collect(),
     );
     b.url_schemes(["http", "https", "mailto", "cid"].into_iter().collect());
+    // Relative and protocol-relative URLs (`/p.gif`, `//tracker/p.gif`) have no base to
+    // resolve against and would slip past the remote-image gate: drop them.
+    b.url_relative(ammonia::UrlRelative::Deny);
     b.link_rel(Some("noopener noreferrer"));
     // Keep a curated subset of inline style so newsletters stay readable but can't escape the box.
     b.attribute_filter(filter_attr);
@@ -145,12 +148,7 @@ fn filter_attr<'v>(_element: &str, attr: &str, value: &'v str) -> Option<Cow<'v,
             let (k, v) = decl.split_once(':')?;
             let k = k.trim().to_ascii_lowercase();
             let v = v.trim();
-            let lv = v.to_ascii_lowercase();
-            if !ALLOWED.contains(&k.as_str())
-                || lv.contains("url(")
-                || lv.contains("expression")
-                || lv.contains("javascript")
-            {
+            if !ALLOWED.contains(&k.as_str()) || v.is_empty() || !safe_css_value(v) {
                 return None;
             }
             Some(format!("{k}: {v}"))
@@ -163,19 +161,55 @@ fn filter_attr<'v>(_element: &str, attr: &str, value: &'v str) -> Option<Cow<'v,
     }
 }
 
+/// A CSS value made only of plain tokens: words, numbers with units, #hex, commas, quotes and
+/// parentheses for rgb()/hsl(). Anything that could fetch, escape or open a rule is refused:
+/// backslash escapes (`u\72l(`), braces, `@`, comments, angle brackets, and any `url`,
+/// `image`, `expression` or `javascript` even with spaces inside.
+fn safe_css_value(v: &str) -> bool {
+    let plain = v.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                ' ' | '#' | '%' | '.' | ',' | '(' | ')' | '-' | '+' | '"' | '\''
+            )
+    });
+    let squeezed: String = v
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    plain
+        && !["url", "image", "expression", "javascript", "var(", "attr("]
+            .iter()
+            .any(|w| squeezed.contains(w))
+}
+
 pub fn sanitize(html: &str, opts: SanitizeOptions) -> Sanitized {
     let mut b = builder();
     let mut generic = b_generic();
     generic.insert("style");
     b.generic_attributes(generic);
     let cleaned = b.clean(html).to_string();
-    if opts.load_remote_images {
-        return Sanitized {
-            html: cleaned,
-            blocked_images: 0,
-        };
+    gate_images(&cleaned, opts.load_remote_images)
+}
+
+/// An allow-list for `<img src>`: `cid:` parts (resolved locally later) always show; http(s)
+/// only after "Load images". Anything else becomes `data-blocked-src` and is counted.
+fn gate_images(html: &str, load_remote: bool) -> Sanitized {
+    let mut blocked = 0;
+    let html = for_each_img_src(html, |src| {
+        let s = src.trim().to_ascii_lowercase();
+        let remote = s.starts_with("https://") || s.starts_with("http://");
+        if s.starts_with("cid:") || (remote && load_remote) {
+            return None;
+        }
+        blocked += 1;
+        Some(format!(" data-blocked-src=\"{src}\""))
+    });
+    Sanitized {
+        html,
+        blocked_images: blocked,
     }
-    block_remote_images(&cleaned)
 }
 
 fn b_generic() -> HashSet<&'static str> {
@@ -199,30 +233,10 @@ fn b_generic() -> HashSet<&'static str> {
     .collect()
 }
 
-/// Rewrite `<img src="http…">` to `<img data-blocked-src="http…">`. Runs on already-clean markup.
-fn block_remote_images(html: &str) -> Sanitized {
-    let mut out = String::with_capacity(html.len());
-    let mut blocked = 0;
-    let mut rest = html;
-    while let Some(i) = rest.find("<img") {
-        out.push_str(&rest[..i]);
-        let tag_end = rest[i..].find('>').map(|e| i + e + 1).unwrap_or(rest.len());
-        let tag = &rest[i..tag_end];
-        let lowered = tag.to_ascii_lowercase();
-        if lowered.contains("src=\"http://") || lowered.contains("src=\"https://") {
-            blocked += 1;
-            out.push_str(&tag.replacen("src=\"", "data-blocked-src=\"", 1));
-        } else {
-            out.push_str(tag);
-        }
-        rest = &rest[tag_end..];
-    }
-    out.push_str(rest);
-    Sanitized {
-        html: out,
-        blocked_images: blocked,
-    }
-}
+/// Inline images bigger than this stay blocked instead of being embedded as data: URIs.
+pub const MAX_INLINE_IMAGE: usize = 5 * 1024 * 1024;
+/// And all inline images of one message together.
+pub const MAX_INLINE_TOTAL: usize = 20 * 1024 * 1024;
 
 /// Bitmap types that may be embedded as data: URIs. SVG stays out: it is a document format.
 const INLINE_IMAGE_TYPES: &[&str] = &[
@@ -283,24 +297,75 @@ fn cid_of(src: &str) -> Option<String> {
     }
 }
 
-/// Walk `<img … src="…">` in serializer output (lowercase attribute names, double quotes).
-/// `edit` returns a replacement for the whole ` src="…"` attribute, or None to keep it.
+/// Walk every `<img …>` in serializer output and let `edit` replace its `src` attribute
+/// (given its value; return the whole replacement attribute, or None to keep it).
+/// Attributes are parsed properly: serialized values are double-quoted and may contain
+/// `>`, so the tag does not end at the first `>`.
 fn for_each_img_src(html: &str, mut edit: impl FnMut(&str) -> Option<String>) -> String {
+    let b = html.as_bytes();
     let mut out = String::with_capacity(html.len());
-    let mut rest = html;
-    while let Some(i) = rest.find("<img") {
-        out.push_str(&rest[..i]);
-        let tag_end = rest[i..].find('>').map(|e| i + e + 1).unwrap_or(rest.len());
-        let tag = &rest[i..tag_end];
-        let replaced = tag.find(" src=\"").and_then(|s| {
-            let v0 = s + " src=\"".len();
-            let v1 = v0 + tag[v0..].find('"')?;
-            edit(&tag[v0..v1]).map(|attr| format!("{}{}{}", &tag[..s], attr, &tag[v1 + 1..]))
-        });
-        out.push_str(replaced.as_deref().unwrap_or(tag));
-        rest = &rest[tag_end..];
+    let mut copied = 0;
+    let mut i = 0;
+    while let Some(off) = html[i..].find("<img") {
+        let start = i + off;
+        let mut j = start + 4;
+        if j < b.len() && !(b[j].is_ascii_whitespace() || b[j] == b'>' || b[j] == b'/') {
+            i = j; // `<imgx`: not an img tag
+            continue;
+        }
+        // Parse ` name="value"` / ` name=value` / ` name` pairs until `>`.
+        let mut src: Option<(usize, usize, usize)> = None; // (attr start, value start, value end)
+        while j < b.len() && b[j] != b'>' {
+            if b[j].is_ascii_whitespace() || b[j] == b'/' {
+                j += 1;
+                continue;
+            }
+            let name_start = j;
+            while j < b.len() && !matches!(b[j], b'=' | b'>' | b'/') && !b[j].is_ascii_whitespace()
+            {
+                j += 1;
+            }
+            let name = &html[name_start..j];
+            if j < b.len() && b[j] == b'=' {
+                j += 1;
+                let (v0, v1) = if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+                    let q = b[j];
+                    let v0 = j + 1;
+                    let v1 = html[v0..]
+                        .find(q as char)
+                        .map(|k| v0 + k)
+                        .unwrap_or(b.len());
+                    j = (v1 + 1).min(b.len());
+                    (v0, v1)
+                } else {
+                    let v0 = j;
+                    while j < b.len() && b[j] != b'>' && !b[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    (v0, j)
+                };
+                if name.eq_ignore_ascii_case("src") && src.is_none() {
+                    src = Some((name_start, v0, v1));
+                }
+            }
+        }
+        let tag_end = (j + 1).min(b.len());
+        if let Some((a0, v0, v1)) = src {
+            if let Some(replacement) = edit(&html[v0..v1]) {
+                // Attribute end: past the closing quote when quoted.
+                let a1 = if v1 < b.len() && (b[v1] == b'"' || b[v1] == b'\'') {
+                    v1 + 1
+                } else {
+                    v1
+                };
+                out.push_str(&html[copied..a0]);
+                out.push_str(replacement.trim_start());
+                copied = a1;
+            }
+        }
+        i = tag_end;
     }
-    out.push_str(rest);
+    out.push_str(&html[copied..]);
     out
 }
 
@@ -313,14 +378,21 @@ pub fn inline_cid_images(
 ) -> (String, usize) {
     use base64::Engine;
     let mut unresolved = 0;
+    // One large image referenced many times must not multiply into gigabytes of data URIs.
+    let mut budget = MAX_INLINE_TOTAL;
     let out = for_each_img_src(html, |value| {
         let id = cid_of(value)?;
-        match lookup(&id).filter(|(mime, _)| is_inline_image_type(mime)) {
-            Some((mime, bytes)) => Some(format!(
-                " src=\"data:{};base64,{}\"",
-                mime.to_ascii_lowercase(),
-                base64::engine::general_purpose::STANDARD.encode(bytes)
-            )),
+        match lookup(&id).filter(|(mime, bytes)| {
+            is_inline_image_type(mime) && bytes.len() <= MAX_INLINE_IMAGE && bytes.len() <= budget
+        }) {
+            Some((mime, bytes)) => {
+                budget -= bytes.len();
+                Some(format!(
+                    " src=\"data:{};base64,{}\"",
+                    mime.to_ascii_lowercase(),
+                    base64::engine::general_purpose::STANDARD.encode(bytes)
+                ))
+            }
             None => {
                 unresolved += 1;
                 Some(format!(" data-blocked-src=\"{value}\""))
@@ -465,5 +537,97 @@ mod tests {
         assert!(html.contains(r#"data-blocked-src="https://t.example/p.gif""#));
         assert_eq!(unresolved, 2);
         assert!(cid_refs(&html).is_empty());
+    }
+
+    #[test]
+    fn relative_and_protocol_relative_urls_never_load() {
+        let clean = sanitize(
+            r#"<img src="//tracker.example/p.gif"><img src="/pixel.gif"><a href="//evil.example/x">x</a><img src="https://cdn.example/a.png">"#,
+            SanitizeOptions::default(),
+        );
+        assert!(!clean.html.contains("tracker.example"), "{}", clean.html);
+        assert!(!clean.html.contains("pixel.gif"), "{}", clean.html);
+        assert!(!clean.html.contains("evil.example"), "{}", clean.html);
+        assert!(clean
+            .html
+            .contains(r#"data-blocked-src="https://cdn.example/a.png""#));
+        assert_eq!(clean.blocked_images, 1);
+
+        let loaded = sanitize(
+            r#"<img src="//tracker.example/p.gif"><img src="https://cdn.example/a.png">"#,
+            SanitizeOptions {
+                load_remote_images: true,
+            },
+        );
+        assert!(!loaded.html.contains("tracker.example"));
+        assert!(loaded.html.contains(r#" src="https://cdn.example/a.png""#));
+        assert_eq!(loaded.blocked_images, 0);
+    }
+
+    #[test]
+    fn oversized_inline_images_stay_blocked() {
+        let clean = sanitize(r#"<img src="cid:big@x">"#, SanitizeOptions::default());
+        let (html, unresolved) = inline_cid_images(&clean.html, |_| {
+            Some(("image/png".into(), vec![0; MAX_INLINE_IMAGE + 1]))
+        });
+        assert_eq!(unresolved, 1);
+        assert!(!html.contains("base64"));
+    }
+
+    #[test]
+    fn a_gt_inside_another_attribute_does_not_hide_src() {
+        let clean = sanitize(
+            r#"<img alt="x>" src="https://t.example/p.gif"><img title='a>b' src="https://t.example/q.gif">"#,
+            SanitizeOptions::default(),
+        );
+        assert!(
+            !clean.html.contains(r#" src="https://t.example"#),
+            "{}",
+            clean.html
+        );
+        assert_eq!(clean.blocked_images, 2, "{}", clean.html);
+    }
+
+    #[test]
+    fn css_cannot_fetch_or_escape() {
+        let styled = |css: &str| {
+            sanitize(
+                &format!(r#"<p style="{css}">x</p>"#),
+                SanitizeOptions::default(),
+            )
+            .html
+        };
+        for bad in [
+            "color: red} body {background: url (https://t.example/p.gif)",
+            "background-color: u\\72l(https://t.example/p.gif)",
+            "border: 1px solid; background-color: URL ( 'https://t.example' )",
+            "color: expression(alert(1))",
+            "font-family: x; color: red /* */",
+            "color: var(--x)",
+        ] {
+            let html = styled(bad);
+            assert!(!html.contains("t.example"), "{bad} -> {html}");
+            assert!(!html.contains("expression"), "{bad} -> {html}");
+        }
+        let ok = styled(
+            "color: rgb(1, 2, 3); font-family: 'IBM Plex Sans', sans-serif; padding: 4px 8%",
+        );
+        assert!(ok.contains("color: rgb(1, 2, 3)"), "{ok}");
+        assert!(ok.contains("font-family"), "{ok}");
+        assert!(ok.contains("padding: 4px 8%"), "{ok}");
+    }
+
+    #[test]
+    fn inline_images_share_one_budget() {
+        let html = sanitize(
+            &r#"<img src="cid:logo@x">"#.repeat(10),
+            SanitizeOptions::default(),
+        )
+        .html;
+        let (out, unresolved) = inline_cid_images(&html, |_| {
+            Some(("image/png".into(), vec![0; 4 * 1024 * 1024]))
+        });
+        assert_eq!(unresolved, 5);
+        assert_eq!(out.matches("base64,").count(), 5);
     }
 }

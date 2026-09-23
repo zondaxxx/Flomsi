@@ -54,7 +54,10 @@ class RustRepository implements MailRepository {
   }
 
   static Future<RustRepository> open({String? dataDir}) async {
-    await RustLib.init(externalLibrary: _bundledLibrary());
+    // Retry after a failed start: the library is already loaded.
+    if (!RustLib.instance.initialized) {
+      await RustLib.init(externalLibrary: _bundledLibrary());
+    }
     final dir = dataDir ?? await defaultDataDir();
     await rust.openCore(dataDir: dir);
     final repo = RustRepository._();

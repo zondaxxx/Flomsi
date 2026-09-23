@@ -12,6 +12,7 @@ import 'data/repository.dart';
 import 'data/rust_repository.dart';
 import 'features/shell/editor_shell.dart';
 import 'features/shell/notice_host.dart';
+import 'features/shell/startup_error.dart';
 import 'platform.dart';
 import 'state/appearance.dart';
 import 'state/providers.dart';
@@ -35,26 +36,36 @@ Future<void> main() async {
     await WindowManipulator.enableFullSizeContentView();
     await WindowManipulator.hideTitle();
   }
-  MailRepository repo;
-  if (_useMock) {
-    repo = MockRepository();
-  } else {
-    try {
-      final rustRepo = await RustRepository.open();
-      unawaited(rustRepo.startBackgroundSync());
-      repo = rustRepo;
-    } catch (e, st) {
-      debugPrint('rust core unavailable, falling back to mock: $e\n$st');
-      repo = MockRepository();
-    }
-  }
-  runApp(
-    ProviderScope(
-      overrides: [repositoryProvider.overrideWithValue(repo)],
-      child: const MailApp(),
-    ),
-  );
+  await _launch();
 }
+
+/// Opens the Rust core and runs the app on it. Demo data only with MAIL_MOCK; if the core
+/// fails, an error screen says why and offers Retry, instead of a fake mailbox.
+Future<void> _launch() async {
+  if (_useMock) {
+    _run(MockRepository());
+    return;
+  }
+  String? dataDir;
+  try {
+    dataDir = await RustRepository.defaultDataDir();
+    final repo = await RustRepository.open(dataDir: dataDir);
+    unawaited(repo.startBackgroundSync());
+    _run(repo);
+  } catch (e, st) {
+    debugPrint('mail core failed to start: $e\n$st');
+    runApp(
+      StartupErrorApp(error: e.toString(), dataDir: dataDir, onRetry: _launch),
+    );
+  }
+}
+
+void _run(MailRepository repo) => runApp(
+  ProviderScope(
+    overrides: [repositoryProvider.overrideWithValue(repo)],
+    child: const MailApp(),
+  ),
+);
 
 class MailApp extends ConsumerWidget {
   const MailApp({super.key});

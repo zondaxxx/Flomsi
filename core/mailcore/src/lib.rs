@@ -10,6 +10,7 @@ pub mod auth;
 pub mod compose;
 pub mod error;
 pub mod files;
+pub mod logging;
 pub mod model;
 pub mod provider;
 pub mod sanitize;
@@ -60,6 +61,7 @@ impl Core {
     pub fn open(data_dir: &Path) -> Result<Core> {
         let store = Arc::new(Store::open(&data_dir.join("mail.sqlite"))?);
         let engine = SyncEngine::new(store.clone());
+        remove_legacy_file_cache(data_dir);
         Ok(Core {
             store,
             engine,
@@ -91,10 +93,57 @@ impl Core {
 
     pub fn remove_account(&self, id: i64) -> Result<()> {
         let a = self.store.account(id)?;
+        // Files first: if a viewer still holds one (Windows), fail before anything
+        // irreversible so the removal can simply be retried.
+        self.forget_account_files(&a)?;
         for k in [SECRET_PASSWORD, SECRET_REFRESH_TOKEN, SECRET_ACCESS_TOKEN] {
             secrets::delete(&a.email, k)?;
         }
         self.store.delete_account(id)
+    }
+
+    fn account_files_dir(&self, account: &Account) -> PathBuf {
+        self.data_dir
+            .join("files")
+            .join(files::safe_file_name(&account.email))
+    }
+
+    /// Delete the attachment files cached for an account.
+    pub fn forget_account_files(&self, account: &Account) -> Result<()> {
+        match std::fs::remove_dir_all(self.account_files_dir(account)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Where a part's cached file lives. Keyed by what identifies it on the server (folder,
+    /// UIDVALIDITY, UID), not by the local message id, which SQLite hands out again after
+    /// deletions.
+    fn attachment_cache_dir(&self, message_id: i64, idx: u32) -> Result<PathBuf> {
+        use sha2::{Digest, Sha256};
+        let m = self.store.message(message_id)?;
+        let folder = self.store.folder(m.folder_id)?;
+        let account = self.store.account(m.account_id)?;
+        let short = |s: &str| -> String {
+            Sha256::digest(s.as_bytes())
+                .iter()
+                .take(4)
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        // UIDVALIDITY is unknown while a first sync runs; the message's own identity keeps a
+        // reused UID in a later epoch from picking up this file.
+        let identity = m
+            .message_id
+            .clone()
+            .unwrap_or_else(|| format!("{}|{}|{}", m.date.timestamp(), m.size, m.subject));
+        Ok(self.account_files_dir(&account).join(format!(
+            "{}-{}-{}-{}-{idx}",
+            short(&folder.remote_name),
+            folder.uidvalidity.unwrap_or(0),
+            m.uid,
+            short(&identity)
+        )))
     }
 
     async fn connect(&self, account: &Account) -> Result<ImapProvider> {
@@ -377,10 +426,7 @@ impl Core {
     /// Write an attachment under the profile's file cache and return its path, reusing an
     /// earlier copy. This is the file handed to "open with" and share sheets.
     pub async fn cached_attachment_file(&self, message_id: i64, idx: u32) -> Result<PathBuf> {
-        let dir = self
-            .data_dir
-            .join("files")
-            .join(format!("{message_id}-{idx}"));
+        let dir = self.attachment_cache_dir(message_id, idx)?;
         let finished = std::fs::read_dir(&dir).ok().and_then(|entries| {
             entries
                 .filter_map(|e| e.ok())
@@ -486,6 +532,26 @@ fn draft_body(account: &Account, rest: &str) -> String {
     }
 }
 
+/// Attachment files used to be cached as `files/<message id>-<part>`, keyed by an id SQLite
+/// reuses; they are a cache, so they simply go. Account directories contain '@'.
+fn remove_legacy_file_cache(data_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("files")) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let legacy = name.split_once('-').is_some_and(|(a, b)| {
+            !a.is_empty()
+                && !b.is_empty()
+                && a.bytes().all(|c| c.is_ascii_digit())
+                && b.bytes().all(|c| c.is_ascii_digit())
+        });
+        if legacy {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 struct InlineHtml {
     html: Sanitized,
     unresolved: usize,
@@ -543,6 +609,18 @@ mod tests {
 
         let opened = core.cached_attachment_file(id, pdf.idx).await.unwrap();
         assert_eq!(std::fs::read(&opened).unwrap(), PDF_BYTES);
+        // Keyed by server identity (UID 1 here), under the account's own directory.
+        let key = opened
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert!(key.contains("-0-1-"), "{key}");
+        assert!(key.ends_with(&format!("-{}", pdf.idx)), "{key}");
+        let account = core.store().accounts().unwrap()[0].clone();
+        assert!(opened.starts_with(dir.join("files").join("z@x.dev")));
         assert_eq!(
             core.cached_attachment_file(id, pdf.idx).await.unwrap(),
             opened
@@ -553,6 +631,23 @@ mod tests {
         let second = core.save_attachment(id, pdf.idx, &out).await.unwrap();
         assert_eq!(first.file_name().unwrap(), "Счёт.pdf");
         assert_eq!(second.file_name().unwrap(), "Счёт (1).pdf");
+
+        core.forget_account_files(&account).unwrap();
+        assert!(!opened.exists());
+        core.forget_account_files(&account).unwrap(); // nothing left: still fine
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn legacy_cache_directories_are_removed_on_open() {
+        let dir = std::env::temp_dir().join(format!("mailcore-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("files/12-0")).unwrap();
+        std::fs::write(dir.join("files/12-0/Invoice.pdf"), b"%PDF").unwrap();
+        std::fs::create_dir_all(dir.join("files/z@x.dev/ab12-7-3-cd34-0")).unwrap();
+        let _core = Core::open(&dir).unwrap();
+        assert!(!dir.join("files/12-0").exists());
+        assert!(dir.join("files/z@x.dev/ab12-7-3-cd34-0").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

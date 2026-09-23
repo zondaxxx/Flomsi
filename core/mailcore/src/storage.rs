@@ -10,7 +10,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -157,6 +157,23 @@ CREATE TABLE snoozes (
 CREATE INDEX snoozes_thread ON snoozes(thread_id);
 "#;
 
+/// v6: the search index follows message deletions, including account-removal cascades.
+/// Orphaned rows collided with reused message ids and broke the next insert; an id that was
+/// reused may already carry another message's text, so the index is rebuilt, not pruned.
+const SCHEMA_V6: &str = r#"
+DELETE FROM messages_fts;
+INSERT INTO messages_fts(rowid, subject, from_text, to_text, body)
+SELECT m.id, m.subject,
+       COALESCE(m.from_name, '') || ' ' || m.from_addr,
+       COALESCE((SELECT group_concat(COALESCE(json_extract(j.value, '$.name'), '') || ' ' || json_extract(j.value, '$.addr'), ' ')
+                 FROM (SELECT value FROM json_each(m.to_json) UNION ALL SELECT value FROM json_each(m.cc_json)) AS j), ''),
+       COALESCE(b.text, '')
+FROM messages m LEFT JOIN bodies b ON b.message_id = m.id;
+CREATE TRIGGER messages_fts_cleanup AFTER DELETE ON messages BEGIN
+  DELETE FROM messages_fts WHERE rowid = old.id;
+END;
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -203,28 +220,41 @@ impl Store {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Store> {
+    fn init(mut conn: Connection) -> Result<Store> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA temp_store=MEMORY;",
         )?;
         let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version < 1 {
-            conn.execute_batch(SCHEMA_V1)?;
-            conn.execute_batch(SCHEMA_V2)?;
-        } else if version < 2 {
-            conn.execute_batch(&format!("BEGIN;{SCHEMA_V2}{RESET_MESSAGE_CACHE}COMMIT;"))?;
-        }
-        if version < 3 {
-            conn.execute_batch(SCHEMA_V3)?;
-        }
-        if version < 4 {
-            conn.execute_batch(SCHEMA_V4)?;
-        }
-        if version < 5 {
-            conn.execute_batch(SCHEMA_V5)?;
+        if version > SCHEMA_VERSION {
+            // mailctl and the app share ~/.mail_; an older build must not touch a newer schema.
+            return Err(Error::Other(format!(
+                "this mail database was written by a newer Flomsi (schema {version}, this build knows {SCHEMA_VERSION}); update the app"
+            )));
         }
         if version < SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            // All steps or none: an interrupted upgrade leaves the previous schema intact.
+            let tx = conn.transaction()?;
+            if version < 1 {
+                tx.execute_batch(SCHEMA_V1)?;
+                tx.execute_batch(SCHEMA_V2)?;
+            } else if version < 2 {
+                tx.execute_batch(SCHEMA_V2)?;
+                tx.execute_batch(RESET_MESSAGE_CACHE)?;
+            }
+            if version < 3 {
+                tx.execute_batch(SCHEMA_V3)?;
+            }
+            if version < 4 {
+                tx.execute_batch(SCHEMA_V4)?;
+            }
+            if version < 5 {
+                tx.execute_batch(SCHEMA_V5)?;
+            }
+            if version < 6 {
+                tx.execute_batch(SCHEMA_V6)?;
+            }
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.commit()?;
         }
         Ok(Store {
             conn: Mutex::new(conn),
@@ -425,21 +455,18 @@ impl Store {
 
     /// Drop every cached message of a folder (UIDVALIDITY changed).
     pub fn reset_folder(&self, folder_id: i64) -> Result<()> {
-        self.with(|c| {
-            let ids: Vec<i64> = {
-                let mut st = c.prepare("SELECT id FROM messages WHERE folder_id=?1")?;
-                let v = st.query_map([folder_id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-                v
-            };
-            for id in ids {
-                c.execute("DELETE FROM messages_fts WHERE rowid=?1", [id])?;
-            }
-            c.execute("DELETE FROM messages WHERE folder_id=?1", [folder_id])?;
-            c.execute(
+        self.with(|conn| {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            tx.execute("DELETE FROM messages WHERE folder_id=?1", [folder_id])?;
+            tx.execute(
                 "UPDATE folders SET uidvalidity=NULL, uidnext=NULL, highest_modseq=NULL WHERE id=?1",
                 [folder_id],
             )?;
-            Self::refresh_all_threads(c)?;
+            Self::refresh_all_threads(&tx)?;
+            tx.commit()?;
             Ok(())
         })
     }
@@ -475,12 +502,43 @@ impl Store {
         size: u64,
         m: &ParsedMessage,
     ) -> Result<i64> {
-        self.with(|c| {
+        self.with(|conn| {
+            // Message, body, parts, index row and thread counters land together or not at all.
+            // IMMEDIATE takes the write lock up front, so another process writing (mailctl
+            // shares the file) makes this wait on the busy timeout instead of failing when
+            // the first SELECT would have to upgrade to a write.
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            let id = Self::upsert_message_in(&tx, account_id, folder_id, uid, flags, size, m)?;
+            tx.commit()?;
+            Ok(id)
+        })
+    }
+
+    fn upsert_message_in(
+        c: &Connection,
+        account_id: i64,
+        folder_id: i64,
+        uid: u32,
+        flags: Flags,
+        size: u64,
+        m: &ParsedMessage,
+    ) -> Result<i64> {
+        {
             let existing: Option<i64> = c
-                .query_row("SELECT id FROM messages WHERE folder_id=?1 AND uid=?2", params![folder_id, uid], |r| r.get(0))
+                .query_row(
+                    "SELECT id FROM messages WHERE folder_id=?1 AND uid=?2",
+                    params![folder_id, uid],
+                    |r| r.get(0),
+                )
                 .optional()?;
             if let Some(id) = existing {
-                c.execute("UPDATE messages SET flags=?2 WHERE id=?1", params![id, flags.0])?;
+                c.execute(
+                    "UPDATE messages SET flags=?2 WHERE id=?1",
+                    params![id, flags.0],
+                )?;
                 return Ok(id);
             }
             let thread_id = Self::assign_thread(c, account_id, m)?;
@@ -504,21 +562,24 @@ impl Store {
                     params![id, a.idx, a.name, a.mime, a.size as i64, a.content_id, a.inline as i64],
                 )?;
             }
-            let from_text = format!("{} {}", m.from.name.clone().unwrap_or_default(), m.from.addr);
-            let to_text = m
-                .to
-                .iter()
-                .chain(m.cc.iter())
-                .map(|a| format!("{} {}", a.name.clone().unwrap_or_default(), a.addr))
-                .collect::<Vec<_>>()
-                .join(" ");
+            let from_text = format!(
+                "{} {}",
+                m.from.name.clone().unwrap_or_default(),
+                m.from.addr
+            );
+            let to_text =
+                m.to.iter()
+                    .chain(m.cc.iter())
+                    .map(|a| format!("{} {}", a.name.clone().unwrap_or_default(), a.addr))
+                    .collect::<Vec<_>>()
+                    .join(" ");
             c.execute(
                 "INSERT INTO messages_fts(rowid, subject, from_text, to_text, body) VALUES(?1,?2,?3,?4,?5)",
                 params![id, m.subject, from_text, to_text, m.text.clone().unwrap_or_default()],
             )?;
             Self::refresh_thread(c, thread_id)?;
             Ok(id)
-        })
+        }
     }
 
     fn assign_thread(c: &Connection, account_id: i64, m: &ParsedMessage) -> Result<i64> {
@@ -656,7 +717,6 @@ impl Store {
                 )
                 .optional()?;
             if let Some((id, tid)) = row {
-                c.execute("DELETE FROM messages_fts WHERE rowid=?1", [id])?;
                 c.execute("DELETE FROM messages WHERE id=?1", [id])?;
                 Self::refresh_thread(c, tid)?;
             }
@@ -1529,5 +1589,118 @@ mod tests {
         s.rebind_snoozes().unwrap();
         assert!(s.threads(&Query::parse(""), 10).unwrap().is_empty());
         assert_eq!(s.threads(&Query::parse("in:snoozed"), 10).unwrap().len(), 1);
+    }
+
+    fn temp_db(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mailcore-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("mail.sqlite")
+    }
+
+    #[test]
+    fn a_failed_upgrade_leaves_the_old_schema_intact() {
+        let path = temp_db("failed-upgrade");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V1).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            conn.execute_batch(
+                "INSERT INTO accounts(kind,email,imap_host,imap_port,auth_kind,created_at) VALUES('imap','t@x','h',993,'password',0);
+                 INSERT INTO folders(account_id,remote_name,role) VALUES(1,'INBOX','inbox');
+                 INSERT INTO threads(account_id,subject) VALUES(1,'s');
+                 INSERT INTO messages(account_id,folder_id,uid,thread_id,date) VALUES(1,1,3,1,0);
+                 CREATE TABLE raw_messages(x);", // makes the v2 step fail halfway
+            )
+            .unwrap();
+        }
+        assert!(Store::open(&path).is_err());
+        let conn = Connection::open(&path).unwrap();
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        let attachments: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='attachments'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(attachments, 0, "the half-applied step was rolled back");
+        let messages: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(messages, 1, "the cache was not reset by a failed upgrade");
+    }
+
+    #[test]
+    fn a_newer_schema_is_refused() {
+        let path = temp_db("newer-schema");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
+        }
+        let err = Store::open(&path).err().unwrap().to_string();
+        assert!(err.contains("newer Flomsi"), "{err}");
+    }
+
+    #[test]
+    fn deleted_messages_leave_no_index_rows() {
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let inbox = s.upsert_folder(a.id, "INBOX", FolderRole::Inbox).unwrap();
+        for uid in 1..=3 {
+            let m = msg(
+                "Budget",
+                &format!("b{uid}@x.dev"),
+                &[],
+                "Anna",
+                "quarterly budget",
+                uid,
+            );
+            s.upsert_message(a.id, inbox.id, uid as u32, Flags::default(), 1, &m)
+                .unwrap();
+        }
+        let fts = |s: &Store| -> i64 {
+            s.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM messages_fts", [], |r| r.get(0))?))
+                .unwrap()
+        };
+        assert_eq!(fts(&s), 3);
+        s.delete_by_uid(inbox.id, 1).unwrap();
+        assert_eq!(fts(&s), 2);
+        s.delete_account(a.id).unwrap(); // cascades to messages
+        assert_eq!(fts(&s), 0);
+    }
+
+    #[test]
+    fn upgrading_to_v6_rebuilds_a_stale_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        for step in [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5] {
+            conn.execute_batch(step).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO accounts(kind,email,imap_host,imap_port,auth_kind,created_at) VALUES('imap','t@x','h',993,'password',0);
+               INSERT INTO folders(account_id,remote_name,role) VALUES(1,'INBOX','inbox');
+               INSERT INTO threads(account_id,subject) VALUES(1,'Invoice');
+               INSERT INTO messages(account_id,folder_id,uid,thread_id,subject,from_name,from_addr,to_json,date)
+                 VALUES(1,1,3,1,'Invoice','Hetzner','billing@hetzner.com','[{"name":"Z","addr":"z@x.dev"}]',0);
+               INSERT INTO bodies(message_id,text) VALUES(1,'server paid');
+               INSERT INTO messages_fts(rowid,subject,from_text,to_text,body) VALUES(1,'Boarding pass','','','gate 12');
+               INSERT INTO messages_fts(rowid,subject,from_text,to_text,body) VALUES(7,'orphan','','','orphan');"#,
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        let hits = |q: &str| s.threads(&Query::parse(q), 10).unwrap().len();
+        assert_eq!(
+            hits("gate"),
+            0,
+            "a reused id no longer matches the old message's text"
+        );
+        assert_eq!(hits("paid"), 1);
+        assert_eq!(hits("from:hetzner"), 1);
+        assert_eq!(hits("z@x.dev"), 1);
     }
 }

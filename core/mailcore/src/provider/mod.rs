@@ -4,7 +4,7 @@ pub mod imap;
 pub mod parse;
 
 #[cfg(test)]
-mod fake_imap;
+pub(crate) mod fake_imap;
 
 use crate::error::Result;
 use crate::model::{Flags, FolderRole};

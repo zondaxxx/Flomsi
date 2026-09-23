@@ -685,6 +685,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removing_one_account_keeps_the_other_syncing() {
+        let first = server().await;
+        let second = FakeImap::start("b@y.dev", "pw").await;
+        second.with(|s| {
+            s.add_box("INBOX", None);
+            for i in 0..3 {
+                let raw = format!(
+                    "From: b@y.dev\r\nTo: b@y.dev\r\nSubject: Travel {i}\r\nMessage-ID: <t{i}@y.dev>\r\nDate: Mon, 21 Sep 2026 10:0{i}:00 +0300\r\n\r\nboarding pass\r\n"
+                );
+                s.deliver("INBOX", raw.as_bytes(), &[]);
+            }
+        });
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let engine = SyncEngine::new(store.clone());
+        let add = |email: &str, port: u16| {
+            store
+                .add_account(&NewAccount {
+                    kind: ProviderKind::Imap,
+                    email: email.into(),
+                    display_name: String::new(),
+                    imap_host: "localhost".into(),
+                    imap_port: port,
+                    smtp_host: String::new(),
+                    smtp_port: 0,
+                    auth: AuthKind::Password,
+                })
+                .unwrap()
+        };
+        let a = add("z@x.dev", first.port);
+        let b = add("b@y.dev", second.port);
+        let opts = SyncOptions::default();
+
+        let mut pa = connect(&first, "secret").await.unwrap();
+        engine.sync_account(&a, &mut pa, &opts).await.unwrap();
+        let mut pb = ImapProvider::connect_trusting(
+            "localhost",
+            second.port,
+            "b@y.dev",
+            Credential::Password("pw".into()),
+            std::slice::from_ref(&second.cert),
+        )
+        .await
+        .unwrap();
+        engine.sync_account(&b, &mut pb, &opts).await.unwrap();
+        pb.logout().await.unwrap();
+
+        // The second account held the highest message ids; SQLite hands them out again.
+        store.delete_account(b.id).unwrap();
+        first.with(|s| s.deliver("INBOX", LATER, &[]));
+        let report = engine.sync_account(&a, &mut pa, &opts).await.unwrap();
+        pa.logout().await.unwrap();
+        assert_eq!(report.fetched, 1);
+
+        let search = |q: &str| store.threads(&crate::search::Query::parse(q), 10).unwrap();
+        assert_eq!(search("green").len(), 1);
+        assert!(search("boarding").is_empty());
+    }
+
+    #[tokio::test]
     async fn uidvalidity_change_rebuilds_the_folder() {
         let fake = server().await;
         let (store, engine, account) = setup(&fake);

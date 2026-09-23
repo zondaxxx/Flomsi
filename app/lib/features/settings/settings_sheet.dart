@@ -207,9 +207,18 @@ class _AccountEditorState extends ConsumerState<_AccountEditor> {
     }
     _confirmTimer?.cancel();
     final email = widget.account.email;
-    await ref.read(repositoryProvider).removeAccount(widget.account.id);
+    final notice = ref.read(noticeProvider.notifier);
+    try {
+      await ref.read(repositoryProvider).removeAccount(widget.account.id);
+      notice.show('Removed $email');
+    } catch (e) {
+      // Nothing irreversible happened (cached files go first); it can be retried.
+      notice.show(
+        'Could not remove $email: ${e.toString().replaceFirst(RegExp(r'^\w+: '), '')}',
+      );
+      if (mounted) setState(() => _confirmRemove = false);
+    }
     ref.invalidate(accountsProvider);
-    ref.read(noticeProvider.notifier).show('Removed $email');
   }
 
   @override

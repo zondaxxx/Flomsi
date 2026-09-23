@@ -92,7 +92,13 @@ Enum с данными в DTO не используем: кодогенерат�
 4. **Безопасность писем.** HTML чистится в ядре (`ammonia`, модуль `sanitize`): без script/style/form/iframe и обработчиков, ссылки только http/https/mailto/cid,
    внешние картинки заменяются на `data-blocked-src` и грузятся только по кнопке «Load images». Рендер в приложении через `flutter_widget_from_html_core`
    (чистый Dart, без WebView и без JavaScript), ссылки открываются во внешнем браузере через `url_launcher`.
-5. **Секреты.** Refresh-токены и пароли приложений только в keychain/keystore/Credential Manager.
+5. **Секреты.** Refresh-токены и пароли приложений только в keychain/keystore/Credential Manager. Логи не выше Info в debug и
+   Warn в release (`mailcore::logging::max_level`): async-imap на trace пишет каждую команду, включая LOGIN с паролем.
+   mailctl всегда глушит `async_imap`. Если ядро не открылось, приложение показывает экран ошибки с «Retry»,
+   демо-почта только по флагу `MAIL_MOCK`.
+   HTML: относительные и protocol-relative URL выбрасываются, у `<img>` белый список источников (`cid:` всегда, http(s)
+   только после «Load images»), атрибуты разбираются честно (в значениях бывает `>`), в CSS только простые токены без
+   `url`, экранирования и скобок правил; встроенные картинки ограничены 5 МБ на штуку и 20 МБ на письмо.
 6. **Вложения.** Парсер пишет метаданные каждой не-телесной MIME-части в `attachments` (порядок mail-parser = `idx`).
    Часть с Content-ID, на которую ссылается HTML через `cid:`, считается встроенной: она рисуется в письме как `data:`-картинка
    (только растровые форматы, SVG нет) и не показывается в списке вложений; скрепка в списке тредов только для настоящих вложений.
@@ -119,7 +125,7 @@ Enum с данными в DTO не используем: кодогенерат�
    Bcc только в конверте. `connect_trusting` / `send_trusting` добавляют доверенный корень (частный CA, локальный мост);
    обычные вызовы проверяют сертификат по web PKI.
 
-## Схема базы (v5)
+## Схема базы (v6)
 
 ```
 accounts(id, kind, email, display_name, imap_host, imap_port, smtp_host, smtp_port, auth_kind, created_at,
@@ -133,6 +139,7 @@ raw_messages(message_id, data)                                        -- v2, zli
 drafts(id, account_id, kind, draft_json, updated_at)                  -- v3
 settings(key, value)                                                  -- v4: theme, keymap
 snoozes(account_id, thread_key, thread_id, until, woke)               -- v5
+trigger messages_fts_cleanup: DELETE из messages чистит messages_fts  -- v6
 threads(id, account_id, subject, subject_norm, last_date, msg_count, unread_count, snippet, has_attachment, starred, participants)
 labels(id, account_id, name, color) ; message_labels(message_id, label_id)
 messages_fts(subject, from_text, to_text, body)   -- FTS5
@@ -141,7 +148,9 @@ outbox(id, account_id, op_json, created_at, attempts, last_error, done)
 
 Миграции по `PRAGMA user_version`. Переход v1 → v2 сбрасывает кэш писем (аккаунты, ярлыки и outbox остаются, у папок
 обнуляется UIDVALIDITY): старые строки не знают своих вложений, а сервер остаётся источником правды, так что следующий синк
-заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`, v3 → v4 добавляет подпись аккаунта и `settings`, v4 → v5 добавляет `snoozes`.
+заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`, v3 → v4 добавляет подпись аккаунта и `settings`, v4 → v5 добавляет `snoozes`, v5 → v6 пересобирает поисковый индекс и ставит триггер его очистки.
+Все шаги миграции идут одной транзакцией: оборванное обновление оставляет прежнюю схему. Базу с `user_version` новее,
+чем знает сборка, приложение и mailctl не открывают.
 
 ## Раскладка UI
 

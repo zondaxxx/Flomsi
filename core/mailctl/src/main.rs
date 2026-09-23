@@ -174,9 +174,12 @@ fn fmt_date(d: chrono::DateTime<chrono::Utc>) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    // RUST_LOG works as usual, except that async-imap stays silent: at trace it prints every
+    // command, LOGIN with the password included.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"))
+        .add_directive("async_imap=off".parse().expect("static directive"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let cli = Cli::parse();
     let core = Core::open(&data_dir(&cli)).context("open core")?;
 

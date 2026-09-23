@@ -1454,6 +1454,7 @@ dependencies = [
  "futures",
  "keyring",
  "lettre",
+ "log",
  "mail-parser",
  "mime_guess",
  "rand",
