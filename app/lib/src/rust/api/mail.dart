@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`, `security`, `server`, `thread_dto`
+// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `filed`, `fmt_addr`, `new`, `parse_addr`, `security`, `server`, `thread_dto`
 
 /// Open (or create) the profile database under `data_dir`. Idempotent.
 Future<void> openCore({required String dataDir}) =>
@@ -133,18 +133,37 @@ Future<String> saveAttachment({
 );
 
 /// Describe a local file for a draft: name, size, MIME type from the extension.
+/// The extension (lower case) of an attachment that could run code or open a browser when
+/// opened, judged by the name it will be saved under; None for ordinary files.
+String? riskyExtension({required String name}) =>
+    RustLib.instance.api.crateApiMailRiskyExtension(name: name);
+
+/// The name an attachment is saved under (invisible characters removed, device names
+/// renamed): what the chip should show.
+String safeFileName({required String name}) =>
+    RustLib.instance.api.crateApiMailSafeFileName(name: name);
+
 Future<DraftAttachmentDto> describeFile({required String path}) =>
     RustLib.instance.api.crateApiMailDescribeFile(path: path);
 
 Future<int> unreadCount() => RustLib.instance.api.crateApiMailUnreadCount();
 
-/// Returns how many messages actually left the inbox (0: it was not there).
-Future<int> archiveThread({required PlatformInt64 threadId}) =>
+/// Out of the inbox; `moved` is 0 when it was not there.
+Future<FiledDto> archiveThread({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailArchiveThread(threadId: threadId);
 
-/// Returns how many messages moved to Trash (0: already there, or Sent-only elsewhere).
-Future<int> trashThread({required PlatformInt64 threadId}) =>
+/// To Trash; `moved` is 0 when it was there already (or only in Sent elsewhere).
+Future<FiledDto> trashThread({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailTrashThread(threadId: threadId);
+
+/// Create the `archive` or `trash` folder the account's server is missing; returns its name.
+Future<String> createRoleFolder({
+  required PlatformInt64 accountId,
+  required String role,
+}) => RustLib.instance.api.crateApiMailCreateRoleFolder(
+  accountId: accountId,
+  role: role,
+);
 
 Future<void> markRead({required PlatformInt64 threadId, required bool read}) =>
     RustLib.instance.api.crateApiMailMarkRead(threadId: threadId, read: read);
@@ -487,6 +506,25 @@ class DraftDto {
           attachments == other.attachments;
 }
 
+class FiledDto {
+  /// How many messages moved (0: not in the inbox, or already in Trash).
+  final int moved;
+  final MissingFolderDto? missing;
+
+  const FiledDto({required this.moved, this.missing});
+
+  @override
+  int get hashCode => moved.hashCode ^ missing.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FiledDto &&
+          runtimeType == other.runtimeType &&
+          moved == other.moved &&
+          missing == other.missing;
+}
+
 class FolderDto {
   final PlatformInt64 id;
   final PlatformInt64 accountId;
@@ -532,6 +570,12 @@ class MessageDto {
 
   /// Remote images blocked plus inline images not available offline.
   final int blockedImages;
+
+  /// The HTML sets its own text or background colours: made for a light page, shown on one.
+  final bool styled;
+
+  /// Sent from the account's own address (a reply then goes to its recipients).
+  final bool isMine;
   final bool hasAttachment;
   final bool unread;
 
@@ -549,6 +593,8 @@ class MessageDto {
     this.text,
     this.html,
     required this.blockedImages,
+    required this.styled,
+    required this.isMine,
     required this.hasAttachment,
     required this.unread,
     required this.attachments,
@@ -566,6 +612,8 @@ class MessageDto {
       text.hashCode ^
       html.hashCode ^
       blockedImages.hashCode ^
+      styled.hashCode ^
+      isMine.hashCode ^
       hasAttachment.hashCode ^
       unread.hashCode ^
       attachments.hashCode;
@@ -585,9 +633,44 @@ class MessageDto {
           text == other.text &&
           html == other.html &&
           blockedImages == other.blockedImages &&
+          styled == other.styled &&
+          isMine == other.isMine &&
           hasAttachment == other.hasAttachment &&
           unread == other.unread &&
           attachments == other.attachments;
+}
+
+/// Archive or Delete had nowhere to put mail.
+class MissingFolderDto {
+  final PlatformInt64 accountId;
+
+  /// `archive` or `trash`.
+  final String role;
+
+  /// Gmail hides the folder from IMAP: the switch is in Gmail's settings, not here.
+  final bool gmail;
+  final String message;
+
+  const MissingFolderDto({
+    required this.accountId,
+    required this.role,
+    required this.gmail,
+    required this.message,
+  });
+
+  @override
+  int get hashCode =>
+      accountId.hashCode ^ role.hashCode ^ gmail.hashCode ^ message.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is MissingFolderDto &&
+          runtimeType == other.runtimeType &&
+          accountId == other.accountId &&
+          role == other.role &&
+          gmail == other.gmail &&
+          message == other.message;
 }
 
 /// A draft kept on this device. `kind` is fresh, reply or forward.

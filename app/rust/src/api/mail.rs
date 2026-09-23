@@ -106,6 +106,10 @@ pub struct MessageDto {
     pub html: Option<String>,
     /// Remote images blocked plus inline images not available offline.
     pub blocked_images: u32,
+    /// The HTML sets its own text or background colours: made for a light page, shown on one.
+    pub styled: bool,
+    /// Sent from the account's own address (a reply then goes to its recipients).
+    pub is_mine: bool,
     pub has_attachment: bool,
     pub unread: bool,
     /// Real attachments only; inline images render inside `html`.
@@ -389,7 +393,7 @@ pub fn list_folders(account_id: i64) -> Result<Vec<FolderDto>> {
         .map(|f| FolderDto {
             id: f.id,
             account_id: f.account_id,
-            name: mailcore::provider::imap::decode_folder_name(&f.remote_name),
+            name: f.display_name(),
             role: f.role.as_str().to_string(),
         })
         .collect())
@@ -429,7 +433,12 @@ pub fn get_thread(thread_id: i64) -> Result<Option<ThreadDto>> {
 pub fn thread_messages(thread_id: i64) -> Result<Vec<MessageDto>> {
     let c = core()?;
     let mut out = Vec::new();
+    let mut own: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     for m in c.store().thread_messages(thread_id)? {
+        if let std::collections::hash_map::Entry::Vacant(e) = own.entry(m.account_id) {
+            e.insert(c.store().account(m.account_id).map(|a| a.email).unwrap_or_default());
+        }
+        let is_mine = own.get(&m.account_id).is_some_and(|me| m.from.addr.eq_ignore_ascii_case(me));
         let (text, raw_html) = c.store().body(m.id).unwrap_or((None, None));
         let cleaned = c.message_html_cached(m.id, false).unwrap_or(None);
         let text = text.or_else(|| raw_html.as_deref().map(html_to_text));
@@ -452,6 +461,8 @@ pub fn thread_messages(thread_id: i64) -> Result<Vec<MessageDto>> {
             date: m.date.timestamp(),
             snippet: m.snippet.clone(),
             text,
+            styled: html.as_deref().is_some_and(mailcore::sanitize::has_own_colours),
+            is_mine,
             html,
             blocked_images,
             has_attachment: m.has_attachment,
@@ -484,6 +495,20 @@ pub async fn save_attachment(message_id: i64, idx: u32, dir: String) -> Result<S
 }
 
 /// Describe a local file for a draft: name, size, MIME type from the extension.
+/// The extension (lower case) of an attachment that could run code or open a browser when
+/// opened, judged by the name it will be saved under; None for ordinary files.
+#[frb(sync)]
+pub fn risky_extension(name: String) -> Option<String> {
+    mailcore::files::risky_extension(&name)
+}
+
+/// The name an attachment is saved under (invisible characters removed, device names
+/// renamed): what the chip should show.
+#[frb(sync)]
+pub fn safe_file_name(name: String) -> String {
+    mailcore::files::safe_file_name(&name)
+}
+
 pub fn describe_file(path: String) -> Result<DraftAttachmentDto> {
     Ok(attachment_to_dto(DraftAttachment::from_path(&PathBuf::from(path))?))
 }
@@ -494,14 +519,56 @@ pub fn unread_count() -> Result<u32> {
 
 // ---------- actions (local-first, replayed on sync) ----------
 
-/// Returns how many messages actually left the inbox (0: it was not there).
-pub fn archive_thread(thread_id: i64) -> Result<u32> {
-    Ok(core()?.actions().archive(thread_id)? as u32)
+/// Archive or Delete had nowhere to put mail.
+pub struct MissingFolderDto {
+    pub account_id: i64,
+    /// `archive` or `trash`.
+    pub role: String,
+    /// Gmail hides the folder from IMAP: the switch is in Gmail's settings, not here.
+    pub gmail: bool,
+    pub message: String,
 }
 
-/// Returns how many messages moved to Trash (0: already there, or Sent-only elsewhere).
-pub fn trash_thread(thread_id: i64) -> Result<u32> {
-    Ok(core()?.actions().trash(thread_id)? as u32)
+pub struct FiledDto {
+    /// How many messages moved (0: not in the inbox, or already in Trash).
+    pub moved: u32,
+    pub missing: Option<MissingFolderDto>,
+}
+
+fn filed(r: mailcore::Result<usize>) -> Result<FiledDto> {
+    match r {
+        Ok(n) => Ok(FiledDto { moved: n as u32, missing: None }),
+        Err(e @ mailcore::Error::NoFolder { account_id, role, gmail }) => Ok(FiledDto {
+            moved: 0,
+            missing: Some(MissingFolderDto {
+                account_id,
+                role: role.as_str().to_string(),
+                gmail,
+                message: e.to_string(),
+            }),
+        }),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Out of the inbox; `moved` is 0 when it was not there.
+pub fn archive_thread(thread_id: i64) -> Result<FiledDto> {
+    filed(core()?.actions().archive(thread_id))
+}
+
+/// To Trash; `moved` is 0 when it was there already (or only in Sent elsewhere).
+pub fn trash_thread(thread_id: i64) -> Result<FiledDto> {
+    filed(core()?.actions().trash(thread_id))
+}
+
+/// Create the `archive` or `trash` folder the account's server is missing; returns its name.
+pub async fn create_role_folder(account_id: i64, role: String) -> Result<String> {
+    let role = match role.as_str() {
+        "archive" => FolderRole::Archive,
+        "trash" => FolderRole::Trash,
+        other => return Err(anyhow!("cannot create a {other} folder")),
+    };
+    Ok(core()?.create_role_folder(account_id, role).await?)
 }
 
 pub fn mark_read(thread_id: i64, read: bool) -> Result<()> {

@@ -13,8 +13,13 @@ abstract class MailRepository {
   /// Sanitized HTML for one message; with [remoteImages] the http(s) images stay in.
   Future<String?> messageHtml(int messageId, {bool remoteImages = false});
 
-  /// How many messages left the inbox (0: it was not there).
+  /// How many messages left the inbox (0: it was not there). Throws [MissingFolder]
+  /// when the account has nowhere to archive to.
   Future<int> archive(int threadId);
+
+  /// Create the `archive` or `trash` folder the account's server is missing; returns the
+  /// folder's name.
+  Future<String> createRoleFolder(int accountId, String role);
 
   /// Folders of one account, for "Move to…".
   Future<List<Folder>> accountFolders(int accountId);
@@ -26,7 +31,7 @@ abstract class MailRepository {
   Future<void> snooze(int threadId, DateTime until);
   Future<void> unsnooze(int threadId);
 
-  /// How many messages went to Trash (0: nothing to delete).
+  /// How many messages went to Trash (0: nothing to delete). Throws [MissingFolder].
   Future<int> trash(int threadId);
   Future<void> markRead(int threadId, bool read);
   Future<void> star(int threadId, bool on);
@@ -60,6 +65,14 @@ abstract class MailRepository {
 
   /// Name, size and MIME type of a local file, ready to go into a draft.
   Future<DraftAttachment> describeFile(String path);
+
+  /// The name an attachment is saved under: invisible characters that could disguise its
+  /// extension removed, Windows device names renamed.
+  String displayFileName(String name);
+
+  /// The extension (lower case) of an attachment that can run code or open a browser when
+  /// opened, judged by its real name; null for ordinary files.
+  String? riskyExtension(String name);
 
   /// Sign in to IMAP, then SMTP, without storing anything. Throws a [Problem] whose
   /// stage says which server refused.

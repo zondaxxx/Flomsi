@@ -21,6 +21,8 @@ pub struct FakeSmtp {
     pub port: u16,
     pub cert: CertificateDer<'static>,
     pub delivered: Arc<Mutex<Vec<Delivered>>>,
+    /// What clients said after EHLO/HELO.
+    pub greetings: Arc<Mutex<Vec<String>>>,
 }
 
 #[derive(Clone)]
@@ -29,6 +31,7 @@ struct Ctx {
     user: String,
     pass: String,
     delivered: Arc<Mutex<Vec<Delivered>>>,
+    greetings: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeSmtp {
@@ -43,11 +46,13 @@ impl FakeSmtp {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let delivered = Arc::new(Mutex::new(Vec::new()));
+        let greetings = Arc::new(Mutex::new(Vec::new()));
         let ctx = Ctx {
             acceptor: TlsAcceptor::from(Arc::new(config)),
             user: user.to_string(),
             pass: pass.to_string(),
             delivered: delivered.clone(),
+            greetings: greetings.clone(),
         };
         tokio::spawn(async move {
             while let Ok((tcp, _)) = listener.accept().await {
@@ -68,6 +73,7 @@ impl FakeSmtp {
             port,
             cert,
             delivered,
+            greetings,
         }
     }
 }
@@ -89,6 +95,8 @@ async fn plain_then_starttls(tcp: TcpStream, ctx: &Ctx) -> io::Result<()> {
         let w = r.get_mut();
         match verb.as_str() {
             "EHLO" | "HELO" => {
+                let arg = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                ctx.greetings.lock().unwrap().push(arg);
                 w.write_all(b"250-fake.test\r\n250-STARTTLS\r\n250 8BITMIME\r\n")
                     .await?
             }
@@ -143,6 +151,7 @@ where
         let arg = parts.next().unwrap_or("").to_string();
         let reply: Vec<u8> = match verb.as_str() {
             "EHLO" | "HELO" => {
+                ctx.greetings.lock().unwrap().push(arg.clone());
                 b"250-fake.test\r\n250-AUTH PLAIN LOGIN\r\n250-8BITMIME\r\n250-SMTPUTF8\r\n250 SIZE 35882577\r\n".to_vec()
             }
             "AUTH" => {
@@ -208,7 +217,11 @@ where
                         break;
                     }
                     // Undo dot-stuffing.
-                    let l = if l.starts_with(b"..") { &l[1..] } else { &l[..] };
+                    let l = if l.starts_with(b"..") {
+                        &l[1..]
+                    } else {
+                        &l[..]
+                    };
                     data.extend_from_slice(l);
                 }
                 ctx.delivered.lock().unwrap().push(Delivered {
@@ -358,6 +371,13 @@ mod tests {
             crate::smtp::check(&config(server.port, "secret", implicit), cert)
                 .await
                 .unwrap_or_else(|e| panic!("implicit={implicit}: {e}"));
+            // The computer's name never goes out in EHLO.
+            let greetings = server.greetings.lock().unwrap().clone();
+            assert!(!greetings.is_empty());
+            assert!(
+                greetings.iter().all(|g| g == "[127.0.0.1]"),
+                "{greetings:?}"
+            );
             let wrong = crate::smtp::check(&config(server.port, "nope", implicit), cert)
                 .await
                 .unwrap_err()

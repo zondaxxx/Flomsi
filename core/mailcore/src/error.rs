@@ -18,11 +18,39 @@ pub enum Error {
     Parse(String),
     #[error("not found: {0}")]
     NotFound(String),
+    /// Archive or Delete has nowhere to put mail: the server has no such folder, or on
+    /// Gmail the folder is hidden from IMAP.
+    #[error("{}", no_folder_text(*.role, *.gmail))]
+    NoFolder {
+        account_id: i64,
+        role: crate::model::FolderRole,
+        gmail: bool,
+    },
     #[error("{0}")]
     Other(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+fn no_folder_text(role: crate::model::FolderRole, gmail: bool) -> String {
+    use crate::model::FolderRole;
+    let (gmail_name, name) = match role {
+        FolderRole::Archive | FolderRole::All => ("All Mail", "Archive"),
+        FolderRole::Trash => ("Trash", "Trash"),
+        FolderRole::Junk => ("Spam", "Junk"),
+        FolderRole::Sent => ("Sent Mail", "Sent"),
+        FolderRole::Drafts => ("Drafts", "Drafts"),
+        _ => ("the folder", "such"),
+    };
+    if gmail {
+        format!(
+            "Gmail does not show {gmail_name} to IMAP: in Gmail settings, Labels, turn on \
+             “Show in IMAP” for {gmail_name}"
+        )
+    } else {
+        format!("the server has no {name} folder")
+    }
+}
 
 impl From<async_imap::error::Error> for Error {
     fn from(e: async_imap::error::Error) -> Self {

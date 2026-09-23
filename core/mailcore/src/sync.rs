@@ -94,6 +94,29 @@ impl SyncEngine {
         let _ = self.events.send(e);
     }
 
+    /// Keep a complete, checked LIST: each folder's role, selectability and delimiter, and
+    /// forget folders renamed or deleted elsewhere with their cached mail. Returns the stored
+    /// folders in LIST order.
+    pub fn store_folder_list(
+        &self,
+        account_id: i64,
+        remote: &[crate::provider::RemoteFolder],
+    ) -> Result<Vec<Folder>> {
+        let mut stored = Vec::with_capacity(remote.len());
+        for rf in remote {
+            stored.push(self.store.upsert_remote_folder(
+                account_id,
+                &rf.name,
+                rf.role,
+                rf.selectable,
+                rf.delimiter.as_deref(),
+            )?);
+        }
+        let keep: HashSet<String> = remote.iter().map(|f| f.name.clone()).collect();
+        self.store.remove_folders_except(account_id, &keep)?;
+        Ok(stored)
+    }
+
     pub async fn sync_account<P: Provider>(
         &self,
         account: &Account,
@@ -124,11 +147,9 @@ impl SyncEngine {
         }
 
         let remote = provider.list_folders().await?;
+        let stored = self.store_folder_list(account.id, &remote)?;
         let mut targets = Vec::new();
-        for rf in &remote {
-            let folder =
-                self.store
-                    .upsert_remote_folder(account.id, &rf.name, rf.role, rf.selectable)?;
+        for (rf, folder) in remote.iter().zip(stored) {
             // A folder with something to take back is synced even when this run would skip
             // it (an inbox-only sync after a failed "not spam").
             let wanted = opts.roles.is_empty()
@@ -705,6 +726,13 @@ impl<'a> Actions<'a> {
         for group in self.groups(thread_id)? {
             let Some(first) = group.first() else { continue };
             let folders = self.store.folders(first.account_id)?;
+            // On Gmail a label someone named "Archive" is just a label: archiving there
+            // means leaving the inbox for All Mail.
+            let order = if self.is_gmail(first.account_id)? {
+                [FolderRole::All, FolderRole::Archive]
+            } else {
+                [FolderRole::Archive, FolderRole::All]
+            };
             for m in &group {
                 let Some(src) = Self::folder_of(&folders, m) else {
                     continue;
@@ -712,10 +740,16 @@ impl<'a> Actions<'a> {
                 if src.role != FolderRole::Inbox {
                     continue;
                 }
-                let dest = [FolderRole::Archive, FolderRole::All]
+                let Some(dest) = order
                     .iter()
                     .find_map(|r| folders.iter().find(|f| f.role == *r && f.selectable))
-                    .ok_or_else(|| crate::error::Error::NotFound("archive folder".into()))?;
+                else {
+                    return Err(crate::error::Error::NoFolder {
+                        account_id: m.account_id,
+                        role: FolderRole::Archive,
+                        gmail: self.is_gmail(m.account_id)?,
+                    });
+                };
                 plan.push(Change::Delete(m.folder_id, m.uid));
                 Self::enqueue_move(&mut plan, m, src, dest, Vec::new());
                 moved += 1;
@@ -735,10 +769,16 @@ impl<'a> Actions<'a> {
         for group in self.groups(thread_id)? {
             let Some(first) = group.first() else { continue };
             let folders = self.store.folders(first.account_id)?;
-            let trash = folders
+            let Some(trash) = folders
                 .iter()
                 .find(|f| f.role == FolderRole::Trash && f.selectable)
-                .ok_or_else(|| crate::error::Error::NotFound("trash folder".into()))?;
+            else {
+                return Err(crate::error::Error::NoFolder {
+                    account_id: first.account_id,
+                    role: FolderRole::Trash,
+                    gmail: self.is_gmail(first.account_id)?,
+                });
+            };
             if self.is_gmail(first.account_id)? {
                 moved += Self::gmail_leave_everything(&mut plan, &group, &folders, trash)?;
                 continue;

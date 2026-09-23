@@ -35,6 +35,45 @@ jobs:
           name: mailctl-linux-x86_64
           path: core/target/release/mailctl
 
+  live:
+    name: core against Dovecot and mailpit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: start the mail servers
+        run: scripts/live_servers.sh
+      - run: cargo test -p mailcore --test live -- --nocapture --test-threads 4
+        working-directory: core
+        env:
+          FLOMSI_LIVE: "1"
+      - name: mailctl against the same servers
+        working-directory: core
+        env:
+          MAIL_PASSWORD: Live-Pw-9431
+        run: |
+          cargo build -p mailctl
+          M="target/debug/mailctl --data-dir /tmp/flomsi-mailctl"
+          $M probe --email smoke@flomsi.test --host localhost --port 10993 --local-bridge
+          $M probe --email smoke@flomsi.test --host localhost --port 10143 --starttls --local-bridge --quick
+          $M test-login --email smoke@flomsi.test --host localhost --port 10993 --local-bridge
+          $M check-smtp --email smoke@flomsi.test --host localhost --port 1025 --local-bridge
+          if MAIL_PASSWORD=wrong $M test-login --email smoke@flomsi.test --host localhost --port 10993 --local-bridge; then
+            echo "a wrong password was accepted"; exit 1
+          fi
+          $M --wire /tmp/flomsi-wire.txt probe --email smoke@flomsi.test --host localhost --port 10993 --local-bridge --quick
+          if grep -q "$MAIL_PASSWORD" /tmp/flomsi-wire.txt; then echo "password in the transcript"; exit 1; fi
+          grep -q "LOGIN \*\*\* (masked)" /tmp/flomsi-wire.txt
+      - name: server logs
+        if: failure()
+        run: |
+          sudo cat /tmp/flomsi-live/dovecot.log || true
+          docker logs mailpit || true
+
   app-check:
     name: app (analyze + test)
     runs-on: macos-15
@@ -54,7 +93,7 @@ jobs:
   macos:
     name: build macOS
     runs-on: macos-15
-    needs: [core, app-check]
+    needs: [core, live, app-check]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -83,7 +122,7 @@ jobs:
   ios:
     name: build iOS (device, no codesign)
     runs-on: macos-15
-    needs: [core, app-check]
+    needs: [core, live, app-check]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -106,7 +145,7 @@ jobs:
   android:
     name: build Android
     runs-on: ubuntu-latest
-    needs: [core, app-check]
+    needs: [core, live, app-check]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -138,7 +177,7 @@ jobs:
   windows:
     name: build Windows
     runs-on: windows-latest
-    needs: [core, app-check]
+    needs: [core, live, app-check]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -148,7 +148,16 @@ fn filter_attr<'v>(_element: &str, attr: &str, value: &'v str) -> Option<Cow<'v,
             let (k, v) = decl.split_once(':')?;
             let k = k.trim().to_ascii_lowercase();
             let v = v.trim();
-            if !ALLOWED.contains(&k.as_str()) || v.is_empty() || !safe_css_value(v) {
+            // `background: #fff url(bg.png) no-repeat` is how most newsletters set a
+            // background; keep only its colour (the image and the rest never load).
+            if k == "background" {
+                let colour = css_colour(v).filter(|c| safe_css_value(c))?;
+                return Some(format!("background-color: {colour}"));
+            }
+            if v.is_empty() || !safe_css_value(v) {
+                return None;
+            }
+            if !ALLOWED.contains(&k.as_str()) {
                 return None;
             }
             Some(format!("{k}: {v}"))
@@ -158,6 +167,257 @@ fn filter_attr<'v>(_element: &str, attr: &str, value: &'v str) -> Option<Cow<'v,
         None
     } else {
         Some(Cow::Owned(kept.join("; ")))
+    }
+}
+
+/// The colour in a `background` shorthand: a `#hex`, `rgb()`/`rgba()`/`hsl()`/`hsla()` or a
+/// colour keyword; None when there is none.
+fn css_colour(v: &str) -> Option<String> {
+    let lower = v.trim().to_ascii_lowercase();
+    for f in ["rgba(", "rgb(", "hsla(", "hsl("] {
+        if let Some(i) = lower.find(f) {
+            let end = lower[i..].find(')')? + i + 1;
+            return Some(lower[i..end].to_string());
+        }
+    }
+    lower
+        .split_whitespace()
+        .find(|t| {
+            (t.starts_with('#') && matches!(t.len(), 4 | 5 | 7 | 9))
+                || (t.chars().all(|c| c.is_ascii_alphabetic())
+                    && !matches!(
+                        *t,
+                        "none"
+                            | "repeat"
+                            | "no"
+                            | "center"
+                            | "top"
+                            | "bottom"
+                            | "left"
+                            | "right"
+                            | "fixed"
+                            | "scroll"
+                            | "cover"
+                            | "contain"
+                            | "auto"
+                            | "inherit"
+                            | "initial"
+                            | "unset"
+                            | "transparent"
+                    )
+                    && !t.starts_with("repeat")
+                    && !t.contains("repeat"))
+        })
+        .map(str::to_string)
+}
+
+/// True when the (sanitized) message sets its own text or background colours: such mail is
+/// designed for a light page and is shown on one, whatever the app's theme.
+pub fn has_own_colours(html: &str) -> bool {
+    let mut found = false;
+    for_each_tag_attr(html, |name, value| {
+        let name = name.to_ascii_lowercase();
+        let value = value.to_ascii_lowercase();
+        if matches!(name.as_str(), "bgcolor" | "color")
+            || (name == "style" && (value.contains("color:") || value.contains("color :")))
+        {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Every attribute of every tag in serializer output (double-quoted values, which may hold
+/// `>`), as (name, raw value).
+fn for_each_tag_attr(html: &str, mut visit: impl FnMut(&str, &str)) {
+    for_each_tag_attr_named(html, |_, name, value| visit(name, value));
+}
+
+/// Like [for_each_tag_attr], with the tag's name first.
+fn for_each_tag_attr_named(html: &str, mut visit: impl FnMut(&str, &str, &str)) {
+    let b = html.as_bytes();
+    let mut i = 0;
+    while let Some(off) = html[i..].find('<') {
+        let mut j = i + off + 1;
+        // Tag name
+        let tag_start = j;
+        while j < b.len() && !b[j].is_ascii_whitespace() && b[j] != b'>' {
+            j += 1;
+        }
+        let tag = &html[tag_start..j];
+        while j < b.len() && b[j] != b'>' {
+            if b[j].is_ascii_whitespace() || b[j] == b'/' {
+                j += 1;
+                continue;
+            }
+            let name_start = j;
+            while j < b.len() && !matches!(b[j], b'=' | b'>' | b'/') && !b[j].is_ascii_whitespace()
+            {
+                j += 1;
+            }
+            let name = &html[name_start..j];
+            if j < b.len() && b[j] == b'=' {
+                j += 1;
+                let (v0, v1) = if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+                    let q = b[j];
+                    let v0 = j + 1;
+                    let v1 = html[v0..]
+                        .find(q as char)
+                        .map(|k| v0 + k)
+                        .unwrap_or(b.len());
+                    j = (v1 + 1).min(b.len());
+                    (v0, v1)
+                } else {
+                    let v0 = j;
+                    while j < b.len() && b[j] != b'>' && !b[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    (v0, j)
+                };
+                visit(tag, name, &html[v0..v1]);
+            }
+        }
+        i = (j + 1).min(b.len());
+        if i >= b.len() {
+            break;
+        }
+    }
+}
+
+/// Width and height from the header of a PNG, GIF, JPEG, WebP or BMP, without decoding it.
+pub fn image_dimensions(b: &[u8]) -> Option<(u32, u32)> {
+    let be32 =
+        |i: usize| -> Option<u32> { Some(u32::from_be_bytes(b.get(i..i + 4)?.try_into().ok()?)) };
+    let le16 = |i: usize| -> Option<u32> {
+        Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?) as u32)
+    };
+    let be16 = |i: usize| -> Option<u32> {
+        Some(u16::from_be_bytes(b.get(i..i + 2)?.try_into().ok()?) as u32)
+    };
+    let le24 = |i: usize| -> Option<u32> {
+        let p = b.get(i..i + 3)?;
+        Some(p[0] as u32 | (p[1] as u32) << 8 | (p[2] as u32) << 16)
+    };
+    if b.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some((be32(16)?, be32(20)?));
+    }
+    if b.starts_with(b"GIF87a") || b.starts_with(b"GIF89a") {
+        return gif_dimensions(b);
+    }
+    if b.starts_with(b"BM") {
+        let w = i32::from_le_bytes(b.get(18..22)?.try_into().ok()?);
+        let h = i32::from_le_bytes(b.get(22..26)?.try_into().ok()?);
+        return Some((w.unsigned_abs(), h.unsigned_abs()));
+    }
+    if b.len() > 30 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        return match &b[12..16] {
+            b"VP8 " => Some((le16(26)? & 0x3fff, le16(28)? & 0x3fff)),
+            b"VP8L" => {
+                let v = u32::from_le_bytes(b.get(21..25)?.try_into().ok()?);
+                Some(((v & 0x3fff) + 1, ((v >> 14) & 0x3fff) + 1))
+            }
+            b"VP8X" => Some((le24(24)? + 1, le24(27)? + 1)),
+            _ => None,
+        };
+    }
+    if b.starts_with(&[0xFF, 0xD8]) {
+        // Walk the markers to the first frame header (SOF0..SOF15 except DHT/JPG/DAC).
+        let mut i = 2;
+        while i + 9 < b.len() {
+            if b[i] != 0xFF {
+                return None;
+            }
+            let marker = b[i + 1];
+            if marker == 0xFF {
+                i += 1;
+                continue;
+            }
+            // Markers without a length (stuffing, TEM, RSTn, SOI, EOI) never come before the
+            // frame header in a real file; reading one as a length lets a crafted file jump
+            // past its real size to a fake one.
+            if matches!(marker, 0x00 | 0x01 | 0xD0..=0xD9) {
+                return None;
+            }
+            let len = be16(i + 2)? as usize;
+            if matches!(marker, 0xC0..=0xCF) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+                return Some((be16(i + 7)?, be16(i + 5)?));
+            }
+            i += 2 + len;
+        }
+        return None;
+    }
+    None
+}
+
+/// A GIF's canvas as decoders draw it: the logical screen grown to hold every frame (a 1x1
+/// screen may carry a 20000x20000 frame, and the decoder then allocates for the frame).
+/// None when the file has no frame or ends inside the header.
+fn gif_dimensions(b: &[u8]) -> Option<(u32, u32)> {
+    let le16 = |i: usize| -> Option<u32> {
+        Some(u16::from_le_bytes(b.get(i..i + 2)?.try_into().ok()?) as u32)
+    };
+    // Skip data sub-blocks: length bytes until a zero one. None when the file ends first.
+    let skip_blocks = |mut i: usize| -> Option<usize> {
+        loop {
+            let n = *b.get(i)? as usize;
+            i += 1;
+            if n == 0 {
+                return Some(i);
+            }
+            i += n;
+        }
+    };
+    let (mut w, mut h) = (le16(6)?, le16(8)?);
+    let flags = *b.get(10)?;
+    let mut i = 13;
+    if flags & 0x80 != 0 {
+        i += 3 * (1usize << ((flags & 7) + 1));
+    }
+    let mut frames = 0;
+    loop {
+        match b.get(i) {
+            Some(0x2C) => {
+                let (left, top) = (le16(i + 1)?, le16(i + 3)?);
+                let (fw, fh) = (le16(i + 5)?, le16(i + 7)?);
+                w = w.max(left + fw);
+                h = h.max(top + fh);
+                frames += 1;
+                let local = *b.get(i + 9)?;
+                i += 10;
+                if local & 0x80 != 0 {
+                    i += 3 * (1usize << ((local & 7) + 1));
+                }
+                // LZW minimum code size, then the image data.
+                match skip_blocks(i + 1) {
+                    Some(next) => i = next,
+                    None => break,
+                }
+            }
+            Some(0x21) => match skip_blocks(i + 2) {
+                Some(next) => i = next,
+                None => break,
+            },
+            // The trailer, the end of a cut file, or bytes that are not GIF blocks.
+            _ => break,
+        }
+    }
+    (frames > 0).then_some((w, h))
+}
+
+/// Inline images larger than this in pixels stay blocked: a small file can declare a huge
+/// canvas and take gigabytes to decode.
+pub const MAX_INLINE_PIXELS: u64 = 25_000_000;
+pub const MAX_INLINE_SIDE: u32 = 8192;
+
+fn decodable(bytes: &[u8]) -> bool {
+    match image_dimensions(bytes) {
+        Some((w, h)) => {
+            w <= MAX_INLINE_SIDE
+                && h <= MAX_INLINE_SIDE
+                && (w as u64) * (h as u64) <= MAX_INLINE_PIXELS
+        }
+        // Unknown header: SVG is not an inline type anyway; an unreadable bitmap is refused.
+        None => false,
     }
 }
 
@@ -190,7 +450,72 @@ pub fn sanitize(html: &str, opts: SanitizeOptions) -> Sanitized {
     generic.insert("style");
     b.generic_attributes(generic);
     let cleaned = b.clean(html).to_string();
+    let cleaned = match body_colours(html) {
+        Some(style) => format!("<div style=\"{style}\">{cleaned}</div>"),
+        None => cleaned,
+    };
     gate_images(&cleaned, opts.load_remote_images)
+}
+
+/// A colour that can be written into an attribute as is: `#` and hex digits, a keyword, or
+/// `rgb()`/`hsl()` of numbers. No quotes, angle brackets or ampersands can get through.
+fn plain_colour(c: String) -> Option<String> {
+    let ok = match c.strip_prefix('#') {
+        Some(hex) => {
+            matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
+        }
+        None => c.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(ch, ' ' | '%' | '.' | ',' | '(' | ')' | '-' | '/')
+        }),
+    };
+    (ok && safe_css_value(&c)).then_some(c)
+}
+
+/// A colour from an HTML attribute (`bgcolor`, `text`): `#hex`, a keyword, `rgb()`, or the
+/// bare hex digits old mail uses.
+fn attr_colour(v: &str) -> Option<String> {
+    let v = v.trim();
+    if matches!(v.len(), 3 | 6) && v.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some(format!("#{}", v.to_ascii_lowercase()));
+    }
+    css_colour(v).and_then(plain_colour)
+}
+
+/// The page and text colours a message sets on `<body>` (bgcolor, text, style), which go
+/// with the body tag when it is cleaned: kept as a wrapper's style, so light text keeps
+/// its dark page.
+fn body_colours(html: &str) -> Option<String> {
+    let (mut bg, mut fg) = (None, None);
+    for_each_tag_attr_named(html, |tag, name, value| {
+        if !tag.eq_ignore_ascii_case("body") {
+            return;
+        }
+        match name.to_ascii_lowercase().as_str() {
+            "bgcolor" if bg.is_none() => bg = attr_colour(value),
+            "text" if fg.is_none() => fg = attr_colour(value),
+            "style" => {
+                for decl in value.split(';') {
+                    let Some((k, v)) = decl.split_once(':') else {
+                        continue;
+                    };
+                    match k.trim().to_ascii_lowercase().as_str() {
+                        "background" | "background-color" if bg.is_none() => {
+                            bg = css_colour(v).and_then(plain_colour)
+                        }
+                        "color" if fg.is_none() => fg = css_colour(v).and_then(plain_colour),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+    let decls: Vec<String> = [("background-color", bg), ("color", fg)]
+        .into_iter()
+        .filter_map(|(k, v)| Some(format!("{k}: {}", v?)))
+        .collect();
+    (!decls.is_empty()).then(|| decls.join("; "))
 }
 
 /// An allow-list for `<img src>`: `cid:` parts (resolved locally later) always show; http(s)
@@ -383,7 +708,10 @@ pub fn inline_cid_images(
     let out = for_each_img_src(html, |value| {
         let id = cid_of(value)?;
         match lookup(&id).filter(|(mime, bytes)| {
-            is_inline_image_type(mime) && bytes.len() <= MAX_INLINE_IMAGE && bytes.len() <= budget
+            is_inline_image_type(mime)
+                && bytes.len() <= MAX_INLINE_IMAGE
+                && bytes.len() <= budget
+                && decodable(bytes)
         }) {
             Some((mime, bytes)) => {
                 budget -= bytes.len();
@@ -453,6 +781,15 @@ pub fn html_to_text(html: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PNG header declaring `w`×`h`, padded to `len` bytes (enough for the checks here).
+    fn png(w: u32, h: u32, len: usize) -> Vec<u8> {
+        let mut v = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        v.extend_from_slice(&w.to_be_bytes());
+        v.extend_from_slice(&h.to_be_bytes());
+        v.resize(len.max(v.len()), 0);
+        v
+    }
 
     #[test]
     fn strips_scripts_and_handlers() {
@@ -524,12 +861,12 @@ mod tests {
             vec!["logo@studio.dev", "missing@x", "vec@x"]
         );
         let (html, unresolved) = inline_cid_images(&clean.html, |cid| match cid {
-            "logo@studio.dev" => Some(("image/PNG".into(), vec![1, 2, 3])),
+            "logo@studio.dev" => Some(("image/PNG".into(), png(1, 1, 24))),
             "vec@x" => Some(("image/svg+xml".into(), b"<svg/>".to_vec())),
             _ => None,
         });
         assert!(
-            html.contains(r#"src="data:image/png;base64,AQID""#),
+            html.contains(r#"src="data:image/png;base64,iVBORw0KGgo"#),
             "{html}"
         );
         assert!(html.contains(r#"data-blocked-src="cid:missing@x""#));
@@ -568,10 +905,141 @@ mod tests {
     fn oversized_inline_images_stay_blocked() {
         let clean = sanitize(r#"<img src="cid:big@x">"#, SanitizeOptions::default());
         let (html, unresolved) = inline_cid_images(&clean.html, |_| {
-            Some(("image/png".into(), vec![0; MAX_INLINE_IMAGE + 1]))
+            Some(("image/png".into(), png(10, 10, MAX_INLINE_IMAGE + 1)))
         });
         assert_eq!(unresolved, 1);
         assert!(!html.contains("base64"));
+    }
+
+    #[test]
+    fn a_small_file_with_a_huge_canvas_stays_blocked() {
+        let clean = sanitize(
+            r#"<img src="cid:bomb@x"><img src="cid:wide@x"><img src="cid:ok@x">"#,
+            SanitizeOptions::default(),
+        );
+        let (html, unresolved) = inline_cid_images(&clean.html, |cid| match cid {
+            // 20 000 × 20 000 in a few hundred bytes: 1.6 GB once decoded.
+            "bomb@x" => Some(("image/png".into(), png(20_000, 20_000, 300))),
+            "wide@x" => Some(("image/png".into(), png(9_000, 10, 300))),
+            _ => Some(("image/png".into(), png(1200, 800, 300))),
+        });
+        assert_eq!(unresolved, 2);
+        assert_eq!(html.matches("base64,").count(), 1);
+    }
+
+    /// A one-frame GIF: logical screen, then an image descriptor (left, top, width, height)
+    /// with a minimal LZW block, then the trailer.
+    fn gif(screen: (u16, u16), frame: (u16, u16, u16, u16)) -> Vec<u8> {
+        let mut b = b"GIF89a".to_vec();
+        b.extend_from_slice(&screen.0.to_le_bytes());
+        b.extend_from_slice(&screen.1.to_le_bytes());
+        b.extend_from_slice(&[0, 0, 0]);
+        // A graphic control extension first, as animated GIFs have.
+        b.extend_from_slice(&[0x21, 0xF9, 0x04, 0, 0, 0, 0, 0]);
+        b.push(0x2C);
+        for v in [frame.0, frame.1, frame.2, frame.3] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(&[0, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3B]);
+        b
+    }
+
+    #[test]
+    fn image_headers_give_their_size() {
+        assert_eq!(image_dimensions(&png(640, 480, 40)), Some((640, 480)));
+        assert_eq!(
+            image_dimensions(&gif((320, 240), (0, 0, 320, 240))),
+            Some((320, 240))
+        );
+        // A tiny screen with a huge frame: the decoder draws the frame, so that counts.
+        let bomb = gif((1, 1), (0, 0, 20000, 20000));
+        assert_eq!(image_dimensions(&bomb), Some((20000, 20000)));
+        assert!(!decodable(&bomb));
+        // A header with no frame is not an image to show.
+        assert_eq!(
+            image_dimensions(b"GIF89a\x40\x01\xf0\x00\x00\x00\x00"),
+            None
+        );
+        // JPEG: SOI, an APP0 segment, then SOF0 with height 100 and width 200.
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x00, 0x00];
+        jpeg.extend_from_slice(&[
+            0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x64, 0x00, 0xC8, 0x03, 0, 0,
+        ]);
+        assert_eq!(image_dimensions(&jpeg), Some((200, 100)));
+        // A marker without a length before the frame: never in a real file, refused.
+        let mut odd = vec![0xFF, 0xD8, 0xFF, 0xD0];
+        odd.extend_from_slice(&jpeg[2..]);
+        assert_eq!(image_dimensions(&odd), None);
+        let mut bmp = b"BM".to_vec();
+        bmp.resize(18, 0);
+        bmp.extend_from_slice(&50i32.to_le_bytes());
+        bmp.extend_from_slice(&(-70i32).to_le_bytes());
+        assert_eq!(image_dimensions(&bmp), Some((50, 70)));
+        assert_eq!(image_dimensions(b"not an image"), None);
+    }
+
+    #[test]
+    fn a_dark_page_set_on_body_stays_with_its_light_text() {
+        let s = sanitize(
+            r##"<html><body bgcolor="#111111" text="#eeeeee"><p>Night mode</p></body></html>"##,
+            SanitizeOptions::default(),
+        );
+        assert!(
+            s.html
+                .starts_with(r#"<div style="background-color: #111111; color: #eeeeee">"#),
+            "{}",
+            s.html
+        );
+        assert!(has_own_colours(&s.html));
+        let s = sanitize(
+            r#"<body style="background: #000 url(x.png); color: white"><p>x</p></body>"#,
+            SanitizeOptions::default(),
+        );
+        assert!(
+            s.html
+                .starts_with(r#"<div style="background-color: #000; color: white">"#),
+            "{}",
+            s.html
+        );
+        // Nothing on body, nothing added; nothing that could escape the attribute.
+        let s = sanitize("<p>plain</p>", SanitizeOptions::default());
+        assert_eq!(s.html, "<p>plain</p>");
+        for body in [
+            r#"<body bgcolor='red" onload="x'><p>x</p></body>"#,
+            r#"<body bgcolor='#"onload='><p>x</p></body>"#,
+            r#"<body style='color: #a"b'><p>x</p></body>"#,
+            r#"<body bgcolor='#a"b'><p>x</p></body>"#,
+            r#"<body text='rgb(1,2,3)"><script>'><p>x</p></body>"#,
+        ] {
+            let s = sanitize(body, SanitizeOptions::default());
+            assert!(
+                !s.html.contains("onload")
+                    && !s.html.contains("<script")
+                    && !s.html.contains("#a\""),
+                "{body} -> {}",
+                s.html
+            );
+            assert!(
+                s.html.ends_with("<p>x</p>") || s.html.ends_with("</div>"),
+                "{}",
+                s.html
+            );
+        }
+    }
+
+    #[test]
+    fn newsletters_keep_their_backgrounds_and_are_told_apart() {
+        let s = sanitize(
+            r##"<table bgcolor="#f4f4f4"><tr><td style="background: #ffffff url(x.png) no-repeat; color: #333">Hi</td></tr></table>"##,
+            SanitizeOptions::default(),
+        );
+        assert!(s.html.contains("background-color: #ffffff"), "{}", s.html);
+        assert!(!s.html.contains("url"), "{}", s.html);
+        assert!(has_own_colours(&s.html));
+        let plain = sanitize("<p>Just text, colour: none</p>", SanitizeOptions::default());
+        assert!(!has_own_colours(&plain.html));
+        let font = sanitize(r#"<font color="red">x</font>"#, SanitizeOptions::default());
+        assert!(has_own_colours(&font.html));
     }
 
     #[test]
@@ -625,7 +1093,7 @@ mod tests {
         )
         .html;
         let (out, unresolved) = inline_cid_images(&html, |_| {
-            Some(("image/png".into(), vec![0; 4 * 1024 * 1024]))
+            Some(("image/png".into(), png(800, 600, 4 * 1024 * 1024)))
         });
         assert_eq!(unresolved, 5);
         assert_eq!(out.matches("base64,").count(), 5);

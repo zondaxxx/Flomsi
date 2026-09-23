@@ -3,6 +3,7 @@
 use crate::error::{Error, Result};
 use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{Certificate, Tls, TlsParameters};
+use lettre::transport::smtp::extension::ClientId;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 use rustls::pki_types::CertificateDer;
 
@@ -104,7 +105,11 @@ fn transport(
             Tls::Required(tls)
         })
         .credentials(Credentials::new(cfg.user.clone(), secret))
-        .authentication(mechanism);
+        .authentication(mechanism)
+        // EHLO names this computer by default ("Someones-MacBook-Pro.local"), and the name
+        // ends up in the Received header of every message. An address literal is what mail
+        // apps send instead.
+        .hello_name(ClientId::Ipv4(std::net::Ipv4Addr::LOCALHOST));
     Ok(builder.build())
 }
 

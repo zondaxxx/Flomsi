@@ -452,3 +452,92 @@ class _RevealOnSelectState extends State<RevealOnSelect> {
   @override
   Widget build(BuildContext context) => widget.child;
 }
+
+/// A small question in the editor style: a title, a line of explanation, Cancel and one
+/// action. Returns true when the action was chosen. Esc and a click outside cancel.
+Future<bool> confirmDialog(
+  BuildContext context, {
+  required String title,
+  required String body,
+  required String action,
+  bool danger = false,
+  bool cancel = true,
+}) async {
+  final chosen = await showGeneralDialog<bool>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: 'Cancel',
+    barrierColor: Colors.black.withValues(alpha: 0.25),
+    transitionDuration: const Duration(milliseconds: 120),
+    transitionBuilder: (context, a, _, child) => FadeTransition(
+      opacity: CurvedAnimation(parent: a, curve: Motion.curve),
+      child: ScaleTransition(
+        scale: Tween(
+          begin: 0.98,
+          end: 1.0,
+        ).animate(CurvedAnimation(parent: a, curve: Motion.curve)),
+        child: child,
+      ),
+    ),
+    pageBuilder: (context, _, _) {
+      final s = context.s;
+      final width = MediaQuery.sizeOf(context).width;
+      return Center(
+        child: Material(
+          type: MaterialType.transparency,
+          child: Container(
+            width: (width - 32).clamp(260.0, 420.0),
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+            decoration: BoxDecoration(
+              color: s.bg,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: s.border),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: s.isDark ? 0.5 : 0.18),
+                  blurRadius: 30,
+                  offset: const Offset(0, 12),
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  title,
+                  style: ui(context, size: 14, weight: FontWeight.w600),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  body,
+                  style: ui(context, size: 12.5, color: s.fg2, height: 1.45),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Spacer(),
+                    if (cancel) ...[
+                      SmallButton(
+                        label: 'Cancel',
+                        onPressed: () => Navigator.of(context).pop(false),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    SmallButton(
+                      label: action,
+                      primary: !danger,
+                      danger: danger,
+                      onPressed: () => Navigator.of(context).pop(true),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    },
+  );
+  return chosen ?? false;
+}

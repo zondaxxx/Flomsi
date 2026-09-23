@@ -74,6 +74,13 @@ pub struct FakeState {
     /// CONDSTORE: HIGHESTMODSEQ in SELECT, MODSEQ in FETCH, CHANGEDSINCE honoured.
     pub condstore: bool,
     pub modseq: u64,
+    /// RFC 6154 CREATE-SPECIAL-USE: CREATE takes `(USE (\\Archive))`.
+    pub special_use_create: bool,
+    /// Advertise CREATE-SPECIAL-USE but answer a CREATE with USE with `NO [USEATTR]`.
+    pub refuse_use: bool,
+    /// With `condstore`: advertise ENABLE and send HIGHESTMODSEQ only on a connection that
+    /// said `ENABLE CONDSTORE`, as RFC 7162 allows (Dovecot).
+    pub strict_condstore: bool,
 }
 
 /// Where the fake stops for a test to act in the middle of a sync.
@@ -511,10 +518,15 @@ where
         } else {
             "IMAP4rev1 IDLE MOVE UIDPLUS"
         };
-        if st.condstore {
-            format!("{base} CONDSTORE")
+        let base = match (st.condstore, st.strict_condstore) {
+            (true, true) => format!("{base} CONDSTORE ENABLE"),
+            (true, false) => format!("{base} CONDSTORE"),
+            _ => base.to_string(),
+        };
+        if st.special_use_create {
+            format!("{base} CREATE-SPECIAL-USE")
         } else {
-            base.to_string()
+            base
         }
     };
     if greet {
@@ -525,6 +537,7 @@ where
         .await?;
     }
     let mut selected: Option<String> = None;
+    let mut condstore_enabled = false;
     loop {
         let mut line = String::new();
         if r.read_line(&mut line).await? == 0 {
@@ -585,8 +598,9 @@ where
             "LIST" => {
                 let mut reply = String::new();
                 for (name, b) in &state.lock().unwrap().boxes {
+                    // Special-use boxes carry only their attribute, as Gmail's \All does.
                     let attrs = match b.special {
-                        Some(sp) => format!("\\HasNoChildren {sp}"),
+                        Some(sp) => sp.to_string(),
                         None => "\\HasNoChildren".to_string(),
                     };
                     reply.push_str(&format!("* LIST ({attrs}) \"/\" \"{name}\"\r\n"));
@@ -598,7 +612,7 @@ where
                 let name = unquote(args.get(1).map(String::as_str).unwrap_or(""));
                 let reply = {
                     let mut st = state.lock().unwrap();
-                    let modseq = if st.condstore {
+                    let modseq = if st.condstore && (condstore_enabled || !st.strict_condstore) {
                         format!("* OK [HIGHESTMODSEQ {}] modseq\r\n", st.modseq.max(1))
                     } else {
                         String::new()
@@ -1030,6 +1044,49 @@ where
                 )
                 .await?;
                 return Ok(());
+            }
+            "ENABLE" => {
+                let what = args
+                    .get(1)
+                    .map(|a| a.to_ascii_uppercase())
+                    .unwrap_or_default();
+                let on = what == "CONDSTORE" && state.lock().unwrap().condstore;
+                condstore_enabled |= on;
+                let enabled = if on {
+                    "* ENABLED CONDSTORE\r\n"
+                } else {
+                    "* ENABLED\r\n"
+                };
+                send(&w, format!("{enabled}{}", ok("ENABLE")).as_bytes()).await?;
+            }
+            "CREATE" => {
+                let name = unquote(args.get(1).map(String::as_str).unwrap_or(""));
+                let reply = {
+                    let mut st = state.lock().unwrap();
+                    let special = args.get(2).map(|u| {
+                        [
+                            "\\All",
+                            "\\Archive",
+                            "\\Drafts",
+                            "\\Junk",
+                            "\\Sent",
+                            "\\Trash",
+                        ]
+                        .into_iter()
+                        .find(|a| u.contains(a))
+                    });
+                    if st.boxes.contains_key(&name) {
+                        format!("{tag} NO [ALREADYEXISTS] mailbox exists\r\n")
+                    } else if special.is_some() && !st.special_use_create {
+                        format!("{tag} BAD USE not supported\r\n")
+                    } else if special.is_some() && st.refuse_use {
+                        format!("{tag} NO [USEATTR] special-use attributes are not stored\r\n")
+                    } else {
+                        st.add_box(&name, special.flatten());
+                        ok("CREATE")
+                    }
+                };
+                send(&w, reply.as_bytes()).await?;
             }
             _ => send(&w, format!("{tag} BAD unknown command\r\n").as_bytes()).await?,
         }
@@ -2105,6 +2162,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_gmail_label_named_archive_is_not_where_archive_goes() {
+        let g = gmail().await;
+        g.fake.with(|s| s.add_box("Archive", None));
+        g.sync().await;
+        Actions { store: &g.store }
+            .archive(g.thread_of("inv@studio.dev"))
+            .unwrap();
+        g.sync().await;
+        g.fake
+            .with(|s| assert_eq!(s.where_is(g.invoice), vec![GMAIL_ALL]));
+    }
+
+    #[tokio::test]
     async fn gmail_flags_go_once_per_message() {
         let g = gmail().await;
         let before = g.fake.with(|s| s.log.len());
@@ -2570,5 +2640,56 @@ mod tests {
         assert!(crate::provider::imap::is_loopback("::1"));
         assert!(crate::provider::imap::is_loopback("[::1]"));
         assert!(!crate::provider::imap::is_loopback("127.0.0.1.nip.io"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_special_use_attribute_still_creates_the_folder() {
+        let fake = server().await;
+        fake.with(|s| {
+            s.boxes.remove("Archive");
+            s.special_use_create = true;
+            s.refuse_use = true;
+        });
+        let mut p = connect(&fake, "secret").await.unwrap();
+        p.create_folder("Archive", Some(FolderRole::Archive))
+            .await
+            .unwrap();
+        let (special, creates) = fake.with(|s| {
+            (
+                s.boxes.get("Archive").map(|b| b.special),
+                s.log
+                    .iter()
+                    .filter(|l| l.starts_with("CREATE"))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            special,
+            Some(None),
+            "created by name, without the attribute"
+        );
+        assert_eq!(creates.len(), 2, "{creates:?}");
+        assert!(creates[0].contains("USE"), "{creates:?}");
+        // Already there: fine, nothing else asked.
+        p.create_folder("Archive", Some(FolderRole::Archive))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn condstore_is_enabled_where_the_server_waits_for_it() {
+        let fake = server().await;
+        fake.with(|s| {
+            s.condstore = true;
+            s.strict_condstore = true;
+        });
+        let mut p = connect(&fake, "secret").await.unwrap();
+        let state = p.select("INBOX").await.unwrap();
+        assert!(
+            state.highest_modseq.is_some(),
+            "no HIGHESTMODSEQ: CONDSTORE never enabled"
+        );
+        assert!(fake.with(|s| s.log.iter().any(|l| l == "ENABLE CONDSTORE")));
     }
 }

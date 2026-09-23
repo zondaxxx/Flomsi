@@ -8,6 +8,7 @@ import '../../platform.dart';
 import '../../state/providers.dart';
 import '../accounts/add_account_sheet.dart';
 import '../settings/settings_sheet.dart';
+import '../shell/file_away.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
@@ -329,7 +330,6 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   /// Swipe right to archive, left to delete. The action is local-first, like the keyboard path.
   Widget _swipeable(Thread t, Widget row) {
     final s = context.s;
-    final repo = ref.read(repositoryProvider);
     return Dismissible(
       key: ValueKey('thread-${t.id}'),
       background: _SwipeBackground(
@@ -349,14 +349,15 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
         dismissLocally(t.id);
         final notice = ref.read(noticeProvider.notifier);
         final archive = direction == DismissDirection.startToEnd;
-        final n = archive ? await repo.archive(t.id) : await repo.trash(t.id);
-        if (n > 0) {
+        final n = await fileAway(context, ref, t.id, archive: archive);
+        if (n != null && n > 0) {
           notice.show(archive ? 'Archived' : 'Deleted');
-        } else {
-          // Nothing moved (not in the inbox, or already deleted): bring the row back.
-          notice.show(archive ? 'Not in the inbox' : 'Nothing to delete');
-          if (mounted) ref.invalidate(threadsProvider);
+          return;
         }
+        // Nothing moved (not in the inbox, already deleted, or no folder for it): bring
+        // the row back.
+        if (n == 0) notice.show(archive ? 'Not in the inbox' : 'Nothing to delete');
+        if (mounted) ref.invalidate(threadsProvider);
       },
       child: row,
     );

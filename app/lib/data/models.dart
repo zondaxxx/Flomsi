@@ -124,6 +124,28 @@ class Problem implements Exception {
   String toString() => hint == null ? title : '$title. $hint';
 }
 
+/// Archive or Delete had nowhere to put the mail: the server has no such folder, or Gmail
+/// hides it from IMAP.
+class MissingFolder implements Exception {
+  const MissingFolder({
+    required this.accountId,
+    required this.role,
+    required this.gmail,
+    required this.message,
+  });
+  final int accountId;
+
+  /// `archive` or `trash`.
+  final String role;
+
+  /// The folder exists but Gmail does not show it to mail apps: only its settings help.
+  final bool gmail;
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class Folder {
   const Folder({
     required this.id,
@@ -258,6 +280,7 @@ class Message {
     this.blockedImages = 0,
     this.isMine = false,
     this.attachments = const [],
+    this.styled = false,
   });
   final int id;
   final int threadId;
@@ -272,6 +295,14 @@ class Message {
   final int blockedImages;
   final bool isMine;
   final List<Attachment> attachments;
+
+  /// The HTML sets its own colours: it was made for a light page and is shown on one.
+  final bool styled;
+
+  /// `Name <address>`: what the sender claims and where it really came from, side by side.
+  String get fromLine => fromName.isEmpty || fromName == fromAddr
+      ? fromAddr
+      : '$fromName <$fromAddr>';
 
   String get initials {
     final parts = fromName.trim().split(RegExp(r'\s+'));

@@ -13,6 +13,7 @@ pub mod error;
 pub mod files;
 pub mod logging;
 pub mod model;
+pub mod probe;
 pub mod provider;
 pub mod sanitize;
 pub mod search;
@@ -53,6 +54,32 @@ pub const SECRET_ACCESS_TOKEN: &str = "access_token";
 /// Raw messages fetched on demand are cached up to this size; bigger ones are fetched again.
 const RAW_CACHE_LIMIT: usize = 32 * 1024 * 1024;
 
+/// The name for a new top-level folder: inside `INBOX` on servers where every folder lives
+/// under it (Courier, some cPanel hosts), where a folder beside INBOX would be refused.
+fn new_folder_name(listed: &[provider::RemoteFolder], base: &str) -> String {
+    let inbox = listed.iter().find(|f| f.name.eq_ignore_ascii_case("INBOX"));
+    let others: Vec<&provider::RemoteFolder> = listed
+        .iter()
+        .filter(|f| !f.name.eq_ignore_ascii_case("INBOX"))
+        .collect();
+    match inbox.and_then(|i| Some((i, i.delimiter.as_deref().filter(|d| !d.is_empty())?))) {
+        Some((inbox, d)) if !others.is_empty() => {
+            let prefix = format!("{}{d}", inbox.name);
+            let nested = others.iter().all(|f| {
+                f.name.len() > prefix.len()
+                    && f.name.is_char_boundary(prefix.len())
+                    && f.name[..prefix.len()].eq_ignore_ascii_case(&prefix)
+            });
+            if nested {
+                format!("{prefix}{base}")
+            } else {
+                base.to_string()
+            }
+        }
+        _ => base.to_string(),
+    }
+}
+
 pub struct Core {
     store: Arc<Store>,
     engine: SyncEngine,
@@ -61,6 +88,8 @@ pub struct Core {
 
 impl Core {
     pub fn open(data_dir: &Path) -> Result<Core> {
+        // Before the database: a directory without one gets a profile of its own.
+        secrets::use_profile(data_dir);
         let store = Arc::new(Store::open(&data_dir.join("mail.sqlite"))?);
         let engine = SyncEngine::new(store.clone());
         remove_legacy_file_cache(data_dir);
@@ -237,6 +266,57 @@ impl Core {
         };
         provider.logout().await?;
         Ok(outcome)
+    }
+
+    /// Create the folder Archive or Delete needs when the server has none. It is marked
+    /// with its special-use attribute where the server takes one, and made inside the INBOX
+    /// namespace on servers that keep every folder there. Returns the folder's name, and does
+    /// nothing when the folder already exists. Gmail is left alone: its All Mail and Trash
+    /// always exist and only need showing to IMAP, which is the user's switch.
+    pub async fn create_role_folder(&self, account_id: i64, role: FolderRole) -> Result<String> {
+        let base = match role {
+            FolderRole::Archive => "Archive",
+            FolderRole::Trash => "Trash",
+            other => {
+                return Err(Error::Other(format!(
+                    "only Archive and Trash are created, not {}",
+                    other.as_str()
+                )))
+            }
+        };
+        let account = self.store.account(account_id)?;
+        let mut p = self.connect(&account).await?;
+        let r = async {
+            let has = |list: &[provider::RemoteFolder]| {
+                list.iter()
+                    .find(|f| f.role == role && f.selectable)
+                    .map(|f| f.name.clone())
+            };
+            let listed = p.list_folders().await?;
+            if let Some(name) = has(&listed) {
+                self.engine.store_folder_list(account_id, &listed)?;
+                return Ok(name);
+            }
+            if p.is_gmail() {
+                return Err(Error::NoFolder {
+                    account_id,
+                    role,
+                    gmail: true,
+                });
+            }
+            let name = new_folder_name(&listed, base);
+            p.create_folder(&name, Some(role)).await?;
+            let listed = p.list_folders().await?;
+            self.engine.store_folder_list(account_id, &listed)?;
+            has(&listed).ok_or_else(|| {
+                Error::Imap(format!(
+                    "created {name}, but the server does not list it as a folder for mail"
+                ))
+            })
+        }
+        .await;
+        let _ = p.logout().await;
+        r
     }
 
     /// Connect and authenticate once without storing anything: the "check credentials" step.
@@ -545,6 +625,8 @@ impl Core {
         let partial = dir.join(format!(".part-{name}"));
         let path = dir.join(&name);
         tokio::fs::write(&partial, &bytes).await?;
+        // Opened by the system on a click: it must know the file came from the internet.
+        files::mark_from_internet(&partial);
         tokio::fs::rename(&partial, &path).await?;
         Ok(path)
     }
@@ -555,6 +637,7 @@ impl Core {
         tokio::fs::create_dir_all(dir).await?;
         let path = files::unique_path(dir, &files::safe_file_name(&meta.name));
         tokio::fs::write(&path, &bytes).await?;
+        files::mark_from_internet(&path);
         Ok(path)
     }
 
@@ -895,6 +978,7 @@ mod tests {
             highest_modseq: None,
             last_sync_at: None,
             selectable: true,
+            delimiter: None,
         };
         let state = |validity, next| provider::FolderState {
             uidvalidity: validity,
@@ -975,5 +1059,145 @@ mod tests {
         assert!(!files_sent_mail_itself("smtp.gmail.com.evil.dev"));
         assert!(!files_sent_mail_itself("smtp.mail.me.com"));
         assert!(!files_sent_mail_itself("mail.isp.net"));
+    }
+
+    fn remote(name: &str, delimiter: &str) -> provider::RemoteFolder {
+        provider::RemoteFolder {
+            name: name.into(),
+            role: FolderRole::Other,
+            selectable: true,
+            delimiter: Some(delimiter.into()),
+        }
+    }
+
+    #[test]
+    fn a_new_folder_goes_where_the_server_keeps_folders() {
+        let flat = [
+            remote("INBOX", "/"),
+            remote("Sent", "/"),
+            remote("Trash", "/"),
+        ];
+        assert_eq!(new_folder_name(&flat, "Archive"), "Archive");
+        // Courier and some cPanel hosts: every folder lives under INBOX.
+        let nested = [
+            remote("INBOX", "."),
+            remote("INBOX.Sent", "."),
+            remote("INBOX.Trash", "."),
+        ];
+        assert_eq!(new_folder_name(&nested, "Archive"), "INBOX.Archive");
+        // One folder beside INBOX means the server allows them there.
+        let mixed = [
+            remote("INBOX", "."),
+            remote("INBOX.Sent", "."),
+            remote("Work", "."),
+        ];
+        assert_eq!(new_folder_name(&mixed, "Archive"), "Archive");
+        assert_eq!(new_folder_name(&[remote("INBOX", "/")], "Trash"), "Trash");
+    }
+
+    /// An account on the fake server, reached as a local bridge (the fake's certificate is
+    /// self-signed), with the password in the test secret store.
+    async fn core_on(fake: &provider::fake_imap::FakeImap, tag: &str) -> (Core, PathBuf, i64) {
+        let dir = std::env::temp_dir().join(format!("mailcore-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let core = Core::open(&dir).unwrap();
+        let email = format!("{tag}@x.dev");
+        fake.with(|s| s.log.clear());
+        let a = core
+            .add_account(
+                &NewAccount {
+                    kind: ProviderKind::Imap,
+                    email: email.clone(),
+                    display_name: "Z".into(),
+                    imap_host: "localhost".into(),
+                    imap_port: fake.port,
+                    smtp_host: String::new(),
+                    smtp_port: 0,
+                    auth: AuthKind::Password,
+                    imap_security: Default::default(),
+                    smtp_security: None,
+                    local_bridge: true,
+                },
+                "secret",
+            )
+            .unwrap();
+        (core, dir, a.id)
+    }
+
+    #[tokio::test]
+    async fn archive_without_an_archive_folder_says_so_and_can_create_one() {
+        use crate::provider::fake_imap::FakeImap;
+        for special_use in [true, false] {
+            let tag = format!("mkarchive{}", special_use as u8);
+            let fake = FakeImap::start(&format!("{tag}@x.dev"), "secret").await;
+            fake.with(|s| {
+                s.add_box("INBOX", None);
+                s.add_box("Sent", Some("\\Sent"));
+                s.deliver("INBOX", INVOICE_EML, &[]);
+                s.special_use_create = special_use;
+            });
+            let (core, dir, account) = core_on(&fake, &tag).await;
+            core.sync_account(account, &SyncOptions::default())
+                .await
+                .unwrap();
+            let thread = core.threads("", 10).unwrap()[0].id;
+            match core.actions().archive(thread) {
+                Err(Error::NoFolder {
+                    account_id,
+                    role: FolderRole::Archive,
+                    gmail: false,
+                }) => assert_eq!(account_id, account),
+                other => panic!("{other:?}"),
+            }
+            assert_eq!(
+                core.create_role_folder(account, FolderRole::Archive)
+                    .await
+                    .unwrap(),
+                "Archive"
+            );
+            let (special, created) = fake.with(|s| {
+                (
+                    s.boxes.get("Archive").map(|b| b.special),
+                    s.log.iter().filter(|l| l.starts_with("CREATE")).count(),
+                )
+            });
+            let expected = if special_use { Some("\\Archive") } else { None };
+            assert_eq!(special, Some(expected), "special-use {special_use}");
+            assert_eq!(created, 1);
+            // Known now, without another sync; asking again creates nothing.
+            assert_eq!(core.actions().archive(thread).unwrap(), 1);
+            core.create_role_folder(account, FolderRole::Archive)
+                .await
+                .unwrap();
+            assert_eq!(
+                fake.with(|s| s.log.iter().filter(|l| l.starts_with("CREATE")).count()),
+                1
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn gmail_with_all_mail_hidden_is_told_where_the_switch_is() {
+        use crate::provider::fake_imap::FakeImap;
+        let fake = FakeImap::start("hidden@x.dev", "secret").await;
+        fake.with(|s| {
+            s.gmail = true;
+            s.add_box("INBOX", None);
+            s.deliver("INBOX", INVOICE_EML, &[]);
+        });
+        let (core, dir, account) = core_on(&fake, "hidden").await;
+        let err = core
+            .create_role_folder(account, FolderRole::Archive)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::NoFolder { gmail: true, .. }),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("Show in IMAP"), "{err}");
+        assert!(err.to_string().contains("All Mail"), "{err}");
+        assert!(fake.with(|s| !s.log.iter().any(|l| l.starts_with("CREATE"))));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -12,8 +12,9 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 
 use super::watchdog::{keepalive, Armed, Watchdog};
+use super::wire::{new_transcript, Tap};
 
-type Session = async_imap::Session<TlsStream<Watchdog<TcpStream>>>;
+type Session = async_imap::Session<Tap<TlsStream<Watchdog<TcpStream>>>>;
 
 pub enum Credential {
     Password(String),
@@ -33,16 +34,24 @@ pub struct ImapProvider {
     can_move: bool,
     /// UID EXPUNGE (RFC 4315): expunge one message, not every \Deleted one.
     uidplus: bool,
+    /// What the server said it can do, as sent.
+    caps: Vec<String>,
 }
 
 struct XOAuth2 {
     user: String,
     token: String,
+    sent: bool,
 }
 
 impl async_imap::Authenticator for XOAuth2 {
     type Response = String;
+    /// The token once. A second challenge carries the server's error: RFC 7628 wants an
+    /// empty answer then, and the token is not sent again.
     fn process(&mut self, _data: &[u8]) -> Self::Response {
+        if std::mem::replace(&mut self.sent, true) {
+            return String::new();
+        }
         format!("user={}\x01auth=Bearer {}\x01\x01", self.user, self.token)
     }
 }
@@ -107,8 +116,6 @@ impl rustls::client::danger::ServerCertVerifier for LocalBridgeVerifier {
     }
 }
 
-/// Public web PKI roots plus any extra certificates the caller trusts on purpose; or, for a
-/// local bridge on a loopback host, any certificate.
 /// How long one step of connecting may take before it counts as no answer.
 #[cfg(not(test))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -136,6 +143,8 @@ fn login_error(e: async_imap::error::Error) -> Error {
     }
 }
 
+/// Public web PKI roots plus any extra certificates the caller trusts on purpose; or, for a
+/// local bridge on a loopback host, any certificate.
 fn tls_connector(
     host: &str,
     local_bridge: bool,
@@ -215,7 +224,6 @@ pub fn decode_folder_name(raw: &str) -> String {
     out
 }
 
-/// Map special-use attributes and well-known names to a role.
 /// Run [command] and collect what [take] picks from its untagged responses.
 ///
 /// async-imap's own readers for SEARCH, LIST and FETCH stop at the tagged reply without
@@ -358,44 +366,156 @@ fn fetch_parts(r: &async_imap::imap_proto::Response<'_>) -> Option<FetchParts> {
     Some(p)
 }
 
-fn role_for(name: &str, attrs_debug: &str) -> FolderRole {
-    let a = attrs_debug.to_lowercase();
-    if a.contains("sent") {
-        return FolderRole::Sent;
+/// One line of LIST, before roles are settled across the whole list.
+struct ListedFolder {
+    name: String,
+    delimiter: Option<String>,
+    /// From the special-use attribute, when the server gave one.
+    role: Option<FolderRole>,
+    selectable: bool,
+    /// The attributes as the server sent them, for `mailctl probe`.
+    attributes: Vec<String>,
+}
+
+/// A folder from LIST with the attributes the server gave it.
+#[derive(Debug, Clone)]
+pub struct ListedDetail {
+    pub folder: RemoteFolder,
+    pub attributes: Vec<String>,
+}
+
+fn attribute_name(a: &async_imap::imap_proto::NameAttribute<'_>) -> String {
+    use async_imap::imap_proto::NameAttribute as A;
+    match a {
+        A::NoInferiors => "\\Noinferiors".into(),
+        A::NoSelect => "\\Noselect".into(),
+        A::Marked => "\\Marked".into(),
+        A::Unmarked => "\\Unmarked".into(),
+        A::All => "\\All".into(),
+        A::Archive => "\\Archive".into(),
+        A::Drafts => "\\Drafts".into(),
+        A::Flagged => "\\Flagged".into(),
+        A::Junk => "\\Junk".into(),
+        A::Sent => "\\Sent".into(),
+        A::Trash => "\\Trash".into(),
+        A::Extension(e) => e.to_string(),
+        other => format!("{other:?}"),
     }
-    if a.contains("drafts") {
-        return FolderRole::Drafts;
-    }
-    if a.contains("trash") {
-        return FolderRole::Trash;
-    }
-    if a.contains("junk") {
-        return FolderRole::Junk;
-    }
-    if a.contains("archive") {
-        return FolderRole::Archive;
-    }
-    if a.contains("\\all") || a.contains("all") && a.contains("extension") {
-        return FolderRole::All;
-    }
-    if a.contains("flagged") {
-        return FolderRole::Starred;
-    }
+}
+
+/// The RFC 6154 attribute that marks a folder with [role], for CREATE-SPECIAL-USE.
+fn special_use(role: FolderRole) -> Option<&'static str> {
+    Some(match role {
+        FolderRole::All => "\\All",
+        FolderRole::Archive => "\\Archive",
+        FolderRole::Drafts => "\\Drafts",
+        FolderRole::Starred => "\\Flagged",
+        FolderRole::Junk => "\\Junk",
+        FolderRole::Sent => "\\Sent",
+        FolderRole::Trash => "\\Trash",
+        _ => return None,
+    })
+}
+
+/// A mailbox name as an IMAP quoted string.
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// RFC 6154 special-use attributes (and the few older spellings servers still send).
+fn role_from_attributes(attrs: &[async_imap::imap_proto::NameAttribute<'_>]) -> Option<FolderRole> {
+    use async_imap::imap_proto::NameAttribute as A;
+    attrs.iter().find_map(|a| match a {
+        A::All => Some(FolderRole::All),
+        A::Archive => Some(FolderRole::Archive),
+        A::Drafts => Some(FolderRole::Drafts),
+        A::Flagged => Some(FolderRole::Starred),
+        A::Junk => Some(FolderRole::Junk),
+        A::Sent => Some(FolderRole::Sent),
+        A::Trash => Some(FolderRole::Trash),
+        A::Extension(e) => match e.to_ascii_lowercase().as_str() {
+            "\\all" | "\\allmail" => Some(FolderRole::All),
+            "\\archive" => Some(FolderRole::Archive),
+            "\\drafts" => Some(FolderRole::Drafts),
+            "\\flagged" | "\\starred" => Some(FolderRole::Starred),
+            "\\junk" | "\\spam" => Some(FolderRole::Junk),
+            "\\sent" => Some(FolderRole::Sent),
+            "\\trash" => Some(FolderRole::Trash),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn selectable(attrs: &[async_imap::imap_proto::NameAttribute<'_>]) -> bool {
+    use async_imap::imap_proto::NameAttribute as A;
+    !attrs.iter().any(|a| match a {
+        A::NoSelect => true,
+        A::Extension(e) => {
+            e.eq_ignore_ascii_case("\\noselect") || e.eq_ignore_ascii_case("\\nonexistent")
+        }
+        _ => false,
+    })
+}
+
+/// Settle roles over the whole list: INBOX is the inbox; a special-use attribute beats a
+/// guess from the name; each role goes to one folder only (the first that claims it), so
+/// "Sent" next to "Sent Messages" marked \Sent does not get Sent twice. On Gmail names
+/// are never guessed: every system folder there carries its attribute, and a label called
+/// "Archives" or "Bin" is only a label.
+fn assign_roles(listed: Vec<ListedFolder>, gmail: bool) -> Vec<ListedDetail> {
+    let by_attribute: HashSet<FolderRole> = listed.iter().filter_map(|f| f.role).collect();
+    let mut taken: HashSet<FolderRole> = HashSet::new();
+    listed
+        .into_iter()
+        .map(|f| {
+            let wanted = if f.name.eq_ignore_ascii_case("INBOX") {
+                Some(FolderRole::Inbox)
+            } else if let Some(r) = f.role {
+                Some(r)
+            } else if gmail {
+                None
+            } else {
+                let guess = role_from_name(&decode_folder_name(&f.name), f.delimiter.as_deref());
+                (guess != FolderRole::Other && !by_attribute.contains(&guess)).then_some(guess)
+            };
+            let role = match wanted {
+                Some(r) if f.selectable && taken.insert(r) => r,
+                _ => FolderRole::Other,
+            };
+            ListedDetail {
+                folder: RemoteFolder {
+                    name: f.name,
+                    role,
+                    selectable: f.selectable,
+                    delimiter: f.delimiter,
+                },
+                attributes: f.attributes,
+            }
+        })
+        .collect()
+}
+
+/// A guess from the (decoded) name's last level, for servers without special-use.
+fn role_from_name(name: &str, delimiter: Option<&str>) -> FolderRole {
     let n = name.to_lowercase();
-    let last = n.rsplit(['/', '.']).next().unwrap_or(&n);
-    match last {
-        "inbox" => FolderRole::Inbox,
+    let last = match delimiter.filter(|d| !d.is_empty()) {
+        Some(d) => n.rsplit(d).next().unwrap_or(&n),
+        None => n.rsplit(['/', '.']).next().unwrap_or(&n),
+    };
+    match last.trim() {
         "sent" | "sent mail" | "sent messages" | "sent items" | "отправленные" => {
             FolderRole::Sent
         }
         "drafts" | "черновики" => FolderRole::Drafts,
-        "trash" | "deleted messages" | "deleted items" | "bin" | "корзина" | "удалённые" => {
-            FolderRole::Trash
+        "trash" | "deleted messages" | "deleted items" | "bin" | "корзина" | "удалённые"
+        | "удаленные" => FolderRole::Trash,
+        "junk" | "spam" | "junk e-mail" | "junk email" | "bulk mail" | "спам" => {
+            FolderRole::Junk
         }
-        "junk" | "spam" | "junk e-mail" | "спам" => FolderRole::Junk,
-        "archive" | "архив" => FolderRole::Archive,
-        "all mail" => FolderRole::All,
-        "starred" | "flagged" => FolderRole::Starred,
+        "archive" | "archives" | "архив" => FolderRole::Archive,
+        "all mail" | "вся почта" => FolderRole::All,
+        "starred" | "flagged" | "помеченные" => FolderRole::Starred,
         _ => FolderRole::Other,
     }
 }
@@ -445,7 +565,7 @@ impl ImapProvider {
                 let tls = within("the TLS handshake", connector.connect(domain, tcp))
                     .await?
                     .map_err(|e| Error::Tls(e.to_string()))?;
-                let mut client = async_imap::Client::new(tls);
+                let mut client = async_imap::Client::new(Tap::new(tls, new_transcript()));
                 // Consume the server greeting.
                 let _greeting = within("the greeting", client.read_response())
                     .await?
@@ -482,7 +602,7 @@ impl ImapProvider {
                 .await?
                 .map_err(|e| Error::Tls(e.to_string()))?;
                 // No greeting after STARTTLS: the session continues.
-                async_imap::Client::new(tls)
+                async_imap::Client::new(Tap::new(tls, new_transcript()))
             }
         };
         let session = match cred {
@@ -496,6 +616,7 @@ impl ImapProvider {
                     XOAuth2 {
                         user: user.to_string(),
                         token: t,
+                        sent: false,
                     },
                 ),
             )
@@ -503,18 +624,40 @@ impl ImapProvider {
             .map_err(|(e, _)| login_error(e))?,
         };
         let mut session = session;
-        let (gmail, can_move, uidplus) = match session.capabilities().await {
+        let (gmail, can_move, uidplus, caps) = match session.capabilities().await {
             Ok(c) => (
                 c.has_str("X-GM-EXT-1"),
                 c.has_str("MOVE"),
                 c.has_str("UIDPLUS"),
+                c.iter()
+                    .map(|c| match c {
+                        async_imap::types::Capability::Imap4rev1 => "IMAP4rev1".to_string(),
+                        async_imap::types::Capability::Auth(m) => format!("AUTH={m}"),
+                        async_imap::types::Capability::Atom(a) => a.clone(),
+                    })
+                    .collect(),
             ),
             // The connection died right after LOGIN: say so rather than hand back a
             // session that answers everything with nothing.
             Err(async_imap::error::Error::Io(e)) => return Err(Error::Io(e)),
             // Unknown: assume the modern commands; a server without them says NO.
-            Err(_) => (false, true, true),
+            Err(_) => (false, true, true, Vec::new()),
         };
+        // RFC 7162 servers owe HIGHESTMODSEQ in SELECT only once CONDSTORE is enabled;
+        // without it the sync would never get to ask for just the changed flags.
+        let has = |c: &str| caps.iter().any(|x: &String| x.eq_ignore_ascii_case(c));
+        if has("CONDSTORE") && has("ENABLE") {
+            match within(
+                "ENABLE",
+                session.run_command_and_check_ok("ENABLE CONDSTORE"),
+            )
+            .await?
+            {
+                Ok(()) => {}
+                Err(async_imap::error::Error::Io(e)) => return Err(Error::Io(e)),
+                Err(e) => log::warn!("ENABLE CONDSTORE refused: {e}"),
+            }
+        }
         Ok(ImapProvider {
             session: Some(session),
             selected: None,
@@ -523,6 +666,7 @@ impl ImapProvider {
             armed,
             can_move,
             uidplus,
+            caps,
         })
     }
 
@@ -551,6 +695,105 @@ impl ImapProvider {
         self.gmail
     }
 
+    /// Every folder with its role and the attributes as sent.
+    pub async fn list_detailed(&mut self) -> Result<Vec<ListedDetail>> {
+        let gmail = self.gmail;
+        let r: Result<Vec<ListedDetail>> = async {
+            use async_imap::imap_proto::{MailboxDatum, Response};
+            let s = self.s()?;
+            let listed = checked(s, "LIST \"\" \"*\"", |r| match r {
+                Response::MailboxData(MailboxDatum::List {
+                    name_attributes,
+                    delimiter,
+                    name,
+                }) => Some(ListedFolder {
+                    name: name.to_string(),
+                    delimiter: delimiter.as_ref().map(|d| d.to_string()),
+                    role: role_from_attributes(name_attributes),
+                    selectable: selectable(name_attributes),
+                    attributes: name_attributes.iter().map(attribute_name).collect(),
+                }),
+                _ => None,
+            })
+            .await?;
+            // Every server has an INBOX. A list without one is not the folder list.
+            if !listed.iter().any(|f| f.name.eq_ignore_ascii_case("INBOX")) {
+                return Err(Error::Imap(format!(
+                    "the folder list came back without INBOX ({} folders)",
+                    listed.len()
+                )));
+            }
+            Ok(assign_roles(listed, gmail))
+        }
+        .await;
+        self.after(r)
+    }
+
+    pub fn capabilities(&self) -> &[String] {
+        &self.caps
+    }
+
+    fn has_capability(&self, name: &str) -> bool {
+        self.caps.iter().any(|c| c.eq_ignore_ascii_case(name))
+    }
+
+    /// Open [folder] read-only (EXAMINE): its counters, nothing marked as seen.
+    pub async fn examine(&mut self, folder: &str) -> Result<FolderState> {
+        let r: Result<FolderState> = async {
+            let s = self.s()?;
+            let mb = s.examine(folder).await?;
+            let Some(uidvalidity) = mb.uid_validity else {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("no answer to EXAMINE {folder}"),
+                )));
+            };
+            self.selected = Some(folder.to_string());
+            Ok(FolderState {
+                uidvalidity,
+                uidnext: mb.uid_next.unwrap_or(1),
+                exists: mb.exists,
+                highest_modseq: mb.highest_modseq,
+            })
+        }
+        .await;
+        self.after(r)
+    }
+
+    /// Create [name], marked with [role]'s special-use attribute when the server takes one
+    /// at creation (RFC 6154 CREATE-SPECIAL-USE). A folder that already exists is fine.
+    pub async fn create_folder(&mut self, name: &str, role: Option<FolderRole>) -> Result<()> {
+        let with_use = role
+            .and_then(special_use)
+            .filter(|_| self.has_capability("CREATE-SPECIAL-USE"));
+        let command = match with_use {
+            Some(attr) => format!("CREATE {} (USE ({attr}))", quoted(name)),
+            None => format!("CREATE {}", quoted(name)),
+        };
+        let plain = format!("CREATE {}", quoted(name));
+        let r: Result<()> = async {
+            let s = self.s()?;
+            let exists = |e: &str| e.contains("AlreadyExists") || e.contains("ALREADYEXISTS");
+            match checked(s, &command, |_| None::<()>).await {
+                Ok(_) => Ok(()),
+                Err(Error::Imap(e)) if exists(&e) => Ok(()),
+                // A server may advertise CREATE-SPECIAL-USE and still refuse the attribute
+                // ([USEATTR], or no attribute store): the folder by name is still useful.
+                Err(Error::Imap(e)) if command != plain => {
+                    log::warn!("CREATE with a special-use attribute refused ({e}); plain CREATE");
+                    match checked(s, &plain, |_| None::<()>).await {
+                        Ok(_) => Ok(()),
+                        Err(Error::Imap(e)) if exists(&e) => Ok(()),
+                        Err(e) => Err(e),
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        }
+        .await;
+        self.after(r)
+    }
+
     /// UIDs in the selected folder whose Message-ID header is [message_id] (no brackets).
     pub async fn find_message_id(&mut self, message_id: &str) -> Result<Vec<u32>> {
         let query = format!(
@@ -575,39 +818,12 @@ impl ImapProvider {
 
 impl Provider for ImapProvider {
     async fn list_folders(&mut self) -> Result<Vec<RemoteFolder>> {
-        let r: Result<Vec<RemoteFolder>> = async {
-            use async_imap::imap_proto::{MailboxDatum, Response};
-            let s = self.s()?;
-            let folders = checked(s, "LIST \"\" \"*\"", |r| match r {
-                Response::MailboxData(MailboxDatum::List {
-                    name_attributes,
-                    name,
-                    ..
-                }) => {
-                    let attrs = format!("{name_attributes:?}");
-                    let selectable = !attrs.to_lowercase().contains("noselect");
-                    Some(RemoteFolder {
-                        name: name.to_string(),
-                        // Roles match on the readable name ("Корзина"), commands use the
-                        // raw one.
-                        role: role_for(&decode_folder_name(name), &attrs),
-                        selectable,
-                    })
-                }
-                _ => None,
-            })
-            .await?;
-            // Every server has an INBOX. A list without one is not the folder list.
-            if !folders.iter().any(|f| f.name.eq_ignore_ascii_case("INBOX")) {
-                return Err(Error::Imap(format!(
-                    "the folder list came back without INBOX ({} folders)",
-                    folders.len()
-                )));
-            }
-            Ok(folders)
-        }
-        .await;
-        self.after(r)
+        Ok(self
+            .list_detailed()
+            .await?
+            .into_iter()
+            .map(|d| d.folder)
+            .collect())
     }
 
     async fn select(&mut self, folder: &str) -> Result<FolderState> {
@@ -893,25 +1109,138 @@ mod tests {
         assert_eq!(decode_folder_name("broken&AAA"), "broken&AAA");
     }
 
+    /// Roles for a list of real LIST lines, parsed the way the server's bytes are.
+    fn roles(lines: &[&str]) -> Vec<(String, FolderRole, bool)> {
+        roles_on(lines, false)
+    }
+
+    fn roles_on(lines: &[&str], gmail: bool) -> Vec<(String, FolderRole, bool)> {
+        use async_imap::imap_proto::{MailboxDatum, Response};
+        let listed = lines
+            .iter()
+            .map(|l| {
+                let raw = format!("{l}\r\n");
+                let (_, resp) = async_imap::imap_proto::parser::parse_response(raw.as_bytes())
+                    .unwrap_or_else(|e| panic!("{l}: {e:?}"));
+                let Response::MailboxData(MailboxDatum::List {
+                    name_attributes,
+                    delimiter,
+                    name,
+                }) = resp
+                else {
+                    panic!("not a LIST line: {l}");
+                };
+                ListedFolder {
+                    name: name.to_string(),
+                    delimiter: delimiter.map(|d| d.to_string()),
+                    role: role_from_attributes(&name_attributes),
+                    selectable: selectable(&name_attributes),
+                    attributes: name_attributes.iter().map(attribute_name).collect(),
+                }
+            })
+            .collect();
+        assign_roles(listed, gmail)
+            .into_iter()
+            .map(|d| (d.folder.name, d.folder.role, d.folder.selectable))
+            .collect()
+    }
+
+    fn role_of(list: &[(String, FolderRole, bool)], name: &str) -> FolderRole {
+        list.iter().find(|f| f.0 == name).unwrap().1
+    }
+
     #[test]
-    fn roles_from_names_and_attrs() {
-        assert_eq!(role_for("INBOX", "[]"), FolderRole::Inbox);
+    fn gmail_roles_come_from_attributes_in_any_language() {
+        let list = roles(&[
+            r#"* LIST (\HasNoChildren) "/" "INBOX""#,
+            r#"* LIST (\HasChildren \Noselect) "/" "[Gmail]""#,
+            // Gmail sends \All without \HasNoChildren; the name is localised.
+            r#"* LIST (\All) "/" "[Gmail]/&BBIEQQRP- &BD8EPgRHBEIEMA-""#,
+            r#"* LIST (\HasNoChildren \Sent) "/" "[Gmail]/&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-""#,
+            r#"* LIST (\HasNoChildren \Junk) "/" "[Gmail]/&BCEEPwQwBDw-""#,
+            r#"* LIST (\HasNoChildren \Trash) "/" "[Gmail]/&BBoEPgRABDcEOAQ9BDA-""#,
+            r#"* LIST (\HasNoChildren \Flagged) "/" "[Gmail]/&BB8EPgQ8BDUERwQ1BD0EPQRLBDU-""#,
+            r#"* LIST (\HasNoChildren) "/" "Receipts""#,
+        ]);
+        assert_eq!(role_of(&list, "INBOX"), FolderRole::Inbox);
         assert_eq!(
-            role_for("[Gmail]/Sent Mail", "[Extension(\"\\\\Sent\")]"),
-            FolderRole::Sent
-        );
-        assert_eq!(
-            role_for("[Gmail]/All Mail", "[Extension(\"\\\\All\")]"),
+            role_of(&list, "[Gmail]/&BBIEQQRP- &BD8EPgRHBEIEMA-"),
             FolderRole::All
         );
-        assert_eq!(role_for("Отправленные", "[]"), FolderRole::Sent);
         assert_eq!(
-            role_for(
-                &decode_folder_name("&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-"),
-                "[]"
-            ),
+            role_of(&list, "[Gmail]/&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-"),
             FolderRole::Sent
         );
-        assert_eq!(role_for("Projects/2026", "[]"), FolderRole::Other);
+        assert_eq!(role_of(&list, "[Gmail]/&BCEEPwQwBDw-"), FolderRole::Junk);
+        assert_eq!(
+            role_of(&list, "[Gmail]/&BBoEPgRABDcEOAQ9BDA-"),
+            FolderRole::Trash
+        );
+        assert_eq!(role_of(&list, "Receipts"), FolderRole::Other);
+        let gmail = list.iter().find(|f| f.0 == "[Gmail]").unwrap();
+        assert!(!gmail.2, "[Gmail] is a \\Noselect container");
+        assert_eq!(gmail.1, FolderRole::Other);
+    }
+
+    #[test]
+    fn a_gmail_label_is_never_a_system_folder_by_its_name() {
+        // All Mail and Trash hidden from IMAP; labels a Thunderbird user made.
+        let lines = [
+            r#"* LIST (\HasNoChildren) "/" "INBOX""#,
+            r#"* LIST (\HasNoChildren) "/" "Archives""#,
+            r#"* LIST (\HasNoChildren) "/" "Bin""#,
+            r#"* LIST (\HasNoChildren \Sent) "/" "[Gmail]/Sent Mail""#,
+        ];
+        let gmail = roles_on(&lines, true);
+        assert_eq!(role_of(&gmail, "Archives"), FolderRole::Other);
+        assert_eq!(role_of(&gmail, "Bin"), FolderRole::Other);
+        assert_eq!(role_of(&gmail, "[Gmail]/Sent Mail"), FolderRole::Sent);
+        // Elsewhere the same names are how folders are found.
+        let other = roles_on(&lines, false);
+        assert_eq!(role_of(&other, "Archives"), FolderRole::Archive);
+        assert_eq!(role_of(&other, "Bin"), FolderRole::Trash);
+    }
+
+    #[test]
+    fn an_attribute_beats_a_name_and_a_role_goes_to_one_folder() {
+        let list = roles(&[
+            r#"* LIST () "." "INBOX""#,
+            // An old "Sent" folder next to the one the server marks \Sent.
+            r#"* LIST (\HasNoChildren) "." "INBOX.Sent""#,
+            r#"* LIST (\HasNoChildren \Sent) "." "INBOX.Sent Messages""#,
+            r#"* LIST (\HasNoChildren) "." "INBOX.Trash""#,
+            r#"* LIST (\HasNoChildren \Trash) "." "INBOX.Deleted Messages""#,
+            // No attributes at all: the name decides, once.
+            r#"* LIST (\HasNoChildren) "." "INBOX.Drafts""#,
+            r#"* LIST (\HasNoChildren) "." "INBOX.Archive""#,
+            r#"* LIST (\HasNoChildren) "|" "Archive""#,
+        ]);
+        assert_eq!(role_of(&list, "INBOX.Sent"), FolderRole::Other);
+        assert_eq!(role_of(&list, "INBOX.Sent Messages"), FolderRole::Sent);
+        assert_eq!(role_of(&list, "INBOX.Trash"), FolderRole::Other);
+        assert_eq!(role_of(&list, "INBOX.Deleted Messages"), FolderRole::Trash);
+        assert_eq!(role_of(&list, "INBOX.Drafts"), FolderRole::Drafts);
+        assert_eq!(role_of(&list, "INBOX.Archive"), FolderRole::Archive);
+        assert_eq!(role_of(&list, "Archive"), FolderRole::Other);
+    }
+
+    #[test]
+    fn folder_names_read_without_the_servers_prefix() {
+        use crate::model::display_name;
+        assert_eq!(
+            display_name("[Gmail]/&BBIEQQRP- &BD8EPgRHBEIEMA-", Some("/")),
+            "Вся почта"
+        );
+        assert_eq!(
+            display_name("INBOX.Sent Messages", Some(".")),
+            "Sent Messages"
+        );
+        assert_eq!(
+            display_name("Projects/2026/Q3", Some("/")),
+            "Projects / 2026 / Q3"
+        );
+        assert_eq!(display_name("INBOX", Some("/")), "INBOX");
+        assert_eq!(display_name("Work|Clients", Some("|")), "Work / Clients");
+        assert_eq!(display_name("Plain", None), "Plain");
     }
 }

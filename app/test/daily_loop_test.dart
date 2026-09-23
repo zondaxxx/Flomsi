@@ -10,6 +10,13 @@ import 'package:mail_app/keymap/key_scope.dart';
 import 'package:mail_app/state/providers.dart';
 import 'package:mail_app/theme/tokens.dart';
 
+/// The quick-reply field, whoever it names.
+Finder replyField() => find.byWidgetPredicate(
+  (w) =>
+      w is TextField &&
+      (w.decoration?.hintText?.startsWith('Reply to') ?? false),
+);
+
 void main() {
   late ProviderContainer c;
   late MockRepository repo;
@@ -122,10 +129,7 @@ void main() {
     await tester.pumpAndSettle();
     final rows = find.byType(ThreadRow).evaluate().length;
     expect(rows, greaterThan(3));
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Reply to ${first.participants.first}'),
-      'half-written',
-    );
+    await tester.enterText(replyField(), 'half-written');
 
     final sync = repo.sync(); // SyncStarted now, SyncFinished later
     await tester.pump(); // the frame right after the event
@@ -199,13 +203,43 @@ void main() {
     final all = await repo.threads('');
     c.read(selectedThreadIdProvider.notifier).select(all[0].id);
     await tester.pumpAndSettle();
-    await tester.enterText(
-      find.widgetWithText(TextField, 'Reply to ${all[0].participants.first}'),
-      'for the first thread',
-    );
+    await tester.enterText(replyField(), 'for the first thread');
     c.read(selectedThreadIdProvider.notifier).select(all[1].id);
     await tester.pumpAndSettle();
     expect(find.text('for the first thread'), findsNothing);
+  });
+
+  testWidgets('archive without an Archive folder asks, creates it and files the thread', (
+    tester,
+  ) async {
+    await shell(tester);
+    final all = await repo.threads('');
+    final first = all[0];
+    repo.noArchive.add(first.accountId);
+    c.read(selectedThreadIdProvider.notifier).select(first.id);
+    await tester.pumpAndSettle();
+
+    // Declined: nothing moves and the thread stays selected.
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+    await tester.pumpAndSettle();
+    expect(find.text('No Archive folder'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+    expect((await repo.threads('')).map((t) => t.id), contains(first.id));
+    expect(c.read(selectedThreadIdProvider), first.id);
+
+    // Accepted: the folder is made and the thread archived; the next one is selected.
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Create Archive'));
+    await tester.pumpAndSettle();
+    expect(repo.noArchive, isEmpty);
+    expect(
+      (await repo.threads('')).map((t) => t.id),
+      isNot(contains(first.id)),
+    );
+    expect(c.read(selectedThreadIdProvider), all[1].id);
+    await settle(tester);
   });
 
   testWidgets('the palette takes at most 60% of the window', (tester) async {

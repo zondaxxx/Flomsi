@@ -467,6 +467,8 @@ class RustRepository implements MailRepository {
           text: m.text ?? m.snippet,
           html: m.html,
           blockedImages: m.blockedImages,
+          styled: m.styled,
+          isMine: m.isMine,
           attachments: [
             for (final a in m.attachments)
               Attachment(
@@ -492,6 +494,12 @@ class RustRepository implements MailRepository {
   @override
   Future<String> saveAttachment(Attachment a, String dir) =>
       rust.saveAttachment(messageId: a.messageId, idx: a.idx, dir: dir);
+
+  @override
+  String displayFileName(String name) => rust.safeFileName(name: name);
+
+  @override
+  String? riskyExtension(String name) => rust.riskyExtension(name: name);
 
   @override
   Future<DraftAttachment> describeFile(String path) async =>
@@ -548,12 +556,39 @@ class RustRepository implements MailRepository {
     return r;
   }
 
+  static int _filed(rust.FiledDto r) {
+    final m = r.missing;
+    if (m != null) {
+      throw MissingFolder(
+        accountId: m.accountId.toInt(),
+        role: m.role,
+        gmail: m.gmail,
+        message: m.message,
+      );
+    }
+    return r.moved;
+  }
+
   @override
   Future<int> archive(int threadId) =>
-      _after(rust.archiveThread(threadId: threadId));
+      _after(rust.archiveThread(threadId: threadId)).then(_filed);
   @override
   Future<int> trash(int threadId) =>
-      _after(rust.trashThread(threadId: threadId));
+      _after(rust.trashThread(threadId: threadId)).then(_filed);
+
+  @override
+  Future<String> createRoleFolder(int accountId, String role) async {
+    try {
+      final name = await rust.createRoleFolder(
+        accountId: accountId,
+        role: role,
+      );
+      _events.add(const ThreadsChanged());
+      return name;
+    } catch (e) {
+      throw problemFrom(e, (await _account(accountId))?.imapHost ?? '');
+    }
+  }
   @override
   Future<void> markRead(int threadId, bool read) =>
       _after(rust.markRead(threadId: threadId, read: read));

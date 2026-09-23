@@ -139,6 +139,42 @@ class MockRepository implements MailRepository {
       ),
     ];
     _messages = {
+      // Newsletters that bring their own colours: dark text on white, white on dark.
+      8: [
+        Message(
+          id: 801,
+          threadId: 8,
+          fromName: 'Hacker News Digest',
+          fromAddr: 'digest@hndigest.example',
+          to: ['me'],
+          date: daysAgo(2, 8),
+          text: 'Top stories this week: Why every mail client eventually reimplements IMAP.',
+          html: '<table width="100%" bgcolor="#ffffff" cellpadding="16"><tr><td style="color: #222222"><h2 style="color: #ff6600">Top stories</h2><p style="color: #222222">Why every mail client eventually reimplements IMAP</p><p style="color: #828282; font-size: 12px">412 points · 233 comments</p></td></tr></table>',
+          styled: true,
+        ),
+      ],
+      9: [
+        Message(
+          id: 901,
+          threadId: 9,
+          fromName: 'Figma',
+          fromAddr: 'comments@figma.com',
+          to: ['me'],
+          date: daysAgo(2, 7),
+          text: 'Anna left 4 comments in Mail / Glass.',
+          html: '<table width="100%" bgcolor="#1e1e1e" cellpadding="20"><tr><td style="color: #ffffff"><p style="color: #ffffff; font-size: 16px"><b>Anna</b> left 4 comments</p><p style="color: #b3b3b3">“sidebar blur is too strong over bright wallpapers”</p></td></tr></table>',
+          styled: true,
+          attachments: const [
+            Attachment(
+              messageId: 901,
+              idx: 0,
+              name: 'Mail-Glass-export.svg',
+              mime: 'image/svg+xml',
+              size: 20480,
+            ),
+          ],
+        ),
+      ],
       7: [
         Message(
           id: 701,
@@ -428,8 +464,26 @@ class MockRepository implements MailRepository {
     _events.add(const ThreadsChanged());
   }
 
+  /// Accounts whose server has no Archive folder yet (for trying the ask-and-create path).
+  final Set<int> noArchive = {};
+
+  @override
+  Future<String> createRoleFolder(int accountId, String role) async {
+    if (role == 'archive') noArchive.remove(accountId);
+    return role == 'archive' ? 'Archive' : 'Trash';
+  }
+
   @override
   Future<int> archive(int threadId) async {
+    final t = _threads.where((t) => t.id == threadId).firstOrNull;
+    if (t != null && noArchive.contains(t.accountId)) {
+      throw MissingFolder(
+        accountId: t.accountId,
+        role: 'archive',
+        gmail: false,
+        message: 'the server has no Archive folder',
+      );
+    }
     final before = _threads.length;
     _threads = _threads.where((t) => t.id != threadId).toList();
     _events.add(const ThreadsChanged());
@@ -437,7 +491,12 @@ class MockRepository implements MailRepository {
   }
 
   @override
-  Future<int> trash(int threadId) => archive(threadId);
+  Future<int> trash(int threadId) async {
+    final before = _threads.length;
+    _threads = _threads.where((t) => t.id != threadId).toList();
+    _events.add(const ThreadsChanged());
+    return before - _threads.length;
+  }
 
   final Map<int, DateTime> _snoozes = {};
 
@@ -605,6 +664,68 @@ class MockRepository implements MailRepository {
     final path = _freePath(dir, a.name);
     File(path).writeAsBytesSync(_mockBytes(a.name));
     return path;
+  }
+
+  /// A Dart copy of the core's rules (files.rs), enough for design work and tests.
+  @override
+  String displayFileName(String name) => name
+      .replaceAll(
+        RegExp(
+          '[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u206F\uFEFF]',
+        ),
+        '',
+      )
+      .replaceAll(RegExp('[\u2028\u2029\u0085]'), '_');
+
+  @override
+  String? riskyExtension(String name) {
+    final clean = displayFileName(name);
+    if (!clean.contains('.')) return null;
+    final ext = clean.split('.').last.toLowerCase();
+    const risky = {
+      'exe',
+      'com',
+      'bat',
+      'cmd',
+      'msi',
+      'scr',
+      'pif',
+      'js',
+      'vbs',
+      'hta',
+      'ps1',
+      'lnk',
+      'url',
+      'reg',
+      'jar',
+      'app',
+      'pkg',
+      'dmg',
+      'command',
+      'sh',
+      'docm',
+      'xlsm',
+      'pptm',
+      'html',
+      'htm',
+      'svg',
+      'iso',
+      'img',
+      'apk',
+      'rdp',
+      'msix',
+      'appx',
+      'appinstaller',
+      'msu',
+      'xll',
+      'xlsb',
+      'one',
+      'searchconnector-ms',
+      'jnlp',
+      'py',
+      'pyw',
+    };
+    return risky.contains(ext) ? ext : null;
   }
 
   @override

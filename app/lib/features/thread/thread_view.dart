@@ -13,6 +13,7 @@ import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
 import '../shell/shell_actions.dart';
+import 'mail_colours.dart';
 
 /// Reading pane: labeled toolbar with keys, mono header block, messages, reply line.
 class ThreadBody extends ConsumerWidget {
@@ -213,50 +214,53 @@ class _ThreadContentState extends ConsumerState<_ThreadContent> {
     final messages =
         ref.watch(messagesProvider(thread.id)).value ?? const <Message>[];
     final first = messages.firstOrNull;
-    return ListView(
-      padding: EdgeInsets.fromLTRB(pad, 30, pad, 24),
-      children: [
-        Text(
-          thread.subject,
-          style: ui(
-            context,
-            size: 20,
-            weight: FontWeight.w600,
-            height: 1.3,
-            letterSpacing: -0.2,
-          ),
-        ),
-        const SizedBox(height: 12),
-        _Meta(
-          rows: [
-            (
-              'from',
-              first == null
-                  ? thread.sender
-                  : '${first.fromName}  <${first.fromAddr}>',
-            ),
-            ('to', first?.to.join(', ') ?? 'me'),
-            (
-              'date',
-              first == null
-                  ? formatWhen(thread.lastDate)
-                  : _longDate(first.date),
-            ),
-            if (thread.labels.isNotEmpty)
-              ('labels', thread.labels.map((l) => l.name).join(', ')),
-          ],
-        ),
-        const SizedBox(height: 22),
-        for (final (i, m) in messages.indexed)
-          Appear(
-            delay: Duration(milliseconds: 40 * i),
-            child: _MessageBlock(
-              message: m,
-              first: i == 0,
-              last: i == messages.length - 1,
+    // One selection across the whole thread: text in HTML mail and plain mail alike.
+    return SelectionArea(
+      child: ListView(
+        padding: EdgeInsets.fromLTRB(pad, 30, pad, 24),
+        children: [
+          Text(
+            thread.subject,
+            style: ui(
+              context,
+              size: 20,
+              weight: FontWeight.w600,
+              height: 1.3,
+              letterSpacing: -0.2,
             ),
           ),
-      ],
+          const SizedBox(height: 12),
+          _Meta(
+            rows: [
+              (
+                'from',
+                first == null
+                    ? thread.sender
+                    : '${first.fromName}  <${first.fromAddr}>',
+              ),
+              ('to', first?.to.join(', ') ?? 'me'),
+              (
+                'date',
+                first == null
+                    ? formatWhen(thread.lastDate)
+                    : _longDate(first.date),
+              ),
+              if (thread.labels.isNotEmpty)
+                ('labels', thread.labels.map((l) => l.name).join(', ')),
+            ],
+          ),
+          const SizedBox(height: 22),
+          for (final (i, m) in messages.indexed)
+            Appear(
+              delay: Duration(milliseconds: 40 * i),
+              child: _MessageBlock(
+                message: m,
+                first: i == 0,
+                last: i == messages.length - 1,
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -359,6 +363,60 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
     return launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
+  /// HTML mail. Mail that sets its own colours was designed for a white page, so it gets
+  /// one (dark text on dark would be unreadable in the dark theme); the rest takes the
+  /// app's colours. `bgcolor`, which the renderer ignores, becomes a background.
+  Widget _htmlBody(BuildContext context, String html, Message m) {
+    final s = context.s;
+    final ink = m.styled ? const Color(0xFF24292F) : null;
+    final width = (680 * MediaQuery.devicePixelRatioOf(context)).round();
+    final body = HtmlWidget(
+      html,
+      textStyle: ui(context, size: 14, height: 1.6, color: ink),
+      onTapUrl: _openLink,
+      factoryBuilder: () => _MailWidgets(width),
+      customStylesBuilder: (e) {
+        final styles = <String, String>{};
+        final bg = htmlColour(e.attributes['bgcolor']);
+        if (bg != null) styles['background-color'] = bg;
+        // A dark fill whose light text colour lived in a <style> block the sanitizer
+        // removed: without this the paper's dark ink would sit on it.
+        final style = e.attributes['style'];
+        final fill = bg ?? styleValue(style, 'background-color');
+        if (m.styled &&
+            fill != null &&
+            isDarkColour(fill) &&
+            e.attributes['color'] == null &&
+            styleValue(style, 'color') == null) {
+          styles['color'] = '#ffffff';
+        }
+        return styles.isEmpty ? null : styles;
+      },
+      onErrorBuilder: (context, element, error) =>
+          Text(m.text, style: ui(context, size: 14, height: 1.6, color: ink)),
+    );
+    if (!m.styled) return body;
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFFFF),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: s.border),
+      ),
+      // Links take the light page's blue, not the dark theme's pale one.
+      child: Theme(
+        data: theme.copyWith(
+          colorScheme: theme.colorScheme.copyWith(
+            primary: const Color(0xFF0969DA),
+          ),
+        ),
+        child: body,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = context.s;
@@ -373,18 +431,50 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
           const SizedBox(height: 18),
           Row(
             children: [
-              Text(
-                m.isMine ? 'you' : m.fromName,
-                style: mono(
-                  context,
-                  size: 12,
-                  color: m.isMine ? s.green : s.fg,
+              // The name a sender claims, and the address it really came from. On a
+              // narrow screen the name gives way first; the address keeps most room.
+              Flexible(
+                flex: 3,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        m.isMine ? 'you' : m.fromName,
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: mono(
+                          context,
+                          size: 12,
+                          color: m.isMine ? s.green : s.fg,
+                        ),
+                      ),
+                    ),
+                    if (!m.isMine && m.fromAddr != m.fromName)
+                      Flexible(
+                        flex: 2,
+                        child: Text(
+                          '  <${m.fromAddr}>',
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
+                          style: mono(context, size: 12, color: s.fg3),
+                        ),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
-              Text(
-                '→ ${m.to.join(', ')} · ${formatWhen(m.date)}',
-                style: mono(context, size: 12, color: s.fg3),
+              Flexible(
+                flex: 2,
+                child: Text(
+                  '→ ${m.to.join(', ')} · ${formatWhen(m.date)}',
+                  maxLines: 1,
+                  softWrap: false,
+                  overflow: TextOverflow.ellipsis,
+                  style: mono(context, size: 12, color: s.fg3),
+                ),
               ),
             ],
           ),
@@ -414,17 +504,8 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
           child: Material(
             type: MaterialType.transparency,
             child: html != null
-                ? HtmlWidget(
-                    html,
-                    textStyle: ui(context, size: 14, height: 1.6),
-                    onTapUrl: _openLink,
-                    onErrorBuilder: (context, element, error) =>
-                        Text(m.text, style: ui(context, size: 14, height: 1.6)),
-                  )
-                : SelectableText(
-                    m.text,
-                    style: ui(context, size: 14, height: 1.6),
-                  ),
+                ? _htmlBody(context, html, m)
+                : Text(m.text, style: ui(context, size: 14, height: 1.6)),
           ),
         ),
         if (m.attachments.isNotEmpty) ...[
@@ -439,6 +520,24 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
       ],
     );
   }
+}
+
+/// Images decode at most as wide as the reading column (in device pixels): a mail's
+/// 4000-pixel photo would otherwise take its full size in memory.
+class _MailWidgets extends WidgetFactory {
+  _MailWidgets(this.maxWidth);
+  final int maxWidth;
+
+  ImageProvider? _fit(ImageProvider? p) =>
+      p == null ? null : ResizeImage(p, width: maxWidth, allowUpscaling: false);
+
+  @override
+  ImageProvider? imageProviderFromDataUri(String dataUri) =>
+      _fit(super.imageProviderFromDataUri(dataUri));
+
+  @override
+  ImageProvider? imageProviderFromNetwork(String url) =>
+      _fit(super.imageProviderFromNetwork(url));
 }
 
 class _Tool extends StatelessWidget {
@@ -556,13 +655,27 @@ class _QuickReplyState extends ConsumerState<_QuickReply> {
   }
 
   @override
-  Widget build(BuildContext context) => Row(
+  Widget build(BuildContext context) {
+    // Say who the reply goes to, address included, so a look-alike sender shows before
+    // anything is sent. Like the core: the last message's sender, or its recipients when
+    // the last message is ours.
+    final messages = ref.watch(messagesProvider(widget.thread.id)).value;
+    final last = messages?.lastOrNull;
+    final to = last == null
+        ? null
+        : last.isMine
+        ? last.to.join(', ')
+        : last.fromLine;
+    return _field(to == null || to.isEmpty ? widget.thread.sender : to);
+  }
+
+  Widget _field(String to) => Row(
     children: [
       Expanded(
         child: QuietField(
           controller: _ctl,
           focusNode: _focus,
-          hint: 'Reply to ${widget.thread.sender}',
+          hint: 'Reply to $to',
           height: 34,
           onSubmitted: (_) => _send(),
         ),

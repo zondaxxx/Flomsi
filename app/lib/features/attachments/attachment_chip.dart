@@ -14,29 +14,79 @@ import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
 
-/// Glyph for a file by MIME type, falling back to the extension.
+/// Glyph for a file by its extension: what the system will open it as. The MIME type the
+/// sender claimed only helps when there is no extension.
 IconData iconForFile(String mime, String name) {
-  final m = mime.toLowerCase();
   final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
-  if (m.startsWith('image/')) return CupertinoIcons.photo;
-  if (m.startsWith('video/')) return CupertinoIcons.film;
-  if (m.startsWith('audio/')) return CupertinoIcons.music_note;
-  if (m == 'message/rfc822' || ext == 'eml') return CupertinoIcons.envelope;
-  if (m.contains('zip') ||
-      m.contains('compressed') ||
-      const {'zip', 'rar', '7z', 'gz', 'tar'}.contains(ext)) {
-    return CupertinoIcons.archivebox;
+  const images = {
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'webp',
+    'heic',
+    'bmp',
+    'tif',
+    'tiff',
+  };
+  const video = {'mp4', 'mov', 'm4v', 'webm', 'avi', 'mkv'};
+  const audio = {'mp3', 'm4a', 'wav', 'aac', 'ogg', 'flac'};
+  const archives = {'zip', 'rar', '7z', 'gz', 'tar', 'tgz', 'bz2', 'xz'};
+  const docs = {
+    'pdf',
+    'txt',
+    'md',
+    'rtf',
+    'doc',
+    'docx',
+    'odt',
+    'xls',
+    'xlsx',
+    'ods',
+    'csv',
+    'ppt',
+    'pptx',
+    'odp',
+    'pages',
+    'numbers',
+    'key',
+  };
+  if (ext.isNotEmpty) {
+    if (images.contains(ext)) return CupertinoIcons.photo;
+    if (video.contains(ext)) return CupertinoIcons.film;
+    if (audio.contains(ext)) return CupertinoIcons.music_note;
+    if (ext == 'eml') return CupertinoIcons.envelope;
+    if (archives.contains(ext)) return CupertinoIcons.archivebox;
+    if (ext == 'ics') return CupertinoIcons.calendar;
+    if (docs.contains(ext)) return CupertinoIcons.doc_text;
+    return CupertinoIcons.doc;
   }
-  if (m == 'text/calendar' || ext == 'ics') return CupertinoIcons.calendar;
-  if (m == 'application/pdf' ||
-      m.startsWith('text/') ||
-      m.contains('document') ||
-      m.contains('sheet') ||
-      m.contains('presentation') ||
-      m.contains('msword')) {
+  final m = mime.toLowerCase();
+  if (m.startsWith('image/')) return CupertinoIcons.photo;
+  if (m.startsWith('text/') || m == 'application/pdf') {
     return CupertinoIcons.doc_text;
   }
   return CupertinoIcons.doc;
+}
+
+/// A name's extension with its dot (`.pdf`), when it has a short one; else empty.
+String fileExtension(String name) {
+  final dot = name.lastIndexOf('.');
+  return dot > 0 && name.length - dot <= 12 ? name.substring(dot) : '';
+}
+
+/// Shorten a file name in the middle so the extension always shows: a disguised
+/// `invoice-2026-09-final-final.pdf.exe` must not end in `…`. Counts and cuts whole
+/// characters as people see them, so an emoji is never split in half.
+String middleEllipsis(String name, {int max = 34}) {
+  final all = name.characters;
+  if (all.length <= max) return name;
+  final ext = fileExtension(name);
+  final stem = name.substring(0, name.length - ext.length).characters;
+  final keep = (max - ext.characters.length - 1).clamp(4, max);
+  final head = (keep * 2 / 3).round().clamp(1, stem.length);
+  final tail = (keep - head).clamp(0, stem.length - head);
+  return '${stem.take(head)}…${stem.takeLast(tail)}$ext';
 }
 
 String _reason(Object e) =>
@@ -52,6 +102,7 @@ class _ChipFrame extends StatelessWidget {
     this.busy = false,
     this.muted = false,
     this.trailing,
+    this.risky,
   });
   final IconData icon;
   final String name;
@@ -60,6 +111,9 @@ class _ChipFrame extends StatelessWidget {
   final bool busy;
   final bool muted;
   final Widget? trailing;
+
+  /// Extension of a file that can run code: shown as a red tag.
+  final String? risky;
 
   @override
   Widget build(BuildContext context) {
@@ -100,15 +154,59 @@ class _ChipFrame extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 240),
-            child: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: mono(context, size: 12, color: muted ? s.fg2 : s.fg),
+          // The extension is laid out on its own and never cut: a wide name gives way
+          // with an ellipsis before it, on a phone as on a desktop.
+          Flexible(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 260),
+              child: Builder(
+                builder: (context) {
+                  final shown = middleEllipsis(name);
+                  final ext = fileExtension(shown);
+                  final style = mono(
+                    context,
+                    size: 12,
+                    color: muted ? s.fg2 : s.fg,
+                  );
+                  // Read out as one name, not a stem and an extension.
+                  return Semantics(
+                    label: name,
+                    excludeSemantics: true,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            shown.substring(0, shown.length - ext.length),
+                            maxLines: 1,
+                            softWrap: false,
+                            overflow: TextOverflow.ellipsis,
+                            style: style,
+                          ),
+                        ),
+                        if (ext.isNotEmpty)
+                          Text(ext, maxLines: 1, softWrap: false, style: style),
+                      ],
+                    ),
+                  );
+                },
+              ),
             ),
           ),
+          if (risky != null) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+              decoration: BoxDecoration(
+                border: Border.all(color: s.red.withValues(alpha: 0.6)),
+                borderRadius: BorderRadius.circular(3),
+              ),
+              child: Text(
+                '.$risky',
+                style: mono(context, size: 10.5, color: s.red),
+              ),
+            ),
+          ],
           const SizedBox(width: 8),
           Text(size, style: mono(context, size: 12, color: s.fg3)),
           ?trailing,
@@ -132,7 +230,7 @@ class _AttachmentChipState extends ConsumerState<AttachmentChip> {
   bool _busy = false;
 
   Future<void> _run(Future<void> Function() job) async {
-    if (_busy) return;
+    if (_busy || !mounted) return;
     setState(() => _busy = true);
     try {
       await job();
@@ -143,8 +241,30 @@ class _AttachmentChipState extends ConsumerState<AttachmentChip> {
     }
   }
 
-  Future<void> _open() {
+  /// Files that can run code are never opened from here. On a computer they can be saved
+  /// after a clear question; on a phone, handed to another app the same way.
+  Future<bool> _allowRisky(String ext) {
+    final repo = ref.read(repositoryProvider);
+    final name = repo.displayFileName(widget.attachment.name);
+    return confirmDialog(
+      context,
+      title: 'This is a .$ext file',
+      body: kTouch
+          ? '“$name” can run code or open a web page when it is opened. Share it only if you expected it from this sender.'
+          : '“$name” can run code or open a web page when it is opened, so Flomsi does not open it. Save it to Downloads if you expected it from this sender.',
+      action: kTouch ? 'Share anyway' : 'Save to Downloads',
+      danger: true,
+    );
+  }
+
+  Future<void> _open() async {
     final a = widget.attachment;
+    final risky = ref.read(repositoryProvider).riskyExtension(a.name);
+    if (risky != null) {
+      if (!await _allowRisky(risky) || !mounted) return;
+      if (!kTouch) return _save();
+    }
+    if (!mounted) return;
     final box = context.findRenderObject() as RenderBox?;
     final origin = box == null
         ? null
@@ -164,6 +284,14 @@ class _AttachmentChipState extends ConsumerState<AttachmentChip> {
     });
   }
 
+  Future<void> _saveAsked() async {
+    final risky = ref
+        .read(repositoryProvider)
+        .riskyExtension(widget.attachment.name);
+    if (risky != null && (!await _allowRisky(risky) || !mounted)) return;
+    return _save();
+  }
+
   Future<void> _save() => _run(() async {
     final dir = await getDownloadsDirectory();
     if (dir == null) throw StateError('No Downloads folder here');
@@ -178,17 +306,23 @@ class _AttachmentChipState extends ConsumerState<AttachmentChip> {
   @override
   Widget build(BuildContext context) {
     final a = widget.attachment;
+    final repo = ref.read(repositoryProvider);
+    final name = repo.displayFileName(a.name);
+    final risky = repo.riskyExtension(a.name);
     return Tooltip(
-      message: kTouch ? '' : 'Open ${a.name}',
+      message: kTouch ? '' : (risky == null ? 'Open $name' : name),
       waitDuration: const Duration(milliseconds: 600),
       child: HoverRegion(
         onTap: _open,
         builder: (context, hovered) => _ChipFrame(
-          icon: iconForFile(a.mime, a.name),
-          name: a.name,
+          icon: risky == null
+              ? iconForFile(a.mime, name)
+              : CupertinoIcons.exclamationmark_shield,
+          name: name,
           size: a.sizeLabel,
           hovered: hovered,
           busy: _busy,
+          risky: risky,
           trailing: kTouch
               ? null
               : Padding(
@@ -197,7 +331,7 @@ class _AttachmentChipState extends ConsumerState<AttachmentChip> {
                     icon: CupertinoIcons.arrow_down_to_line,
                     label: 'Save to Downloads',
                     size: 13,
-                    onTap: _busy ? null : _save,
+                    onTap: _busy ? null : _saveAsked,
                   ),
                 ),
         ),

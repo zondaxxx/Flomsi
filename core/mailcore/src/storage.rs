@@ -7,11 +7,11 @@ use crate::search::Query;
 use crate::threading;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 9;
+const SCHEMA_VERSION: i32 = 10;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -207,6 +207,11 @@ CREATE INDEX outbox_account_done ON outbox(account_id, done);
 DELETE FROM outbox WHERE done IN (1, 3);
 "#;
 
+/// v10: the hierarchy separator of each folder, for display.
+const SCHEMA_V10: &str = r#"
+ALTER TABLE folders ADD COLUMN delimiter TEXT;
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -295,6 +300,9 @@ impl Store {
             }
             if version < 9 {
                 tx.execute_batch(SCHEMA_V9)?;
+            }
+            if version < 10 {
+                tx.execute_batch(SCHEMA_V10)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -446,6 +454,7 @@ impl Store {
             highest_modseq: r.get::<_, Option<i64>>("highest_modseq")?.map(|v| v as u64),
             last_sync_at: r.get::<_, Option<i64>>("last_sync_at")?.map(dt),
             selectable: r.get::<_, i64>("selectable")? != 0,
+            delimiter: r.get("delimiter")?,
         })
     }
 
@@ -455,7 +464,7 @@ impl Store {
         remote_name: &str,
         role: FolderRole,
     ) -> Result<Folder> {
-        self.upsert_remote_folder(account_id, remote_name, role, true)
+        self.upsert_remote_folder(account_id, remote_name, role, true, None)
     }
 
     /// A folder as the server lists it, selectable or not (`\Noselect`).
@@ -465,12 +474,14 @@ impl Store {
         remote_name: &str,
         role: FolderRole,
         selectable: bool,
+        delimiter: Option<&str>,
     ) -> Result<Folder> {
         self.with(|c| {
             c.execute(
-                "INSERT INTO folders(account_id, remote_name, role, selectable) VALUES(?1,?2,?3,?4)
-                 ON CONFLICT(account_id, remote_name) DO UPDATE SET role=excluded.role, selectable=excluded.selectable",
-                params![account_id, remote_name, role.as_str(), selectable as i64],
+                "INSERT INTO folders(account_id, remote_name, role, selectable, delimiter) VALUES(?1,?2,?3,?4,?5)
+                 ON CONFLICT(account_id, remote_name) DO UPDATE SET role=excluded.role,
+                   selectable=excluded.selectable, delimiter=COALESCE(excluded.delimiter, delimiter)",
+                params![account_id, remote_name, role.as_str(), selectable as i64, delimiter],
             )?;
             c.query_row(
                 "SELECT * FROM folders WHERE account_id=?1 AND remote_name=?2",
@@ -478,6 +489,33 @@ impl Store {
                 Self::row_folder,
             )
             .map_err(Into::into)
+        })
+    }
+
+    /// Forget folders the server no longer lists (renamed or deleted elsewhere), their
+    /// messages with them. Only ever called with a complete, checked LIST.
+    pub fn remove_folders_except(&self, account_id: i64, keep: &HashSet<String>) -> Result<usize> {
+        self.with(|c| {
+            let tx =
+                rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)?;
+            let gone: Vec<(i64, String)> = {
+                let mut st =
+                    tx.prepare("SELECT id, remote_name FROM folders WHERE account_id=?1")?;
+                let rows = st.query_map([account_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+                    .into_iter()
+                    .filter(|(_, name)| !keep.contains(name))
+                    .collect()
+            };
+            for (id, _) in &gone {
+                tx.execute("DELETE FROM messages WHERE folder_id=?1", [id])?;
+                tx.execute("DELETE FROM folders WHERE id=?1", [id])?;
+            }
+            if !gone.is_empty() {
+                Self::refresh_all_threads(&tx)?;
+            }
+            tx.commit()?;
+            Ok(gone.len())
         })
     }
 
@@ -489,10 +527,21 @@ impl Store {
         })
     }
 
+    /// How many messages of each folder are cached, by folder id.
+    pub fn cached_counts(&self, account_id: i64) -> Result<HashMap<i64, u32>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT folder_id, COUNT(*) FROM messages WHERE account_id=?1 GROUP BY folder_id",
+            )?;
+            let rows = st.query_map([account_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+        })
+    }
+
     pub fn folder_by_role(&self, account_id: i64, role: FolderRole) -> Result<Option<Folder>> {
         self.with(|c| {
             c.query_row(
-                "SELECT * FROM folders WHERE account_id=?1 AND role=?2 LIMIT 1",
+                "SELECT * FROM folders WHERE account_id=?1 AND role=?2 ORDER BY selectable DESC, id LIMIT 1",
                 params![account_id, role.as_str()],
                 Self::row_folder,
             )

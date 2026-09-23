@@ -17,6 +17,11 @@ Widget _host(Widget child) => ProviderScope(
   ),
 );
 
+/// A file chip by its whole name (the chip lays out the extension on its own).
+Finder fileNamed(String name) => find.byWidgetPredicate(
+  (w) => w is Semantics && w.properties.label == name,
+);
+
 void main() {
   test('sizes read like a file manager', () {
     expect(formatBytes(900), '900 B');
@@ -67,21 +72,21 @@ void main() {
     await tester.pumpWidget(_host(const ComposeBody(draft: draft)));
     await tester.pumpAndSettle();
 
-    expect(find.text('invoice.pdf'), findsOneWidget);
-    expect(find.text('photo.png'), findsOneWidget);
+    expect(fileNamed('invoice.pdf'), findsOneWidget);
+    expect(fileNamed('photo.png'), findsOneWidget);
     expect(find.text('2 files · 86 KB'), findsOneWidget);
 
     await tester.tap(
       find.descendant(
         of: find.ancestor(
-          of: find.text('photo.png'),
+          of: fileNamed('photo.png'),
           matching: find.byType(DraftFileChip),
         ),
         matching: find.byIcon(CupertinoIcons.xmark),
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('photo.png'), findsNothing);
+    expect(fileNamed('photo.png'), findsNothing);
     expect(find.text('1 file · 84 KB'), findsOneWidget);
   });
 
@@ -150,7 +155,7 @@ void main() {
     });
     await tester.pumpAndSettle();
     expect(hintOpacity(), 0);
-    expect(find.text('report.pdf'), findsOneWidget);
+    expect(fileNamed('report.pdf'), findsOneWidget);
     expect(find.text('1 file · 2 KB'), findsOneWidget);
     expect(find.textContaining('Folders can’t be attached'), findsOneWidget);
   });

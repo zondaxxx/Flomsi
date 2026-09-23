@@ -11,6 +11,7 @@ import '../palette/command_palette.dart';
 import '../settings/settings_sheet.dart';
 import '../sidebar/sidebar_model.dart';
 import '../thread/snooze.dart';
+import 'file_away.dart';
 
 /// Keyboard actions and palette commands shared by every shell.
 class ShellActions {
@@ -155,28 +156,35 @@ class ShellActions {
         );
   });
 
-  /// Archive or delete the selected thread and say what really happened: from a view
-  /// outside the inbox there may be nothing to archive.
-  Future<void> archiveSelected() async {
-    var n = 0;
-    await withSelected(
-      (id) async => n = await ref.read(repositoryProvider).archive(id),
-      advance: true,
-    );
-    ref
-        .read(noticeProvider.notifier)
-        .show(n > 0 ? 'Archived' : 'Not in the inbox');
-  }
+  Future<void> archiveSelected() => _fileSelected(archive: true);
+  Future<void> trashSelected() => _fileSelected(archive: false);
 
-  Future<void> trashSelected() async {
-    var n = 0;
-    await withSelected(
-      (id) async => n = await ref.read(repositoryProvider).trash(id),
-      advance: true,
+  /// Archive or delete the selected thread, go on to the next one, and say what really
+  /// happened: from a view outside the inbox there may be nothing to archive. When the
+  /// thread could not be filed (no folder for it), the selection stays put.
+  Future<void> _fileSelected({required bool archive}) async {
+    final id = ref.read(selectedThreadIdProvider);
+    if (id == null) return;
+    final notice = ref.read(noticeProvider.notifier);
+    final threads = ref.read(threadsProvider).value ?? const <Thread>[];
+    final i = threads.indexWhere((t) => t.id == id);
+    final next = i < 0
+        ? null
+        : i + 1 < threads.length
+        ? threads[i + 1].id
+        : i > 0
+        ? threads[i - 1].id
+        : null;
+    final n = await fileAway(context, ref, id, archive: archive);
+    if (n == null || !context.mounted) return;
+    if (next != null && ref.read(selectedThreadIdProvider) == id) {
+      ref.read(selectedThreadIdProvider.notifier).select(next);
+    }
+    notice.show(
+      archive
+          ? (n > 0 ? 'Archived' : 'Not in the inbox')
+          : (n > 0 ? 'Deleted' : 'Nothing to delete'),
     );
-    ref
-        .read(noticeProvider.notifier)
-        .show(n > 0 ? 'Deleted' : 'Nothing to delete');
   }
 
   Map<String, ActionHandler> keymap() {

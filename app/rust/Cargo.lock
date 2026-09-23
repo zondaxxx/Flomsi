@@ -1500,6 +1500,7 @@ dependencies = [
  "idna",
  "keyring",
  "lettre",
+ "libc",
  "log",
  "mail-parser",
  "mime_guess",

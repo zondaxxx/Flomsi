@@ -172,6 +172,34 @@ pub struct Folder {
     pub last_sync_at: Option<DateTime<Utc>>,
     /// False for `\Noselect` containers such as Gmail's `[Gmail]`.
     pub selectable: bool,
+    /// The hierarchy separator the server uses (`/`, `.`), when known.
+    pub delimiter: Option<String>,
+}
+
+impl Folder {
+    /// The name people see: decoded from modified UTF-7, without the server's own prefix
+    /// (`[Gmail]/`, `INBOX.`), levels joined with ` / `.
+    pub fn display_name(&self) -> String {
+        display_name(&self.remote_name, self.delimiter.as_deref())
+    }
+}
+
+/// See [Folder::display_name].
+pub fn display_name(remote: &str, delimiter: Option<&str>) -> String {
+    let decoded = crate::provider::imap::decode_folder_name(remote);
+    let Some(d) = delimiter.filter(|d| !d.is_empty()) else {
+        return decoded;
+    };
+    let mut parts: Vec<&str> = decoded.split(d).filter(|p| !p.is_empty()).collect();
+    if parts.len() > 1 {
+        let first = parts[0];
+        let namespace =
+            first.eq_ignore_ascii_case("INBOX") || (first.starts_with('[') && first.ends_with(']'));
+        if namespace {
+            parts.remove(0);
+        }
+    }
+    parts.join(" / ")
 }
 
 /// IMAP-style message flags as a bitmask.
@@ -229,12 +257,35 @@ pub struct Address {
 }
 
 impl Address {
+    /// The name to show for this address. Direction overrides, invisible and control
+    /// characters are removed and spaces collapsed, so a name cannot reorder or push away
+    /// the address shown next to it. A name that looks like an address (`@`, `<`, `>`) is
+    /// not trusted: the real address is shown instead.
     pub fn display(&self) -> String {
-        match &self.name {
-            Some(n) if !n.is_empty() => n.clone(),
-            _ => self.addr.clone(),
+        let name = self.name.as_deref().map(clean_name).unwrap_or_default();
+        if name.is_empty() || name.contains(['@', '<', '>']) {
+            self.addr.clone()
+        } else {
+            name
         }
     }
+}
+
+/// A display name without characters that change how the text around it reads.
+pub fn clean_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !crate::files::invisible(*c))
+        .map(|c| {
+            if c.is_control() || c.is_whitespace() {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -394,4 +445,35 @@ pub struct OutboxItem {
     pub op: Op,
     pub attempts: u32,
     pub last_error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Address;
+
+    fn shown(name: &str, addr: &str) -> String {
+        Address {
+            name: Some(name.into()),
+            addr: addr.into(),
+        }
+        .display()
+    }
+
+    #[test]
+    fn a_display_name_cannot_pose_as_another_address() {
+        assert_eq!(shown("Anna Sokolova", "anna@studio.dev"), "Anna Sokolova");
+        // An override would turn the address that follows around.
+        assert_eq!(shown("PayPal\u{202E}", "moc.lapyap@evil.io"), "PayPal");
+        assert_eq!(
+            shown("Anna Sokolova <anna@studio.dev>", "x@evil.example"),
+            "x@evil.example"
+        );
+        assert_eq!(shown("anna@studio.dev", "x@evil.example"), "x@evil.example");
+        // Padding and line breaks cannot push the address out of a one-line label.
+        assert_eq!(
+            shown("Anna\u{2028}\n   Sokolova\t\t", "a@s.dev"),
+            "Anna Sokolova"
+        );
+        assert_eq!(shown("\u{200B}\u{2066}", "a@s.dev"), "a@s.dev");
+    }
 }

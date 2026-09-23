@@ -3,6 +3,7 @@
 pub mod imap;
 pub mod parse;
 pub mod watchdog;
+pub mod wire;
 
 #[cfg(test)]
 pub(crate) mod fake_imap;
@@ -16,6 +17,7 @@ pub struct RemoteFolder {
     pub name: String,
     pub role: FolderRole,
     pub selectable: bool,
+    pub delimiter: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]

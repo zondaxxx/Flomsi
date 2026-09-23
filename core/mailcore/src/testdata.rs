@@ -22,7 +22,7 @@ Content-Type: image/png\r
 Content-ID: <logo@studio.dev>\r
 Content-Transfer-Encoding: base64\r
 \r
-iVBORw0KGgo=\r
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==\r
 --REL--\r
 \r
 --MIX\r
@@ -34,5 +34,6 @@ JVBERi0xLjQK\r
 --MIX--\r
 ";
 
-pub const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+/// The inline image of INVOICE_EML: a real 1×1 PNG (the sanitizer reads its size).
+pub const PNG_SIGNATURE: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0d\x49\x44\x41\x54\x78\xda\x63\x64\x60\xf8\x5f\x0f\x00\x02\x87\x01\x80\xeb\x47\xba\x92\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
 pub const PDF_BYTES: &[u8] = b"%PDF-1.4\n";

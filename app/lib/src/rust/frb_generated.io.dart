@@ -48,6 +48,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
+  MissingFolderDto dco_decode_box_autoadd_missing_folder_dto(dynamic raw);
+
+  @protected
   ServerDto dco_decode_box_autoadd_server_dto(dynamic raw);
 
   @protected
@@ -64,6 +67,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DraftDto dco_decode_draft_dto(dynamic raw);
+
+  @protected
+  FiledDto dco_decode_filed_dto(dynamic raw);
 
   @protected
   FolderDto dco_decode_folder_dto(dynamic raw);
@@ -102,10 +108,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MessageDto dco_decode_message_dto(dynamic raw);
 
   @protected
+  MissingFolderDto dco_decode_missing_folder_dto(dynamic raw);
+
+  @protected
   String? dco_decode_opt_String(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
+
+  @protected
+  MissingFolderDto? dco_decode_opt_box_autoadd_missing_folder_dto(dynamic raw);
 
   @protected
   ServerDto? dco_decode_opt_box_autoadd_server_dto(dynamic raw);
@@ -170,6 +182,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  MissingFolderDto sse_decode_box_autoadd_missing_folder_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ServerDto sse_decode_box_autoadd_server_dto(SseDeserializer deserializer);
 
   @protected
@@ -188,6 +205,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   DraftDto sse_decode_draft_dto(SseDeserializer deserializer);
+
+  @protected
+  FiledDto sse_decode_filed_dto(SseDeserializer deserializer);
 
   @protected
   FolderDto sse_decode_folder_dto(SseDeserializer deserializer);
@@ -232,10 +252,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   MessageDto sse_decode_message_dto(SseDeserializer deserializer);
 
   @protected
+  MissingFolderDto sse_decode_missing_folder_dto(SseDeserializer deserializer);
+
+  @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
 
   @protected
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
+
+  @protected
+  MissingFolderDto? sse_decode_opt_box_autoadd_missing_folder_dto(
+    SseDeserializer deserializer,
+  );
 
   @protected
   ServerDto? sse_decode_opt_box_autoadd_server_dto(
@@ -317,6 +345,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_missing_folder_dto(
+    MissingFolderDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_server_dto(
     ServerDto self,
     SseSerializer serializer,
@@ -342,6 +376,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_draft_dto(DraftDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_filed_dto(FiledDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_folder_dto(FolderDto self, SseSerializer serializer);
@@ -404,11 +441,23 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_message_dto(MessageDto self, SseSerializer serializer);
 
   @protected
+  void sse_encode_missing_folder_dto(
+    MissingFolderDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_box_autoadd_i_64(
     PlatformInt64? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_missing_folder_dto(
+    MissingFolderDto? self,
     SseSerializer serializer,
   );
 
