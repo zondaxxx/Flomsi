@@ -270,14 +270,17 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
         alignment: Alignment.centerRight,
       ),
       movementDuration: Motion.base,
-      onDismissed: (direction) {
+      onDismissed: (direction) async {
         dismissLocally(t.id);
-        if (direction == DismissDirection.startToEnd) {
-          repo.archive(t.id);
-          ref.read(noticeProvider.notifier).show('Archived');
+        final notice = ref.read(noticeProvider.notifier);
+        final archive = direction == DismissDirection.startToEnd;
+        final n = archive ? await repo.archive(t.id) : await repo.trash(t.id);
+        if (n > 0) {
+          notice.show(archive ? 'Archived' : 'Deleted');
         } else {
-          repo.trash(t.id);
-          ref.read(noticeProvider.notifier).show('Deleted');
+          // Nothing moved (not in the inbox, or already deleted): bring the row back.
+          notice.show(archive ? 'Not in the inbox' : 'Nothing to delete');
+          if (mounted) ref.invalidate(threadsProvider);
         }
       },
       child: row,

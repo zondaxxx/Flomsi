@@ -24,6 +24,8 @@ pub struct ImapProvider {
     session: Option<Session>,
     selected: Option<String>,
     host: String,
+    /// The server speaks Gmail's IMAP extensions (X-GM-EXT-1).
+    gmail: bool,
 }
 
 struct XOAuth2 {
@@ -66,6 +68,47 @@ fn to_flags<'a>(it: impl Iterator<Item = Flag<'a>>) -> Flags {
         };
     }
     f
+}
+
+/// Folder names travel in IMAP's modified UTF-7 (RFC 3501 5.1.3): `&BBoEPgRABDcEOAQ9BDA-` is
+/// "Корзина". Decode for display; commands keep the raw name. Malformed input stays as is.
+pub fn decode_folder_name(raw: &str) -> String {
+    use base64::Engine;
+    let engine = base64::engine::GeneralPurpose::new(
+        &base64::alphabet::IMAP_MUTF7,
+        base64::engine::general_purpose::NO_PAD,
+    );
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let Some(end) = after.find('-') else {
+            return raw.to_string();
+        };
+        let chunk = &after[..end];
+        if chunk.is_empty() {
+            out.push('&');
+        } else {
+            let Ok(bytes) = engine.decode(chunk) else {
+                return raw.to_string();
+            };
+            if bytes.len() % 2 != 0 {
+                return raw.to_string();
+            }
+            let units: Vec<u16> = bytes
+                .chunks(2)
+                .map(|p| u16::from_be_bytes([p[0], p[1]]))
+                .collect();
+            match String::from_utf16(&units) {
+                Ok(s) => out.push_str(&s),
+                Err(_) => return raw.to_string(),
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Map special-use attributes and well-known names to a role.
@@ -159,10 +202,17 @@ impl ImapProvider {
                 .await
                 .map_err(|e| Error::Auth(e.0.to_string()))?,
         };
+        let mut session = session;
+        let gmail = session
+            .capabilities()
+            .await
+            .map(|c| c.has_str("X-GM-EXT-1"))
+            .unwrap_or(false);
         Ok(ImapProvider {
             session: Some(session),
             selected: None,
             host: host.to_string(),
+            gmail,
         })
     }
 
@@ -174,6 +224,10 @@ impl ImapProvider {
 
     pub fn host(&self) -> &str {
         &self.host
+    }
+
+    pub fn is_gmail(&self) -> bool {
+        self.gmail
     }
 }
 
@@ -189,7 +243,8 @@ impl Provider for ImapProvider {
                 let selectable = !attrs.to_lowercase().contains("noselect");
                 RemoteFolder {
                     name: n.name().to_string(),
-                    role: role_for(n.name(), &attrs),
+                    // Roles match on the readable name ("Корзина"), commands use the raw one.
+                    role: role_for(&decode_folder_name(n.name()), &attrs),
                     selectable,
                 }
             })
@@ -220,6 +275,11 @@ impl Provider for ImapProvider {
         if uids.is_empty() {
             return Ok(vec![]);
         }
+        let query = if self.gmail {
+            "(UID FLAGS RFC822.SIZE X-GM-MSGID BODY.PEEK[])"
+        } else {
+            "(UID FLAGS RFC822.SIZE BODY.PEEK[])"
+        };
         let s = self.s()?;
         let mut out = Vec::with_capacity(uids.len());
         for chunk in uids.chunks(25) {
@@ -228,11 +288,8 @@ impl Provider for ImapProvider {
                 .map(|u| u.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
-            let fetches: Vec<async_imap::types::Fetch> = s
-                .uid_fetch(&set, "(UID FLAGS RFC822.SIZE BODY.PEEK[])")
-                .await?
-                .try_collect()
-                .await?;
+            let fetches: Vec<async_imap::types::Fetch> =
+                s.uid_fetch(&set, query).await?.try_collect().await?;
             for f in fetches {
                 let Some(uid) = f.uid else { continue };
                 out.push(FetchedMessage {
@@ -240,20 +297,25 @@ impl Provider for ImapProvider {
                     flags: to_flags(f.flags()),
                     size: f.size.unwrap_or(0),
                     raw: f.body().map(|b| b.to_vec()).unwrap_or_default(),
+                    gm_msgid: f.gmail_msg_id().copied(),
                 });
             }
         }
         Ok(out)
     }
 
-    async fn fetch_flags(&mut self, since_modseq: Option<u64>) -> Result<Vec<FlagChange>> {
+    async fn fetch_flags(
+        &mut self,
+        uid_set: &str,
+        since_modseq: Option<u64>,
+    ) -> Result<Vec<FlagChange>> {
         let s = self.s()?;
         let query = match since_modseq {
             Some(m) => format!("(UID FLAGS) (CHANGEDSINCE {m})"),
             None => "(UID FLAGS)".to_string(),
         };
         let fetches: Vec<async_imap::types::Fetch> =
-            s.uid_fetch("1:*", &query).await?.try_collect().await?;
+            s.uid_fetch(uid_set, &query).await?.try_collect().await?;
         Ok(fetches
             .iter()
             .filter_map(|f| {
@@ -337,6 +399,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn folder_names_decode_from_modified_utf7() {
+        assert_eq!(decode_folder_name("INBOX"), "INBOX");
+        assert_eq!(decode_folder_name("&BBoEPgRABDcEOAQ9BDA-"), "Корзина");
+        assert_eq!(
+            decode_folder_name("Projects/&BCEERwQ1BEIEMA-"),
+            "Projects/Счета"
+        );
+        assert_eq!(decode_folder_name("R&-D"), "R&D");
+        assert_eq!(decode_folder_name("&Jjo-!"), "☺!");
+        assert_eq!(decode_folder_name("broken&AAA"), "broken&AAA");
+    }
+
+    #[test]
     fn roles_from_names_and_attrs() {
         assert_eq!(role_for("INBOX", "[]"), FolderRole::Inbox);
         assert_eq!(
@@ -348,6 +423,13 @@ mod tests {
             FolderRole::All
         );
         assert_eq!(role_for("Отправленные", "[]"), FolderRole::Sent);
+        assert_eq!(
+            role_for(
+                &decode_folder_name("&BB4EQgQ,BEAEMAQyBDsENQQ9BD0ESwQ1-"),
+                "[]"
+            ),
+            FolderRole::Sent
+        );
         assert_eq!(role_for("Projects/2026", "[]"), FolderRole::Other);
     }
 }

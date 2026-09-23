@@ -428,13 +428,15 @@ class MockRepository implements MailRepository {
   }
 
   @override
-  Future<void> archive(int threadId) async {
+  Future<int> archive(int threadId) async {
+    final before = _threads.length;
     _threads = _threads.where((t) => t.id != threadId).toList();
     _events.add(const ThreadsChanged());
+    return before - _threads.length;
   }
 
   @override
-  Future<void> trash(int threadId) => archive(threadId);
+  Future<int> trash(int threadId) => archive(threadId);
 
   final Map<int, DateTime> _snoozes = {};
 
@@ -470,7 +472,9 @@ class MockRepository implements MailRepository {
   ];
 
   @override
-  Future<void> moveThread(int threadId, int folderId) => archive(threadId);
+  Future<void> moveThread(int threadId, int folderId) async {
+    await archive(threadId);
+  }
 
   @override
   Future<void> markRead(int threadId, bool read) async =>

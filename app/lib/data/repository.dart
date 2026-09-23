@@ -13,7 +13,8 @@ abstract class MailRepository {
   /// Sanitized HTML for one message; with [remoteImages] the http(s) images stay in.
   Future<String?> messageHtml(int messageId, {bool remoteImages = false});
 
-  Future<void> archive(int threadId);
+  /// How many messages left the inbox (0: it was not there).
+  Future<int> archive(int threadId);
 
   /// Folders of one account, for "Move to…".
   Future<List<Folder>> accountFolders(int accountId);
@@ -24,7 +25,9 @@ abstract class MailRepository {
   /// Hide the thread from the inbox until [until] (kept on this device).
   Future<void> snooze(int threadId, DateTime until);
   Future<void> unsnooze(int threadId);
-  Future<void> trash(int threadId);
+
+  /// How many messages went to Trash (0: nothing to delete).
+  Future<int> trash(int threadId);
   Future<void> markRead(int threadId, bool read);
   Future<void> star(int threadId, bool on);
 

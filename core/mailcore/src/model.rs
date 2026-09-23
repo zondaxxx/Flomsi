@@ -137,6 +137,8 @@ pub struct Folder {
     pub uidnext: Option<u32>,
     pub highest_modseq: Option<u64>,
     pub last_sync_at: Option<DateTime<Utc>>,
+    /// False for `\Noselect` containers such as Gmail's `[Gmail]`.
+    pub selectable: bool,
 }
 
 /// IMAP-style message flags as a bitmask.

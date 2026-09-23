@@ -370,17 +370,18 @@ class RustRepository implements MailRepository {
     });
   }
 
-  Future<void> _after(Future<void> f) async {
-    await f;
+  Future<T> _after<T>(Future<T> f) async {
+    final r = await f;
     _events.add(const ThreadsChanged());
     _pushSoon();
+    return r;
   }
 
   @override
-  Future<void> archive(int threadId) =>
+  Future<int> archive(int threadId) =>
       _after(rust.archiveThread(threadId: threadId));
   @override
-  Future<void> trash(int threadId) =>
+  Future<int> trash(int threadId) =>
       _after(rust.trashThread(threadId: threadId));
   @override
   Future<void> markRead(int threadId, bool read) =>

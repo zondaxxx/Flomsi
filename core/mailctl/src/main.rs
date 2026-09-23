@@ -360,10 +360,10 @@ async fn main() -> Result<()> {
             let path = core.save_attachment(message, idx, &dir).await?;
             println!("saved {}", path.display());
         }
-        Cmd::Archive { thread } => {
-            core.actions().archive(thread)?;
-            println!("archived #{thread} (queued for next sync)");
-        }
+        Cmd::Archive { thread } => match core.actions().archive(thread)? {
+            0 => println!("#{thread} is not in the inbox"),
+            n => println!("archived #{thread}: {n} message(s), queued for next sync"),
+        },
         Cmd::Read { thread, unread } => {
             core.actions().mark_read(thread, !unread)?;
             println!(

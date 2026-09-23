@@ -46,6 +46,8 @@ Future<void> testImapLogin({
 Future<void> removeAccount({required PlatformInt64 id}) =>
     RustLib.instance.api.crateApiMailRemoveAccount(id: id);
 
+/// Folders one can open or move mail into (`\\Noselect` containers such as `[Gmail]` left
+/// out), with names decoded from IMAP's modified UTF-7 for display.
 Future<List<FolderDto>> listFolders({required PlatformInt64 accountId}) =>
     RustLib.instance.api.crateApiMailListFolders(accountId: accountId);
 
@@ -98,10 +100,12 @@ Future<DraftAttachmentDto> describeFile({required String path}) =>
 
 Future<int> unreadCount() => RustLib.instance.api.crateApiMailUnreadCount();
 
-Future<void> archiveThread({required PlatformInt64 threadId}) =>
+/// Returns how many messages actually left the inbox (0: it was not there).
+Future<int> archiveThread({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailArchiveThread(threadId: threadId);
 
-Future<void> trashThread({required PlatformInt64 threadId}) =>
+/// Returns how many messages moved to Trash (0: already there, or Sent-only elsewhere).
+Future<int> trashThread({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailTrashThread(threadId: threadId);
 
 Future<void> markRead({required PlatformInt64 threadId, required bool read}) =>

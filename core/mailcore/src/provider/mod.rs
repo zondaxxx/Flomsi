@@ -31,6 +31,8 @@ pub struct FetchedMessage {
     pub flags: Flags,
     pub size: u32,
     pub raw: Vec<u8>,
+    /// Gmail's stable message id (X-GM-MSGID), shared by the copies in every label.
+    pub gm_msgid: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -53,8 +55,13 @@ pub trait Provider {
     async fn uids(&mut self) -> Result<Vec<u32>>;
     /// Full messages for the given UIDs of the selected folder.
     async fn fetch(&mut self, uids: &[u32]) -> Result<Vec<FetchedMessage>>;
-    /// Flags for every message in the selected folder, or only those changed since `modseq`.
-    async fn fetch_flags(&mut self, since_modseq: Option<u64>) -> Result<Vec<FlagChange>>;
+    /// Flags for the UIDs in `uid_set` (e.g. `1:*`, `120:4500`), or only those changed since
+    /// `modseq` when the server supports CONDSTORE.
+    async fn fetch_flags(
+        &mut self,
+        uid_set: &str,
+        since_modseq: Option<u64>,
+    ) -> Result<Vec<FlagChange>>;
     async fn store_flags(&mut self, uid: u32, add: Flags, remove: Flags) -> Result<()>;
     async fn move_to(&mut self, uid: u32, dest: &str) -> Result<()>;
     /// Store a raw RFC 822 message in `folder` (used to keep a copy of sent mail).

@@ -89,7 +89,7 @@ abstract class RustLibApi extends BaseApi {
     required String displayName,
   });
 
-  Future<void> crateApiMailArchiveThread({required PlatformInt64 threadId});
+  Future<int> crateApiMailArchiveThread({required PlatformInt64 threadId});
 
   Future<void> crateApiMailDeleteLocalDraft({required PlatformInt64 id});
 
@@ -198,7 +198,7 @@ abstract class RustLibApi extends BaseApi {
     required PlatformInt64 threadId,
   });
 
-  Future<void> crateApiMailTrashThread({required PlatformInt64 threadId});
+  Future<int> crateApiMailTrashThread({required PlatformInt64 threadId});
 
   Future<int> crateApiMailUnreadCount();
 
@@ -267,7 +267,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<void> crateApiMailArchiveThread({required PlatformInt64 threadId}) {
+  Future<int> crateApiMailArchiveThread({required PlatformInt64 threadId}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -281,7 +281,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_u_32,
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiMailArchiveThreadConstMeta,
@@ -1223,7 +1223,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "thread_messages", argNames: ["threadId"]);
 
   @override
-  Future<void> crateApiMailTrashThread({required PlatformInt64 threadId}) {
+  Future<int> crateApiMailTrashThread({required PlatformInt64 threadId}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -1237,7 +1237,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_u_32,
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiMailTrashThreadConstMeta,

@@ -1,12 +1,12 @@
 //! Sync engine: provider → store, outbox → provider, events out.
 
 use crate::error::Result;
-use crate::model::{Account, Flags, FolderRole, Op};
+use crate::model::{Account, Flags, Folder, FolderRole, Message, Op};
 use crate::provider::parse::parse_rfc822;
 use crate::provider::Provider;
 use crate::storage::Store;
 use chrono::Utc;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -48,6 +48,8 @@ pub struct SyncOptions {
     pub roles: Vec<FolderRole>,
     /// On first sync of a folder, only fetch this many most-recent messages.
     pub initial_window: usize,
+    /// Smaller first window for Spam and Trash.
+    pub minor_window: usize,
     /// Messages with attachments or inline images up to this raw size keep a compressed copy
     /// of their bytes, so those parts open offline. Bigger ones are fetched when opened.
     pub keep_raw_below: usize,
@@ -61,8 +63,11 @@ impl Default for SyncOptions {
                 FolderRole::Sent,
                 FolderRole::Archive,
                 FolderRole::All,
+                FolderRole::Junk,
+                FolderRole::Trash,
             ],
             initial_window: 200,
+            minor_window: 50,
             keep_raw_below: 2 * 1024 * 1024,
         }
     }
@@ -103,7 +108,9 @@ impl SyncEngine {
         let remote = provider.list_folders().await?;
         let mut targets = Vec::new();
         for rf in &remote {
-            let folder = self.store.upsert_folder(account.id, &rf.name, rf.role)?;
+            let folder =
+                self.store
+                    .upsert_remote_folder(account.id, &rf.name, rf.role, rf.selectable)?;
             if rf.selectable && (opts.roles.is_empty() || opts.roles.contains(&rf.role)) {
                 targets.push(folder);
             }
@@ -144,10 +151,12 @@ impl SyncEngine {
     ) -> Result<(usize, usize)> {
         let state = provider.select(&folder.remote_name).await?;
 
-        let first_sync = folder.uidvalidity.is_none();
+        let mut first_sync = folder.uidvalidity.is_none();
         if let Some(v) = folder.uidvalidity {
             if v != state.uidvalidity {
                 self.store.reset_folder(folder.id)?;
+                // Everything is new again: take the window, not the whole folder.
+                first_sync = true;
             }
         }
 
@@ -162,41 +171,62 @@ impl SyncEngine {
             }
         }
 
-        // Flags: full pass or CHANGEDSINCE when the server supports CONDSTORE.
-        let flag_changes = provider
-            .fetch_flags(
-                folder
-                    .highest_modseq
-                    .filter(|_| state.highest_modseq.is_some()),
-            )
-            .await?;
-        let local: HashSet<u32> = self.store.uids(folder.id)?.into_iter().collect();
-        for fc in flag_changes {
-            if local.contains(&fc.uid) {
-                self.store.set_flags_by_uid(folder.id, fc.uid, fc.flags)?;
+        // Flags: nothing to reconcile on an empty cache. With CONDSTORE only what changed;
+        // otherwise only the UID range we hold (never `1:*` over a 100k-message All Mail).
+        let local_uids = self.store.uids(folder.id)?;
+        if let (Some(lo), Some(hi)) = (local_uids.first(), local_uids.last()) {
+            let since = folder
+                .highest_modseq
+                .filter(|_| state.highest_modseq.is_some());
+            let set = if since.is_some() {
+                "1:*".to_string()
+            } else {
+                format!("{lo}:{hi}")
+            };
+            let local: HashSet<u32> = local_uids.iter().copied().collect();
+            for fc in provider.fetch_flags(&set, since).await? {
+                if local.contains(&fc.uid) {
+                    self.store.set_flags_by_uid(folder.id, fc.uid, fc.flags)?;
+                }
             }
         }
+        let local: HashSet<u32> = local_uids.into_iter().collect();
 
-        // New messages: everything above what we have, windowed on first sync.
-        let known_max = self.store.max_uid(folder.id)?.unwrap_or(0);
+        // New messages: on a first sync the newest window; afterwards every remote UID from
+        // the lowest one we hold up that is missing here (new mail, and holes left by an
+        // interrupted sync or a move that did not happen). Oldest first, so a thread's root
+        // is stored before its replies and an interruption leaves no gap below the maximum.
+        // The UI refreshes after every batch.
+        let floor = if first_sync {
+            None
+        } else {
+            local.iter().min().copied().or(folder.uidnext)
+        };
         let mut new_uids: Vec<u32> = remote_uids
             .into_iter()
-            .filter(|u| *u > known_max && !local.contains(u))
+            .filter(|u| !local.contains(u) && floor.is_none_or(|f| *u >= f))
             .collect();
-        if first_sync && new_uids.len() > opts.initial_window {
-            new_uids = new_uids.split_off(new_uids.len() - opts.initial_window);
+        let window = if matches!(folder.role, FolderRole::Junk | FolderRole::Trash) {
+            opts.minor_window.min(opts.initial_window)
+        } else {
+            opts.initial_window
+        };
+        if first_sync && new_uids.len() > window {
+            new_uids = new_uids.split_off(new_uids.len() - window);
         }
         let mut fetched = 0;
         let now = Utc::now();
         for chunk in new_uids.chunks(50) {
+            let mut batch = 0;
             for fm in provider.fetch(chunk).await? {
                 let parsed = parse_rfc822(&fm.raw, now);
-                let id = self.store.upsert_message(
+                let id = self.store.upsert_fetched(
                     account.id,
                     folder.id,
                     fm.uid,
                     fm.flags,
                     fm.size as u64,
+                    fm.gm_msgid,
                     &parsed,
                 )?;
                 if !parsed.attachments.is_empty()
@@ -207,7 +237,16 @@ impl SyncEngine {
                 {
                     self.store.put_raw(id, &fm.raw)?;
                 }
-                fetched += 1;
+                batch += 1;
+            }
+            fetched += batch;
+            if batch > 0 && new_uids.len() > chunk.len() {
+                self.emit(SyncEvent::Folder {
+                    account_id: account.id,
+                    folder: folder.remote_name.clone(),
+                    fetched: batch,
+                    removed: 0,
+                });
             }
         }
 
@@ -270,30 +309,88 @@ pub struct Actions<'a> {
 }
 
 impl<'a> Actions<'a> {
-    pub fn mark_read(&self, thread_id: i64, read: bool) -> Result<()> {
-        for m in self.store.thread_messages(thread_id)? {
-            let folder = self
-                .store
-                .folders(m.account_id)?
-                .into_iter()
-                .find(|f| f.id == m.folder_id);
-            let Some(folder) = folder else { continue };
-            let new_flags = if read {
-                m.flags.with(Flags::SEEN)
-            } else {
-                m.flags.without(Flags::SEEN)
-            };
-            if new_flags != m.flags {
-                self.store.set_flags_by_uid(m.folder_id, m.uid, new_flags)?;
-                let (add, remove) = if read {
-                    (Flags::SEEN, Flags::default())
+    /// Gmail keeps one message in many labels: flags are per message and a MOVE out of a
+    /// label or into Trash/Spam affects every copy. Elsewhere copies are separate messages.
+    fn is_gmail(&self, account_id: i64) -> Result<bool> {
+        let a = self.store.account(account_id)?;
+        Ok(a.kind == crate::model::ProviderKind::Gmail
+            || a.imap_host.to_ascii_lowercase().contains("gmail"))
+    }
+
+    /// The thread's copies grouped per message, preferred copy first (INBOX, then other
+    /// folders, All Mail last), groups in date order.
+    fn groups(&self, thread_id: i64) -> Result<Vec<Vec<Message>>> {
+        let mut order: Vec<String> = Vec::new();
+        let mut map: HashMap<String, Vec<Message>> = HashMap::new();
+        for m in self.store.thread_copies(thread_id)? {
+            let key = self.store.dedup_key(m.id)?;
+            if !map.contains_key(&key) {
+                order.push(key.clone());
+            }
+            map.entry(key).or_default().push(m);
+        }
+        Ok(order.into_iter().filter_map(|k| map.remove(&k)).collect())
+    }
+
+    fn folder_of<'f>(folders: &'f [Folder], m: &Message) -> Option<&'f Folder> {
+        folders.iter().find(|f| f.id == m.folder_id)
+    }
+
+    /// Which copy to address on the server for a Gmail message: the All Mail copy when cached,
+    /// because its UID stays valid until the message is trashed or marked spam, while an
+    /// INBOX UID may already be gone (archived on another device).
+    fn gmail_anchor<'m>(group: &'m [Message], folders: &[Folder]) -> Option<&'m Message> {
+        group
+            .iter()
+            .find(|m| Self::folder_of(folders, m).is_some_and(|f| f.role == FolderRole::All))
+            .or_else(|| group.first())
+    }
+
+    /// Set or clear one flag on every copy locally; queue the remote STORE once per message
+    /// on Gmail (on the All Mail copy when cached), once per changed copy elsewhere.
+    fn set_flag(&self, copies_by_message: Vec<Vec<Message>>, flag: Flags, on: bool) -> Result<()> {
+        for group in copies_by_message {
+            let Some(first) = group.first() else { continue };
+            let gmail = self.is_gmail(first.account_id)?;
+            let folders = self.store.folders(first.account_id)?;
+            let changed = |m: &Message| {
+                if on {
+                    m.flags.with(flag)
                 } else {
-                    (Flags::default(), Flags::SEEN)
+                    m.flags.without(flag)
+                }
+            };
+            let any_change = group.iter().any(|m| changed(m) != m.flags);
+            let anchor = if gmail {
+                Self::gmail_anchor(&group, &folders).map(|m| m.id)
+            } else {
+                None
+            };
+            for m in &group {
+                let new = changed(m);
+                if new != m.flags {
+                    self.store.set_flags_by_uid(m.folder_id, m.uid, new)?;
+                }
+                let send = match anchor {
+                    // Gmail: flags belong to the message; one STORE on the anchor copy.
+                    Some(a) => any_change && m.id == a,
+                    None => new != m.flags,
+                };
+                if !send {
+                    continue;
+                }
+                let Some(folder) = Self::folder_of(&folders, m) else {
+                    continue;
+                };
+                let (add, remove) = if on {
+                    (flag, Flags::default())
+                } else {
+                    (Flags::default(), flag)
                 };
                 self.store.enqueue(
                     m.account_id,
                     &Op::SetFlags {
-                        folder: folder.remote_name,
+                        folder: folder.remote_name.clone(),
                         uid: m.uid,
                         add,
                         remove,
@@ -302,101 +399,180 @@ impl<'a> Actions<'a> {
             }
         }
         Ok(())
+    }
+
+    pub fn mark_read(&self, thread_id: i64, read: bool) -> Result<()> {
+        self.set_flag(self.groups(thread_id)?, Flags::SEEN, read)
     }
 
     pub fn star(&self, thread_id: i64, on: bool) -> Result<()> {
-        for m in self.store.thread_messages(thread_id)? {
-            let folder = self
-                .store
-                .folders(m.account_id)?
-                .into_iter()
-                .find(|f| f.id == m.folder_id);
-            let Some(folder) = folder else { continue };
-            let new_flags = if on {
-                m.flags.with(Flags::FLAGGED)
-            } else {
-                m.flags.without(Flags::FLAGGED)
-            };
-            if new_flags != m.flags {
-                self.store.set_flags_by_uid(m.folder_id, m.uid, new_flags)?;
-                let (add, remove) = if on {
-                    (Flags::FLAGGED, Flags::default())
-                } else {
-                    (Flags::default(), Flags::FLAGGED)
-                };
-                self.store.enqueue(
-                    m.account_id,
-                    &Op::SetFlags {
-                        folder: folder.remote_name,
-                        uid: m.uid,
-                        add,
-                        remove,
-                    },
-                )?;
-            }
-        }
-        Ok(())
+        self.set_flag(self.groups(thread_id)?, Flags::FLAGGED, on)
     }
 
-    /// Flag the message with this Message-ID as answered, locally and on the server.
     pub fn mark_answered(&self, account_id: i64, message_id: &str) -> Result<()> {
-        let folders = self.store.folders(account_id)?;
-        for m in self.store.messages_by_message_id(account_id, message_id)? {
-            let Some(folder) = folders.iter().find(|f| f.id == m.folder_id) else {
-                continue;
-            };
-            if m.flags.contains(Flags::ANSWERED) {
-                continue;
-            }
-            self.store
-                .set_flags_by_uid(m.folder_id, m.uid, m.flags.with(Flags::ANSWERED))?;
-            self.store.enqueue(
-                account_id,
-                &Op::SetFlags {
-                    folder: folder.remote_name.clone(),
-                    uid: m.uid,
-                    add: Flags::ANSWERED,
-                    remove: Flags::default(),
-                },
-            )?;
+        let copies = self.store.messages_by_message_id(account_id, message_id)?;
+        if copies.is_empty() {
+            return Ok(());
         }
+        self.set_flag(vec![copies], Flags::ANSWERED, true)
+    }
+
+    fn enqueue_move(&self, m: &Message, src: &Folder, dest: &Folder) -> Result<()> {
+        self.store.enqueue(
+            m.account_id,
+            &Op::Move {
+                folder: src.remote_name.clone(),
+                uid: m.uid,
+                dest: dest.remote_name.clone(),
+            },
+        )?;
         Ok(())
     }
 
-    /// Move every inbox message of the thread to the archive folder (Archive, else Gmail All Mail).
-    /// "Move to…": every copy of the thread goes to `folder_id` of its account. Copies in
-    /// Sent, Drafts and All Mail stay put (Gmail keeps its All Mail copy anyway).
-    /// Returns how many messages moved.
+    /// Out of the inbox: to Archive, or on Gmail (no Archive folder) to All Mail, which just
+    /// drops the Inbox label and keeps the All Mail copy.
+    pub fn archive(&self, thread_id: i64) -> Result<usize> {
+        self.store.unsnooze(thread_id)?;
+        let mut moved = 0;
+        for group in self.groups(thread_id)? {
+            let Some(first) = group.first() else { continue };
+            let folders = self.store.folders(first.account_id)?;
+            for m in &group {
+                let Some(src) = Self::folder_of(&folders, m) else {
+                    continue;
+                };
+                if src.role != FolderRole::Inbox {
+                    continue;
+                }
+                let dest = [FolderRole::Archive, FolderRole::All]
+                    .iter()
+                    .find_map(|r| folders.iter().find(|f| f.role == *r && f.selectable))
+                    .ok_or_else(|| crate::error::Error::NotFound("archive folder".into()))?;
+                self.store.delete_by_uid(m.folder_id, m.uid)?;
+                self.enqueue_move(m, src, dest)?;
+                moved += 1;
+            }
+        }
+        Ok(moved)
+    }
+
+    /// Delete from wherever the thread is. On Gmail one MOVE per message takes it out of
+    /// every label (Sent included, like Gmail's own delete); elsewhere every copy outside
+    /// Sent, Drafts and Trash moves to Trash.
+    pub fn trash(&self, thread_id: i64) -> Result<usize> {
+        self.store.unsnooze(thread_id)?;
+        let mut moved = 0;
+        for group in self.groups(thread_id)? {
+            let Some(first) = group.first() else { continue };
+            let folders = self.store.folders(first.account_id)?;
+            let trash = folders
+                .iter()
+                .find(|f| f.role == FolderRole::Trash && f.selectable)
+                .ok_or_else(|| crate::error::Error::NotFound("trash folder".into()))?;
+            if self.is_gmail(first.account_id)? {
+                moved += self.gmail_leave_everything(&group, &folders, trash)?;
+                continue;
+            }
+            for m in &group {
+                let Some(src) = Self::folder_of(&folders, m) else {
+                    continue;
+                };
+                if matches!(
+                    src.role,
+                    FolderRole::Sent | FolderRole::Drafts | FolderRole::Trash
+                ) {
+                    continue;
+                }
+                self.store.delete_by_uid(m.folder_id, m.uid)?;
+                self.enqueue_move(m, src, trash)?;
+                moved += 1;
+            }
+        }
+        Ok(moved)
+    }
+
+    /// Gmail: one MOVE into Trash or Spam removes the message from all labels, so every local
+    /// copy goes; the copy in `dest` arrives with the next sync.
+    fn gmail_leave_everything(
+        &self,
+        group: &[Message],
+        folders: &[Folder],
+        dest: &Folder,
+    ) -> Result<usize> {
+        if group.iter().any(|m| m.folder_id == dest.id) {
+            return Ok(0);
+        }
+        let Some(m) = Self::gmail_anchor(group, folders) else {
+            return Ok(0);
+        };
+        let Some(src) = Self::folder_of(folders, m) else {
+            return Ok(0);
+        };
+        self.enqueue_move(m, src, dest)?;
+        for c in group {
+            self.store.delete_by_uid(c.folder_id, c.uid)?;
+        }
+        Ok(1)
+    }
+
+    /// "Move to…": every message of the thread goes to `folder_id` of its account. Sent and
+    /// Drafts copies stay put. On Gmail a move adds the label and drops the source label;
+    /// from All Mail it only adds the label, and the All Mail copy stays. Returns how many
+    /// messages moved.
     pub fn move_to_folder(&self, thread_id: i64, folder_id: i64) -> Result<usize> {
         let dest = self.store.folder(folder_id)?;
         let folders = self.store.folders(dest.account_id)?;
         if dest.role != FolderRole::Inbox {
             self.store.unsnooze(thread_id)?;
         }
+        let gmail = self.is_gmail(dest.account_id)?;
+        let groups = self.groups(thread_id)?;
+        // Copies in Trash or Spam only move when the whole thread is there (a restore).
+        let binned = |m: &Message| {
+            Self::folder_of(&folders, m)
+                .is_some_and(|f| matches!(f.role, FolderRole::Trash | FolderRole::Junk))
+        };
+        let restore = groups.iter().flatten().all(binned);
         let mut moved = 0;
-        for m in self.store.thread_messages(thread_id)? {
-            if m.account_id != dest.account_id || m.folder_id == dest.id {
+        for group in groups {
+            let Some(first) = group.first() else { continue };
+            if first.account_id != dest.account_id || group.iter().any(|m| m.folder_id == dest.id) {
                 continue;
             }
-            let Some(src) = folders.iter().find(|f| f.id == m.folder_id) else {
-                continue;
-            };
-            if matches!(
-                src.role,
-                FolderRole::Sent | FolderRole::Drafts | FolderRole::All
-            ) {
+            if gmail {
+                if matches!(dest.role, FolderRole::Trash | FolderRole::Junk) {
+                    moved += self.gmail_leave_everything(&group, &folders, &dest)?;
+                    continue;
+                }
+                let source = group.iter().find_map(|m| {
+                    let f = Self::folder_of(&folders, m)?;
+                    let usable = !matches!(f.role, FolderRole::Sent | FolderRole::Drafts)
+                        && (restore || !binned(m));
+                    usable.then_some((m, f))
+                });
+                let Some((m, src)) = source else { continue };
+                self.enqueue_move(m, src, &dest)?;
+                if src.role != FolderRole::All {
+                    self.store.delete_by_uid(m.folder_id, m.uid)?;
+                }
+                moved += 1;
                 continue;
             }
-            self.store.delete_by_uid(m.folder_id, m.uid)?;
-            self.store.enqueue(
-                m.account_id,
-                &Op::Move {
-                    folder: src.remote_name.clone(),
-                    uid: m.uid,
-                    dest: dest.remote_name.clone(),
-                },
-            )?;
-            moved += 1;
+            for m in &group {
+                let Some(src) = Self::folder_of(&folders, m) else {
+                    continue;
+                };
+                if matches!(
+                    src.role,
+                    FolderRole::Sent | FolderRole::Drafts | FolderRole::All
+                ) || (!restore && binned(m))
+                {
+                    continue;
+                }
+                self.store.delete_by_uid(m.folder_id, m.uid)?;
+                self.enqueue_move(m, src, &dest)?;
+                moved += 1;
+            }
         }
         Ok(moved)
     }
@@ -425,42 +601,5 @@ impl<'a> Actions<'a> {
             self.store.mark_woken(*thread_id, now)?;
         }
         Ok(due.len())
-    }
-
-    pub fn archive(&self, thread_id: i64) -> Result<()> {
-        self.move_thread(thread_id, &[FolderRole::Archive, FolderRole::All])
-    }
-
-    pub fn trash(&self, thread_id: i64) -> Result<()> {
-        self.move_thread(thread_id, &[FolderRole::Trash])
-    }
-
-    fn move_thread(&self, thread_id: i64, dest_roles: &[FolderRole]) -> Result<()> {
-        self.store.unsnooze(thread_id)?;
-        for m in self.store.thread_messages(thread_id)? {
-            let folders = self.store.folders(m.account_id)?;
-            let Some(src) = folders.iter().find(|f| f.id == m.folder_id) else {
-                continue;
-            };
-            if src.role != FolderRole::Inbox {
-                continue;
-            }
-            let Some(dest) = dest_roles
-                .iter()
-                .find_map(|r| folders.iter().find(|f| f.role == *r))
-            else {
-                return Err(crate::error::Error::NotFound("archive folder".into()));
-            };
-            self.store.delete_by_uid(m.folder_id, m.uid)?;
-            self.store.enqueue(
-                m.account_id,
-                &Op::Move {
-                    folder: src.remote_name.clone(),
-                    uid: m.uid,
-                    dest: dest.remote_name.clone(),
-                },
-            )?;
-        }
-        Ok(())
     }
 }

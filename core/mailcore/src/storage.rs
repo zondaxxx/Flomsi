@@ -7,10 +7,11 @@ use crate::search::Query;
 use crate::threading;
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -174,6 +175,17 @@ CREATE TRIGGER messages_fts_cleanup AFTER DELETE ON messages BEGIN
 END;
 "#;
 
+/// v7: one message, several places. Gmail shows a message in INBOX and in All Mail (and in
+/// every label); counts, lists and actions work on `dedup_key` (X-GM-MSGID on Gmail, the
+/// Message-ID elsewhere) instead of on rows. Folders remember whether they can be selected.
+const SCHEMA_V7: &str = r#"
+ALTER TABLE messages ADD COLUMN gm_msgid INTEGER;
+ALTER TABLE messages ADD COLUMN dedup_key TEXT;
+UPDATE messages SET dedup_key = COALESCE(message_id, 'id:' || id);
+CREATE INDEX messages_dedup ON messages(account_id, dedup_key);
+ALTER TABLE folders ADD COLUMN selectable INTEGER NOT NULL DEFAULT 1;
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -252,6 +264,10 @@ impl Store {
             }
             if version < 6 {
                 tx.execute_batch(SCHEMA_V6)?;
+            }
+            if version < 7 {
+                tx.execute_batch(SCHEMA_V7)?;
+                Self::refresh_all_threads(&tx)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -393,6 +409,7 @@ impl Store {
             uidnext: r.get::<_, Option<i64>>("uidnext")?.map(|v| v as u32),
             highest_modseq: r.get::<_, Option<i64>>("highest_modseq")?.map(|v| v as u64),
             last_sync_at: r.get::<_, Option<i64>>("last_sync_at")?.map(dt),
+            selectable: r.get::<_, i64>("selectable")? != 0,
         })
     }
 
@@ -402,11 +419,22 @@ impl Store {
         remote_name: &str,
         role: FolderRole,
     ) -> Result<Folder> {
+        self.upsert_remote_folder(account_id, remote_name, role, true)
+    }
+
+    /// A folder as the server lists it, selectable or not (`\Noselect`).
+    pub fn upsert_remote_folder(
+        &self,
+        account_id: i64,
+        remote_name: &str,
+        role: FolderRole,
+        selectable: bool,
+    ) -> Result<Folder> {
         self.with(|c| {
             c.execute(
-                "INSERT INTO folders(account_id, remote_name, role) VALUES(?1,?2,?3)
-                 ON CONFLICT(account_id, remote_name) DO UPDATE SET role=excluded.role",
-                params![account_id, remote_name, role.as_str()],
+                "INSERT INTO folders(account_id, remote_name, role, selectable) VALUES(?1,?2,?3,?4)
+                 ON CONFLICT(account_id, remote_name) DO UPDATE SET role=excluded.role, selectable=excluded.selectable",
+                params![account_id, remote_name, role.as_str(), selectable as i64],
             )?;
             c.query_row(
                 "SELECT * FROM folders WHERE account_id=?1 AND remote_name=?2",
@@ -502,6 +530,21 @@ impl Store {
         size: u64,
         m: &ParsedMessage,
     ) -> Result<i64> {
+        self.upsert_fetched(account_id, folder_id, uid, flags, size, None, m)
+    }
+
+    /// Like `upsert_message`, with Gmail's X-GM-MSGID when the server gave one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_fetched(
+        &self,
+        account_id: i64,
+        folder_id: i64,
+        uid: u32,
+        flags: Flags,
+        size: u64,
+        gm_msgid: Option<u64>,
+        m: &ParsedMessage,
+    ) -> Result<i64> {
         self.with(|conn| {
             // Message, body, parts, index row and thread counters land together or not at all.
             // IMMEDIATE takes the write lock up front, so another process writing (mailctl
@@ -511,12 +554,14 @@ impl Store {
                 conn,
                 rusqlite::TransactionBehavior::Immediate,
             )?;
-            let id = Self::upsert_message_in(&tx, account_id, folder_id, uid, flags, size, m)?;
+            let id =
+                Self::upsert_message_in(&tx, account_id, folder_id, uid, flags, size, gm_msgid, m)?;
             tx.commit()?;
             Ok(id)
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn upsert_message_in(
         c: &Connection,
         account_id: i64,
@@ -524,6 +569,7 @@ impl Store {
         uid: u32,
         flags: Flags,
         size: u64,
+        gm_msgid: Option<u64>,
         m: &ParsedMessage,
     ) -> Result<i64> {
         {
@@ -541,7 +587,7 @@ impl Store {
                 )?;
                 return Ok(id);
             }
-            let thread_id = Self::assign_thread(c, account_id, m)?;
+            let thread_id = Self::assign_thread(c, account_id, folder_id, m)?;
             c.execute(
                 "INSERT INTO messages(account_id,folder_id,uid,message_id,thread_id,subject,from_name,from_addr,to_json,cc_json,date,snippet,flags,has_attachment,size)
                  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
@@ -552,6 +598,39 @@ impl Store {
                 ],
             )?;
             let id = c.last_insert_rowid();
+            let dedup_key = match (gm_msgid, &m.message_id) {
+                (Some(g), _) => format!("gm:{g}"),
+                (None, Some(mid)) => mid.clone(),
+                (None, None) => format!("id:{id}"),
+            };
+            c.execute(
+                "UPDATE messages SET dedup_key=?2, gm_msgid=?3 WHERE id=?1",
+                params![id, dedup_key, gm_msgid.map(|g| g as i64)],
+            )?;
+            // Copies cached before X-GM-MSGID was fetched (schema v6 and older) carry the
+            // Message-ID as key: move them onto the Gmail key so one message counts once.
+            if let (Some(g), Some(mid)) = (gm_msgid, &m.message_id) {
+                let stale: Vec<i64> = {
+                    let mut st = c.prepare(
+                        "SELECT DISTINCT thread_id FROM messages
+                         WHERE account_id=?1 AND message_id=?2 AND gm_msgid IS NULL AND id<>?3",
+                    )?;
+                    let v = st
+                        .query_map(params![account_id, mid, id], |r| r.get(0))?
+                        .collect::<rusqlite::Result<_>>()?;
+                    v
+                };
+                if !stale.is_empty() {
+                    c.execute(
+                        "UPDATE messages SET gm_msgid=?1, dedup_key=?2
+                         WHERE account_id=?3 AND message_id=?4 AND gm_msgid IS NULL",
+                        params![g as i64, format!("gm:{g}"), account_id, mid],
+                    )?;
+                    for tid in stale {
+                        Self::refresh_thread(c, tid)?;
+                    }
+                }
+            }
             c.execute(
                 "INSERT INTO bodies(message_id, text, html) VALUES(?1,?2,?3)",
                 params![id, m.text, m.html],
@@ -582,7 +661,23 @@ impl Store {
         }
     }
 
-    fn assign_thread(c: &Connection, account_id: i64, m: &ParsedMessage) -> Result<i64> {
+    fn assign_thread(
+        c: &Connection,
+        account_id: i64,
+        folder_id: i64,
+        m: &ParsedMessage,
+    ) -> Result<i64> {
+        // Spam and Trash keep their own conversations: a deleted reply or a spam "Re:" must
+        // not join (and become the reply target of) a live conversation.
+        let role: String =
+            c.query_row("SELECT role FROM folders WHERE id=?1", [folder_id], |r| {
+                r.get(0)
+            })?;
+        let zone = |col: &str| match role.as_str() {
+            "junk" => format!("{col} = 'junk'"),
+            "trash" => format!("{col} = 'trash'"),
+            _ => format!("{col} NOT IN ('junk', 'trash')"),
+        };
         // 1. References / In-Reply-To
         let mut candidates: Vec<&str> = m.references.iter().map(|s| s.as_str()).collect();
         if let Some(irt) = &m.in_reply_to {
@@ -594,7 +689,10 @@ impl Store {
         if !candidates.is_empty() {
             let placeholders = vec!["?"; candidates.len()].join(",");
             let sql = format!(
-                "SELECT thread_id FROM messages WHERE account_id=? AND message_id IN ({placeholders}) ORDER BY date DESC LIMIT 1"
+                "SELECT m.thread_id FROM messages m JOIN folders f ON f.id = m.folder_id
+                 WHERE m.account_id=? AND m.message_id IN ({placeholders}) AND {}
+                 ORDER BY m.date DESC LIMIT 1",
+                zone("f.role")
             );
             let mut st = c.prepare(&sql)?;
             let mut p: Vec<rusqlite::types::Value> = vec![account_id.into()];
@@ -612,14 +710,19 @@ impl Store {
         }
         // 2. Reply-looking subject within 30 days
         let norm = threading::normalize_subject(&m.subject);
-        if threading::is_reply(&m.subject) && !norm.is_empty() {
+        if threading::is_reply(&m.subject) && !norm.is_empty() && role != "junk" {
             let since = ts(m.date) - 30 * 86_400;
+            let sql = format!(
+                "SELECT t.id FROM threads t WHERE t.account_id=?1 AND t.subject_norm=?2 AND t.last_date>=?3
+                   AND EXISTS (SELECT 1 FROM messages mm JOIN folders ff ON ff.id = mm.folder_id
+                               WHERE mm.thread_id = t.id AND {})
+                 ORDER BY t.last_date DESC LIMIT 1",
+                zone("ff.role")
+            );
             if let Some(tid) = c
-                .query_row(
-                    "SELECT id FROM threads WHERE account_id=?1 AND subject_norm=?2 AND last_date>=?3 ORDER BY last_date DESC LIMIT 1",
-                    params![account_id, norm, since],
-                    |r| r.get::<_, i64>(0),
-                )
+                .query_row(&sql, params![account_id, norm, since], |r| {
+                    r.get::<_, i64>(0)
+                })
                 .optional()?
             {
                 return Ok(tid);
@@ -635,8 +738,9 @@ impl Store {
 
     /// Recompute a thread's aggregates from its messages. Deletes the thread when empty.
     fn refresh_thread(c: &Connection, thread_id: i64) -> Result<()> {
+        // Copies of one message (INBOX + All Mail on Gmail) count once.
         let count: i64 = c.query_row(
-            "SELECT COUNT(*) FROM messages WHERE thread_id=?1",
+            "SELECT COUNT(DISTINCT dedup_key) FROM messages WHERE thread_id=?1",
             [thread_id],
             |r| r.get(0),
         )?;
@@ -661,7 +765,11 @@ impl Store {
             "UPDATE threads SET
                last_date=(SELECT MAX(date) FROM messages WHERE thread_id=?1),
                msg_count=?2,
-               unread_count=(SELECT COUNT(*) FROM messages WHERE thread_id=?1 AND (flags & 1)=0),
+               unread_count=(SELECT COUNT(*) FROM (
+                   SELECT mu.dedup_key FROM messages mu JOIN folders fu ON fu.id = mu.folder_id
+                   WHERE mu.thread_id=?1 GROUP BY mu.dedup_key
+                   HAVING COALESCE(MIN(CASE WHEN fu.role = 'inbox' THEN mu.flags & 1 END),
+                                   MAX(mu.flags & 1)) = 0)),
                snippet=(SELECT snippet FROM messages WHERE thread_id=?1 ORDER BY date DESC LIMIT 1),
                subject=(SELECT subject FROM messages WHERE thread_id=?1 ORDER BY date ASC LIMIT 1),
                has_attachment=(SELECT MAX(has_attachment) FROM messages WHERE thread_id=?1),
@@ -751,12 +859,79 @@ impl Store {
         })
     }
 
-    pub fn thread_messages(&self, thread_id: i64) -> Result<Vec<Message>> {
+    /// Every stored copy of every message in the thread (for actions).
+    pub fn thread_copies(&self, thread_id: i64) -> Result<Vec<Message>> {
         self.with(|c| {
-            let mut st =
-                c.prepare("SELECT * FROM messages WHERE thread_id=?1 ORDER BY date ASC")?;
+            let mut st = c.prepare(
+                "SELECT m.* FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.thread_id=?1
+                 ORDER BY m.date ASC,
+                   CASE f.role WHEN 'inbox' THEN 0 WHEN 'all' THEN 2 ELSE 1 END, m.id",
+            )?;
             let rows = st.query_map([thread_id], Self::row_message)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// The thread's messages, one per message: the INBOX copy when there is one, All Mail
+    /// last. Flagged and answered merge across copies; Seen too, unless the kept copy is the
+    /// INBOX one (elsewhere copies are separate messages with their own read state).
+    pub fn thread_messages(&self, thread_id: i64) -> Result<Vec<Message>> {
+        let copies = self.thread_copies(thread_id)?;
+        let keys = self.dedup_keys(thread_id)?;
+        let inbox_folders: HashSet<i64> = self.with(|c| {
+            let mut st = c.prepare("SELECT id FROM folders WHERE role='inbox'")?;
+            let v = st
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            Ok(v)
+        })?;
+        let mut out: Vec<Message> = Vec::new();
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for m in copies {
+            let key = keys
+                .get(&m.id)
+                .cloned()
+                .unwrap_or_else(|| format!("id:{}", m.id));
+            match seen.get(&key) {
+                Some(&i) => {
+                    let mut merge = Flags::FLAGGED.0 | Flags::ANSWERED.0;
+                    if !inbox_folders.contains(&out[i].folder_id) {
+                        merge |= Flags::SEEN.0;
+                    }
+                    out[i].flags = Flags(out[i].flags.0 | (m.flags.0 & merge));
+                }
+                None => {
+                    seen.insert(key, out.len());
+                    out.push(m);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn dedup_keys(&self, thread_id: i64) -> Result<std::collections::HashMap<i64, String>> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT id, dedup_key FROM messages WHERE thread_id=?1")?;
+            let rows = st.query_map([thread_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+            })?;
+            let mut map = std::collections::HashMap::new();
+            for row in rows {
+                let (id, key) = row?;
+                map.insert(id, key.unwrap_or_else(|| format!("id:{id}")));
+            }
+            Ok(map)
+        })
+    }
+
+    /// Stable identity of a message across its copies.
+    pub fn dedup_key(&self, message_id: i64) -> Result<String> {
+        self.with(|c| {
+            Ok(c.query_row(
+                "SELECT COALESCE(dedup_key, 'id:' || id) FROM messages WHERE id=?1",
+                [message_id],
+                |r| r.get(0),
+            )?)
         })
     }
 
@@ -975,6 +1150,15 @@ impl Store {
         let role = q.folder.unwrap_or(FolderRole::Inbox);
         if role == FolderRole::Starred {
             conds.push("(m.flags & 2) != 0".into());
+        } else if role == FolderRole::Archive {
+            // Gmail has no Archive folder: an archived conversation is one in All Mail with no
+            // message left in the inbox (or in Spam or Trash).
+            conds.push(
+                "(f.role = 'archive' OR (f.role = 'all' AND NOT EXISTS (
+                   SELECT 1 FROM messages mi JOIN folders fi ON fi.id = mi.folder_id
+                   WHERE mi.thread_id = m.thread_id AND fi.role = 'inbox')))"
+                    .into(),
+            );
         } else {
             conds.push("f.role = ?".into());
             p.push(role.as_str().to_string().into());
@@ -1158,12 +1342,12 @@ impl Store {
         self.with(|c| {
             let n: i64 = match account_id {
                 Some(id) => c.query_row(
-                    "SELECT COUNT(*) FROM messages m JOIN folders f ON f.id=m.folder_id WHERE m.account_id=?1 AND f.role='inbox' AND (m.flags & 1)=0",
+                    "SELECT COUNT(DISTINCT m.dedup_key) FROM messages m JOIN folders f ON f.id=m.folder_id WHERE m.account_id=?1 AND f.role='inbox' AND (m.flags & 1)=0",
                     [id],
                     |r| r.get(0),
                 )?,
                 None => c.query_row(
-                    "SELECT COUNT(*) FROM messages m JOIN folders f ON f.id=m.folder_id WHERE f.role='inbox' AND (m.flags & 1)=0",
+                    "SELECT COUNT(DISTINCT m.account_id || '|' || m.dedup_key) FROM messages m JOIN folders f ON f.id=m.folder_id WHERE f.role='inbox' AND (m.flags & 1)=0",
                     [],
                     |r| r.get(0),
                 )?,
@@ -1702,5 +1886,52 @@ mod tests {
         assert_eq!(hits("paid"), 1);
         assert_eq!(hits("from:hetzner"), 1);
         assert_eq!(hits("z@x.dev"), 1);
+    }
+
+    #[test]
+    fn separate_copies_keep_their_own_read_state() {
+        // Not Gmail: a message to yourself is unread in INBOX and read in Sent.
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let inbox = s.upsert_folder(a.id, "INBOX", FolderRole::Inbox).unwrap();
+        let sent = s.upsert_folder(a.id, "Sent", FolderRole::Sent).unwrap();
+        let m = msg("Note to self", "self@x.dev", &[], "Me", "remember", 1);
+        let id = s
+            .upsert_message(a.id, inbox.id, 1, Flags::default(), 1, &m)
+            .unwrap();
+        s.upsert_message(a.id, sent.id, 1, Flags::SEEN, 1, &m)
+            .unwrap();
+        let thread = s.message(id).unwrap().thread_id;
+        assert_eq!(s.thread(thread).unwrap().unread_count, 1);
+        assert_eq!(s.thread(thread).unwrap().msg_count, 1);
+        let shown = s.thread_messages(thread).unwrap();
+        assert_eq!(shown.len(), 1);
+        assert!(shown[0].flags.is_unread());
+        assert_eq!(s.unread_count(Some(a.id)).unwrap(), 1);
+    }
+
+    #[test]
+    fn copies_cached_before_gmail_ids_join_the_gmail_key() {
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let all = s
+            .upsert_folder(a.id, "[Gmail]/All Mail", FolderRole::All)
+            .unwrap();
+        let inbox = s.upsert_folder(a.id, "INBOX", FolderRole::Inbox).unwrap();
+        let m = msg("Plan", "plan@x.dev", &[], "Anna", "a", 1);
+        let old = s
+            .upsert_message(a.id, all.id, 7, Flags::SEEN, 1, &m)
+            .unwrap(); // cached by v6
+        let new = s
+            .upsert_fetched(a.id, inbox.id, 3, Flags::SEEN, 1, Some(42), &m)
+            .unwrap();
+        assert_eq!(s.dedup_key(old).unwrap(), "gm:42");
+        assert_eq!(s.dedup_key(new).unwrap(), "gm:42");
+        assert_eq!(
+            s.thread(s.message(new).unwrap().thread_id)
+                .unwrap()
+                .msg_count,
+            1
+        );
     }
 }

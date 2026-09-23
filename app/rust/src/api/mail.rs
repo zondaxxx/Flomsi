@@ -268,12 +268,20 @@ pub fn remove_account(id: i64) -> Result<()> {
     Ok(core()?.remove_account(id)?)
 }
 
+/// Folders one can open or move mail into (`\\Noselect` containers such as `[Gmail]` left
+/// out), with names decoded from IMAP's modified UTF-7 for display.
 pub fn list_folders(account_id: i64) -> Result<Vec<FolderDto>> {
     Ok(core()?
         .store()
         .folders(account_id)?
         .into_iter()
-        .map(|f| FolderDto { id: f.id, account_id: f.account_id, name: f.remote_name, role: f.role.as_str().to_string() })
+        .filter(|f| f.selectable)
+        .map(|f| FolderDto {
+            id: f.id,
+            account_id: f.account_id,
+            name: mailcore::provider::imap::decode_folder_name(&f.remote_name),
+            role: f.role.as_str().to_string(),
+        })
         .collect())
 }
 
@@ -376,12 +384,14 @@ pub fn unread_count() -> Result<u32> {
 
 // ---------- actions (local-first, replayed on sync) ----------
 
-pub fn archive_thread(thread_id: i64) -> Result<()> {
-    Ok(core()?.actions().archive(thread_id)?)
+/// Returns how many messages actually left the inbox (0: it was not there).
+pub fn archive_thread(thread_id: i64) -> Result<u32> {
+    Ok(core()?.actions().archive(thread_id)? as u32)
 }
 
-pub fn trash_thread(thread_id: i64) -> Result<()> {
-    Ok(core()?.actions().trash(thread_id)?)
+/// Returns how many messages moved to Trash (0: already there, or Sent-only elsewhere).
+pub fn trash_thread(thread_id: i64) -> Result<u32> {
+    Ok(core()?.actions().trash(thread_id)? as u32)
 }
 
 pub fn mark_read(thread_id: i64, read: bool) -> Result<()> {

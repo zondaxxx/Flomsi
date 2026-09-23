@@ -155,14 +155,28 @@ class ShellActions {
         );
   });
 
+  /// Archive or delete the selected thread and say what really happened: from a view
+  /// outside the inbox there may be nothing to archive.
   Future<void> archiveSelected() async {
-    await withSelected(ref.read(repositoryProvider).archive, advance: true);
-    ref.read(noticeProvider.notifier).show('Archived');
+    var n = 0;
+    await withSelected(
+      (id) async => n = await ref.read(repositoryProvider).archive(id),
+      advance: true,
+    );
+    ref
+        .read(noticeProvider.notifier)
+        .show(n > 0 ? 'Archived' : 'Not in the inbox');
   }
 
   Future<void> trashSelected() async {
-    await withSelected(ref.read(repositoryProvider).trash, advance: true);
-    ref.read(noticeProvider.notifier).show('Deleted');
+    var n = 0;
+    await withSelected(
+      (id) async => n = await ref.read(repositoryProvider).trash(id),
+      advance: true,
+    );
+    ref
+        .read(noticeProvider.notifier)
+        .show(n > 0 ? 'Deleted' : 'Nothing to delete');
   }
 
   Map<String, ActionHandler> keymap() {
@@ -214,14 +228,14 @@ class ShellActions {
         title: 'Archive',
         group: 'Message',
         hint: 'e',
-        run: () => withSelected(repo.archive, advance: true),
+        run: archiveSelected,
       ),
       Command(
         id: 'trash',
         title: 'Delete',
         group: 'Message',
         hint: '#',
-        run: () => withSelected(repo.trash, advance: true),
+        run: trashSelected,
       ),
       Command(
         id: 'star',

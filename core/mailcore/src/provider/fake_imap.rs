@@ -18,6 +18,8 @@ pub struct FakeMsg {
     pub uid: u32,
     pub flags: Vec<String>,
     pub raw: Vec<u8>,
+    /// X-GM-MSGID: the same number for a message's copy in every Gmail label.
+    pub gm: u64,
 }
 
 #[derive(Debug)]
@@ -36,7 +38,14 @@ pub struct FakeState {
     pub version: u64,
     /// Commands as received (LOGIN arguments left out).
     pub log: Vec<String>,
+    /// Behave like Gmail: X-GM-EXT-1, labels as folders over one message store.
+    pub gmail: bool,
+    next_gm: u64,
 }
+
+pub const GMAIL_ALL: &str = "[Gmail]/All Mail";
+pub const GMAIL_TRASH: &str = "[Gmail]/Trash";
+pub const GMAIL_SPAM: &str = "[Gmail]/Spam";
 
 impl FakeState {
     pub fn add_box(&mut self, name: &str, special: Option<&'static str>) {
@@ -53,16 +62,55 @@ impl FakeState {
     }
 
     pub fn deliver(&mut self, name: &str, raw: &[u8], flags: &[&str]) -> u32 {
+        self.next_gm += 1;
+        let gm = self.next_gm;
+        self.put(name, raw, flags.iter().map(|f| f.to_string()).collect(), gm)
+    }
+
+    fn put(&mut self, name: &str, raw: &[u8], flags: Vec<String>, gm: u64) -> u32 {
         let b = self.boxes.get_mut(name).expect("mailbox exists");
         let uid = b.next_uid;
         b.next_uid += 1;
         b.msgs.push(FakeMsg {
             uid,
-            flags: flags.iter().map(|f| f.to_string()).collect(),
+            flags,
             raw: raw.to_vec(),
+            gm,
         });
         self.version += 1;
         uid
+    }
+
+    /// Gmail's folder tree: INBOX plus `[Gmail]/…` special-use boxes under a `\\Noselect` parent.
+    pub fn gmail_setup(&mut self) {
+        self.gmail = true;
+        self.add_box("INBOX", None);
+        self.add_box("[Gmail]", Some("\\Noselect"));
+        self.add_box(GMAIL_ALL, Some("\\All"));
+        self.add_box("[Gmail]/Sent Mail", Some("\\Sent"));
+        self.add_box(GMAIL_SPAM, Some("\\Junk"));
+        self.add_box(GMAIL_TRASH, Some("\\Trash"));
+    }
+
+    /// One Gmail message: a copy in All Mail and in each label box, one X-GM-MSGID.
+    pub fn deliver_gmail(&mut self, labels: &[&str], raw: &[u8], flags: &[&str]) -> u64 {
+        self.next_gm += 1;
+        let gm = self.next_gm;
+        let flags: Vec<String> = flags.iter().map(|f| f.to_string()).collect();
+        self.put(GMAIL_ALL, raw, flags.clone(), gm);
+        for l in labels {
+            self.put(l, raw, flags.clone(), gm);
+        }
+        gm
+    }
+
+    /// Boxes holding a copy of Gmail message `gm`.
+    pub fn where_is(&self, gm: u64) -> Vec<String> {
+        self.boxes
+            .iter()
+            .filter(|(_, b)| b.msgs.iter().any(|m| m.gm == gm))
+            .map(|(n, _)| n.clone())
+            .collect()
     }
 
     pub fn remove(&mut self, name: &str, uid: u32) {
@@ -128,6 +176,28 @@ impl FakeImap {
 
     pub fn with<T>(&self, f: impl FnOnce(&mut FakeState) -> T) -> T {
         f(&mut self.state.lock().unwrap())
+    }
+}
+
+/// Gmail's MOVE: the message already left `src` (All Mail keeps it, except into Trash or
+/// Spam). Into All Mail it only drops the source label; into Trash or Spam it leaves every
+/// label; into another label it adds that label.
+fn gmail_move(st: &mut FakeState, src: &str, dest: &str, m: FakeMsg) {
+    if src == GMAIL_ALL && dest != GMAIL_TRASH && dest != GMAIL_SPAM {
+        let all = st.boxes.get_mut(GMAIL_ALL).expect("All Mail");
+        all.msgs.push(m.clone());
+        all.msgs.sort_by_key(|x| x.uid);
+    }
+    if dest == GMAIL_ALL {
+        return;
+    }
+    if dest == GMAIL_TRASH || dest == GMAIL_SPAM {
+        for b in st.boxes.values_mut() {
+            b.msgs.retain(|x| x.gm != m.gm);
+        }
+    }
+    if !st.boxes[dest].msgs.iter().any(|x| x.gm == m.gm) {
+        st.put(dest, &m.raw.clone(), m.flags.clone(), m.gm);
     }
 }
 
@@ -217,9 +287,12 @@ fn in_set(set: &str, uid: u32, max: u32) -> bool {
     })
 }
 
-fn fetch_line(seq: usize, m: &FakeMsg, body: bool) -> Vec<u8> {
+fn fetch_line(seq: usize, m: &FakeMsg, body: bool, gm: bool) -> Vec<u8> {
     let mut out =
         format!("* {seq} FETCH (UID {} FLAGS ({})", m.uid, m.flags.join(" ")).into_bytes();
+    if gm {
+        out.extend_from_slice(format!(" X-GM-MSGID {}", m.gm).as_bytes());
+    }
     if body {
         out.extend_from_slice(
             format!(
@@ -246,9 +319,14 @@ where
     let (r, w) = tokio::io::split(stream);
     let mut r = BufReader::new(r);
     let w: Writer<S> = Arc::new(tokio::sync::Mutex::new(w));
+    let caps = if state.lock().unwrap().gmail {
+        "IMAP4rev1 IDLE MOVE UIDPLUS X-GM-EXT-1"
+    } else {
+        "IMAP4rev1 IDLE MOVE UIDPLUS"
+    };
     send(
         &w,
-        b"* OK [CAPABILITY IMAP4rev1 IDLE MOVE UIDPLUS] fake ready\r\n",
+        format!("* OK [CAPABILITY {caps}] fake ready\r\n").as_bytes(),
     )
     .await?;
     let mut selected: Option<String> = None;
@@ -286,10 +364,7 @@ where
                 send(&w, reply.as_bytes()).await?;
             }
             "CAPABILITY" => {
-                let reply = format!(
-                    "* CAPABILITY IMAP4rev1 IDLE MOVE UIDPLUS\r\n{}",
-                    ok("CAPABILITY")
-                );
+                let reply = format!("* CAPABILITY {caps}\r\n{}", ok("CAPABILITY"));
                 send(&w, reply.as_bytes()).await?;
             }
             "NOOP" => send(&w, ok("NOOP").as_bytes()).await?,
@@ -349,11 +424,12 @@ where
                         "FETCH" => {
                             let items = args[3..].join(" ").to_ascii_uppercase();
                             let body = items.contains("BODY.PEEK[]") || items.contains("BODY[]");
+                            let gm = items.contains("X-GM-MSGID");
                             let mut out = Vec::new();
                             if max > 0 {
                                 for (i, m) in b.msgs.iter().enumerate() {
                                     if in_set(&set, m.uid, max) {
-                                        out.extend(fetch_line(i + 1, m, body));
+                                        out.extend(fetch_line(i + 1, m, body, gm));
                                     }
                                 }
                             }
@@ -383,7 +459,25 @@ where
                                     m.flags = flags.clone();
                                 }
                                 if !op.contains("SILENT") {
-                                    out.extend(fetch_line(i + 1, m, false));
+                                    out.extend(fetch_line(i + 1, m, false, false));
+                                }
+                            }
+                            if st.gmail {
+                                // Gmail: flags belong to the message, in every label.
+                                let changed: Vec<(u64, Vec<String>)> = st.boxes[&name]
+                                    .msgs
+                                    .iter()
+                                    .filter(|m| in_set(&set, m.uid, max))
+                                    .map(|m| (m.gm, m.flags.clone()))
+                                    .collect();
+                                for bx in st.boxes.values_mut() {
+                                    for m in bx.msgs.iter_mut() {
+                                        if let Some((_, f)) =
+                                            changed.iter().find(|(g, _)| *g == m.gm)
+                                        {
+                                            m.flags = f.clone();
+                                        }
+                                    }
                                 }
                             }
                             st.version += 1;
@@ -409,20 +503,28 @@ where
                                     format!("* {} EXPUNGE\r\n", i + 1).as_bytes(),
                                 );
                             }
-                            match st.boxes.get_mut(&dest) {
-                                Some(d) => {
-                                    for (_, mut m) in moving {
-                                        m.uid = d.next_uid;
-                                        d.next_uid += 1;
-                                        d.msgs.push(m);
-                                    }
-                                    st.version += 1;
-                                    out.extend_from_slice(ok("MOVE").as_bytes());
+                            if !st.boxes.contains_key(&dest) {
+                                // Nothing moved: put the source back as it was.
+                                let src = st.boxes.get_mut(&name).expect("selected box");
+                                src.msgs.extend(moving.into_iter().map(|(_, m)| m));
+                                src.msgs.sort_by_key(|m| m.uid);
+                                out = format!("{tag} NO [TRYCREATE] no such mailbox\r\n")
+                                    .into_bytes();
+                            } else if st.gmail {
+                                for (_, m) in moving {
+                                    gmail_move(&mut st, &name, &dest, m);
                                 }
-                                None => {
-                                    out = format!("{tag} NO [TRYCREATE] no such mailbox\r\n")
-                                        .into_bytes();
+                                st.version += 1;
+                                out.extend_from_slice(ok("MOVE").as_bytes());
+                            } else {
+                                let d = st.boxes.get_mut(&dest).expect("checked");
+                                for (_, mut m) in moving {
+                                    m.uid = d.next_uid;
+                                    d.next_uid += 1;
+                                    d.msgs.push(m);
                                 }
+                                st.version += 1;
+                                out.extend_from_slice(ok("MOVE").as_bytes());
                             }
                             out
                         }
@@ -741,6 +843,368 @@ mod tests {
         let search = |q: &str| store.threads(&crate::search::Query::parse(q), 10).unwrap();
         assert_eq!(search("green").len(), 1);
         assert!(search("boarding").is_empty());
+    }
+
+    const OLD: &[u8] = b"From: Bank <no-reply@bank.example>\r\nTo: z@gmail.com\r\nSubject: Statement\r\nMessage-ID: <stmt@bank.example>\r\nDate: Sun, 20 Sep 2026 09:00:00 +0300\r\n\r\nYour statement is ready.\r\n";
+
+    struct Gmail {
+        fake: FakeImap,
+        store: Arc<Store>,
+        engine: SyncEngine,
+        account: crate::model::Account,
+        invoice: u64,
+        statement: u64,
+    }
+
+    async fn gmail() -> Gmail {
+        let fake = FakeImap::start("z@gmail.com", "secret").await;
+        let (invoice, statement) = fake.with(|s| {
+            s.gmail_setup();
+            s.add_box("Receipts", None);
+            s.deliver_gmail(&["INBOX"], PLAIN, &["\\Seen"]);
+            let invoice = s.deliver_gmail(&["INBOX"], INVOICE_EML, &[]);
+            let statement = s.deliver_gmail(&[], OLD, &["\\Seen"]); // archived
+            s.deliver_gmail(&["[Gmail]/Sent Mail"], REPLY, &["\\Seen"]);
+            (invoice, statement)
+        });
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let account = store
+            .add_account(&NewAccount {
+                kind: ProviderKind::Gmail,
+                email: "z@gmail.com".into(),
+                display_name: String::new(),
+                imap_host: "localhost".into(),
+                imap_port: fake.port,
+                smtp_host: String::new(),
+                smtp_port: 0,
+                auth: AuthKind::Password,
+            })
+            .unwrap();
+        let engine = SyncEngine::new(store.clone());
+        let g = Gmail {
+            fake,
+            store,
+            engine,
+            account,
+            invoice,
+            statement,
+        };
+        g.sync().await;
+        g
+    }
+
+    impl Gmail {
+        async fn sync(&self) -> crate::sync::SyncReport {
+            let mut p = ImapProvider::connect_trusting(
+                "localhost",
+                self.fake.port,
+                "z@gmail.com",
+                Credential::Password("secret".into()),
+                std::slice::from_ref(&self.fake.cert),
+            )
+            .await
+            .unwrap();
+            assert!(p.is_gmail());
+            let r = self
+                .engine
+                .sync_account(&self.account, &mut p, &SyncOptions::default())
+                .await
+                .unwrap();
+            p.logout().await.unwrap();
+            r
+        }
+
+        fn subjects(&self, q: &str) -> Vec<String> {
+            self.store
+                .threads(&crate::search::Query::parse(q), 20)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.subject)
+                .collect()
+        }
+
+        fn thread_of(&self, message_id: &str) -> i64 {
+            self.store
+                .messages_by_message_id(self.account.id, message_id)
+                .unwrap()[0]
+                .thread_id
+        }
+    }
+
+    #[tokio::test]
+    async fn gmail_shows_one_row_per_message() {
+        let g = gmail().await;
+        let review = g.thread_of("review@studio.dev");
+        // PLAIN sits in INBOX and All Mail, REPLY in Sent and All Mail: still two messages.
+        assert_eq!(g.store.thread(review).unwrap().msg_count, 2);
+        assert_eq!(g.store.thread_messages(review).unwrap().len(), 2);
+        assert_eq!(g.store.unread_count(Some(g.account.id)).unwrap(), 1);
+        let mut inbox = g.subjects("");
+        inbox.sort();
+        assert_eq!(inbox, vec!["Design review", "Invoice for September"]);
+        assert_eq!(g.subjects("in:archive"), vec!["Statement"]);
+        let copies = g
+            .store
+            .messages_by_message_id(g.account.id, "inv@studio.dev")
+            .unwrap();
+        assert_eq!(copies.len(), 2);
+        assert!(g.store.dedup_key(copies[0].id).unwrap().starts_with("gm:"));
+        // The [Gmail] container is known but never offered as a target.
+        let parent = g
+            .store
+            .folders(g.account.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "[Gmail]")
+            .unwrap();
+        assert!(!parent.selectable);
+    }
+
+    #[tokio::test]
+    async fn gmail_archive_delete_and_labels_follow_gmail_rules() {
+        let g = gmail().await;
+        let actions = Actions { store: &g.store };
+
+        // Archive = drop the Inbox label; the All Mail copy stays.
+        actions.archive(g.thread_of("inv@studio.dev")).unwrap();
+        g.sync().await;
+        g.fake
+            .with(|s| assert_eq!(s.where_is(g.invoice), vec![GMAIL_ALL]));
+        assert!(!g
+            .subjects("")
+            .contains(&"Invoice for September".to_string()));
+        let mut archived = g.subjects("in:archive");
+        archived.sort();
+        assert_eq!(archived, vec!["Invoice for September", "Statement"]);
+        assert_eq!(
+            g.store
+                .thread(g.thread_of("inv@studio.dev"))
+                .unwrap()
+                .msg_count,
+            1
+        );
+
+        // A label from All Mail only adds the label.
+        let receipts = g
+            .store
+            .folders(g.account.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Receipts")
+            .unwrap();
+        assert_eq!(
+            actions
+                .move_to_folder(g.thread_of("inv@studio.dev"), receipts.id)
+                .unwrap(),
+            1
+        );
+        g.sync().await;
+        g.fake.with(|s| {
+            let mut at = s.where_is(g.invoice);
+            at.sort();
+            assert_eq!(at, vec!["Receipts", GMAIL_ALL]);
+        });
+        assert!(g
+            .subjects("in:archive")
+            .contains(&"Invoice for September".to_string()));
+
+        // Delete from the archive: one MOVE takes it out of every label.
+        actions.trash(g.thread_of("stmt@bank.example")).unwrap();
+        g.sync().await;
+        g.fake
+            .with(|s| assert_eq!(s.where_is(g.statement), vec![GMAIL_TRASH]));
+        assert!(!g.subjects("in:archive").contains(&"Statement".to_string()));
+        assert_eq!(g.subjects("in:trash"), vec!["Statement"]);
+    }
+
+    #[tokio::test]
+    async fn gmail_flags_go_once_per_message() {
+        let g = gmail().await;
+        let before = g.fake.with(|s| s.log.len());
+        Actions { store: &g.store }
+            .mark_read(g.thread_of("review@studio.dev"), false)
+            .unwrap();
+        g.sync().await;
+        let stores = g.fake.with(|s| {
+            s.log[before..]
+                .iter()
+                .filter(|l| l.to_ascii_uppercase().starts_with("UID STORE"))
+                .count()
+        });
+        assert_eq!(stores, 2, "one STORE per message, not per label copy");
+        assert!(g
+            .store
+            .messages_by_message_id(g.account.id, "review@studio.dev")
+            .unwrap()
+            .iter()
+            .all(|m| !m.flags.contains(Flags::SEEN)));
+        assert_eq!(g.store.unread_count(Some(g.account.id)).unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_rebuilt_folder_downloads_a_window_not_everything() {
+        let fake = FakeImap::start("z@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            for i in 0..260 {
+                let raw = format!(
+                    "From: a@x.dev\r\nSubject: n{i}\r\nMessage-ID: <n{i}@x.dev>\r\nDate: Mon, 21 Sep 2026 10:00:00 +0300\r\n\r\nbody\r\n"
+                );
+                s.deliver("INBOX", raw.as_bytes(), &[]);
+            }
+        });
+        let (_store, engine, account) = setup(&fake);
+        let opts = SyncOptions::default();
+        let mut p = connect(&fake, "secret").await.unwrap();
+        let first = engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        assert_eq!(first.fetched, 200);
+        fake.with(|s| {
+            assert!(
+                !s.log.iter().any(|l| l.contains("1:* (UID FLAGS)")),
+                "no full flag listing on an empty cache"
+            );
+        });
+        fake.with(|s| s.renumber("INBOX"));
+        let again = engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        p.logout().await.unwrap();
+        assert_eq!(again.fetched, 200);
+    }
+
+    #[tokio::test]
+    async fn trash_and_spam_keep_their_own_conversations() {
+        let g = gmail().await;
+        let deleted_reply = b"From: Anna Sokolova <anna@studio.dev>\r\nTo: z@gmail.com\r\nSubject: Re: Design review\r\nMessage-ID: <deleted@studio.dev>\r\nIn-Reply-To: <review@studio.dev>\r\nReferences: <review@studio.dev>\r\nDate: Mon, 21 Sep 2026 11:00:00 +0300\r\n\r\nnever mind\r\n";
+        let spam = b"From: Prize <win@spam.example>\r\nTo: z@gmail.com\r\nSubject: Re: Design review\r\nMessage-ID: <spam@spam.example>\r\nDate: Mon, 21 Sep 2026 12:00:00 +0300\r\n\r\nclaim now\r\n";
+        g.fake.with(|s| {
+            s.deliver(GMAIL_TRASH, deleted_reply, &["\\Seen"]);
+            s.deliver(GMAIL_SPAM, spam, &[]);
+        });
+        g.sync().await;
+        let review = g.thread_of("review@studio.dev");
+        assert_eq!(g.store.thread(review).unwrap().msg_count, 2);
+        assert!(g
+            .store
+            .thread_messages(review)
+            .unwrap()
+            .iter()
+            .all(|m| m.message_id.as_deref() != Some("deleted@studio.dev")));
+        assert_eq!(g.subjects("in:trash"), vec!["Re: Design review"]);
+        assert_eq!(g.subjects("in:junk"), vec!["Re: Design review"]);
+        assert_ne!(g.thread_of("spam@spam.example"), review);
+    }
+
+    #[tokio::test]
+    async fn a_stale_inbox_uid_does_not_lose_a_gmail_delete() {
+        let g = gmail().await;
+        // Archived on the phone; this device has not synced since.
+        g.fake.with(|s| {
+            let uid = s
+                .msgs("INBOX")
+                .iter()
+                .find(|m| m.gm == g.invoice)
+                .unwrap()
+                .uid;
+            s.remove("INBOX", uid);
+        });
+        Actions { store: &g.store }
+            .trash(g.thread_of("inv@studio.dev"))
+            .unwrap();
+        g.sync().await;
+        g.fake
+            .with(|s| assert_eq!(s.where_is(g.invoice), vec![GMAIL_TRASH]));
+        assert_eq!(g.subjects("in:trash"), vec!["Invoice for September"]);
+    }
+
+    #[tokio::test]
+    async fn a_conversation_restores_from_trash() {
+        let g = gmail().await;
+        let actions = Actions { store: &g.store };
+        actions.trash(g.thread_of("stmt@bank.example")).unwrap();
+        g.sync().await;
+        let inbox = g
+            .store
+            .folder_by_role(g.account.id, FolderRole::Inbox)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            actions
+                .move_to_folder(g.thread_of("stmt@bank.example"), inbox.id)
+                .unwrap(),
+            1
+        );
+        g.sync().await;
+        g.fake.with(|s| {
+            let mut at = s.where_is(g.statement);
+            at.sort();
+            assert_eq!(at, vec!["INBOX".to_string()]);
+        });
+        assert!(g.subjects("").contains(&"Statement".to_string()));
+    }
+
+    #[tokio::test]
+    async fn older_roots_join_replies_and_holes_fill_in() {
+        let fake = FakeImap::start("z@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.add_box("&BBoEPgRABDcEOAQ9BDA-", None); // "Корзина", no special-use flag
+            s.deliver("INBOX", PLAIN, &[]);
+            for i in 0..55 {
+                let raw = format!(
+                    "From: a@x.dev\r\nSubject: filler {i}\r\nMessage-ID: <f{i}@x.dev>\r\nDate: Mon, 21 Sep 2026 10:00:00 +0300\r\n\r\nx\r\n"
+                );
+                s.deliver("INBOX", raw.as_bytes(), &[]);
+            }
+            s.deliver("INBOX", REPLY, &[]);
+        });
+        let (store, engine, account) = setup(&fake);
+        let opts = SyncOptions::default();
+        let mut p = connect(&fake, "secret").await.unwrap();
+        engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        let review = store
+            .messages_by_message_id(account.id, "review@studio.dev")
+            .unwrap()[0]
+            .thread_id;
+        assert_eq!(
+            store.thread(review).unwrap().msg_count,
+            2,
+            "root and reply in one thread"
+        );
+        assert!(store
+            .folder_by_role(account.id, FolderRole::Trash)
+            .unwrap()
+            .is_some());
+
+        let inbox = store
+            .folder_by_role(account.id, FolderRole::Inbox)
+            .unwrap()
+            .unwrap();
+        store.delete_by_uid(inbox.id, 5).unwrap(); // a lost row
+        let again = engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        p.logout().await.unwrap();
+        assert_eq!(again.fetched, 1);
+        assert!(store.uids(inbox.id).unwrap().contains(&5));
+    }
+
+    #[tokio::test]
+    async fn archive_without_an_archive_folder_is_a_no_op_outside_the_inbox() {
+        let fake = FakeImap::start("z@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.add_box("Sent", Some("\\Sent"));
+            s.deliver("Sent", REPLY, &["\\Seen"]);
+        });
+        let (store, engine, account) = setup(&fake);
+        let mut p = connect(&fake, "secret").await.unwrap();
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        p.logout().await.unwrap();
+        let thread = store
+            .messages_by_message_id(account.id, "reply@x.dev")
+            .unwrap()[0]
+            .thread_id;
+        assert_eq!(Actions { store: &store }.archive(thread).unwrap(), 0);
     }
 
     #[tokio::test]
