@@ -1168,7 +1168,22 @@ impl Store {
 
         let now = Utc::now().timestamp();
         let role = q.folder.unwrap_or(FolderRole::Inbox);
-        if role == FolderRole::Starred {
+        // Looking for something (words, a sender, a date, a star, a label) without naming a
+        // folder searches every folder but Spam and Trash, the way mail apps do.
+        let searching = q.folder.is_none()
+            && !q.snoozed
+            && (!q.text.is_empty()
+                || q.from.is_some()
+                || q.to.is_some()
+                || q.subject.is_some()
+                || q.has_attachment
+                || q.before.is_some()
+                || q.after.is_some()
+                || q.starred
+                || q.label.is_some());
+        if searching {
+            conds.push("f.role NOT IN ('junk', 'trash')".into());
+        } else if role == FolderRole::Starred {
             conds.push("(m.flags & 2) != 0".into());
         } else if role == FolderRole::Archive {
             // Gmail has no Archive folder: an archived conversation is one in All Mail with no
@@ -1233,7 +1248,7 @@ impl Store {
         // A thread that woke up sorts by its wake time, so it comes back on top.
         let snooze_filter = if q.snoozed {
             "AND EXISTS (SELECT 1 FROM snoozes s WHERE s.thread_id = t.id AND s.until > ?)"
-        } else if role == FolderRole::Inbox && q.folder.is_none() {
+        } else if role == FolderRole::Inbox && q.folder.is_none() && !searching {
             "AND NOT EXISTS (SELECT 1 FROM snoozes s WHERE s.thread_id = t.id AND s.until > ?)"
         } else {
             "AND ? IS NOT NULL"
@@ -1531,6 +1546,51 @@ mod tests {
         assert_eq!(fts[0].subject, "Design review");
         let unread = s.threads(&Query::parse("is:unread"), 50).unwrap();
         assert_eq!(unread.len(), 2);
+
+        // Search reaches past the inbox, but not into Spam or Trash.
+        let archive = s
+            .upsert_folder(a.id, "Archive", FolderRole::Archive)
+            .unwrap();
+        let junk = s.upsert_folder(a.id, "Junk", FolderRole::Junk).unwrap();
+        s.upsert_message(
+            a.id,
+            archive.id,
+            1,
+            Flags::SEEN,
+            10,
+            &msg(
+                "Old glass notes",
+                "m4@x.dev",
+                &[],
+                "Anna",
+                "glass from 2025",
+                3,
+            ),
+        )
+        .unwrap();
+        s.upsert_message(
+            a.id,
+            junk.id,
+            1,
+            Flags::default(),
+            10,
+            &msg("Cheap glass", "m5@x.dev", &[], "Spammer", "glass deals", 4),
+        )
+        .unwrap();
+        let subjects = |q: &str| -> Vec<String> {
+            s.threads(&Query::parse(q), 50)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.subject)
+                .collect()
+        };
+        assert_eq!(subjects("glass"), ["Old glass notes", "Design review"]);
+        assert_eq!(subjects("from:anna"), ["Old glass notes", "Design review"]);
+        assert_eq!(subjects("glass in:inbox"), ["Design review"]);
+        assert_eq!(subjects("glass in:junk"), ["Cheap glass"]);
+        // Plain filters and the inbox itself stay in the inbox.
+        assert_eq!(subjects("").len(), 2);
+        assert_eq!(subjects("is:unread").len(), 2);
         assert_eq!(s.unread_count(None).unwrap(), 2);
 
         s.set_flags_by_uid(inbox.id, 1, Flags::SEEN).unwrap();

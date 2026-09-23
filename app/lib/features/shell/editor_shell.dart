@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
 import '../../keymap/key_scope.dart';
+import '../../keymap/keymap.dart';
 import '../../state/appearance.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
@@ -187,9 +188,9 @@ class _TopBar extends ConsumerWidget {
     final s = context.s;
     final query = ref.watch(queryProvider);
     final drafts = query.trim() == 'in:drafts'
-        ? ref.watch(draftsProvider).asData?.value.length ?? 0
+        ? ref.watch(draftsProvider).value?.length ?? 0
         : null;
-    final threads = ref.watch(threadsProvider).asData?.value;
+    final threads = ref.watch(threadsProvider).value;
     final unread = threads?.where((t) => t.unread).length ?? 0;
     final total = threads?.length ?? 0;
     final count = drafts != null
@@ -262,7 +263,10 @@ class _TopBar extends ConsumerWidget {
                 height: 28,
                 fontSize: 13,
                 leading: Icon(CupertinoIcons.search, size: 13, color: s.fg3),
-                trailing: const KeyHint('⌘K'),
+                trailing: switch (keyHintFor(ref, 'palette.open')) {
+                  final k? => KeyHint(k),
+                  null => null,
+                },
                 onChanged: (v) => listKey.currentState?.onSearchChanged(v),
                 onSubmitted: (_) => blurTextInput(),
               ),
@@ -404,10 +408,9 @@ class _Sidebar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = context.s;
-    final folders =
-        ref.watch(foldersProvider).asData?.value ?? const <Folder>[];
+    final folders = ref.watch(foldersProvider).value ?? const <Folder>[];
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
-    final labels = ref.watch(labelsProvider).asData?.value ?? const <Label>[];
+    final labels = ref.watch(labelsProvider).value ?? const <Label>[];
     final query = ref.watch(queryProvider);
     final entries = buildSidebar(
       folders: folders,
@@ -457,7 +460,10 @@ class _Sidebar extends ConsumerWidget {
               ),
               IconBtn(
                 icon: CupertinoIcons.gear,
-                label: 'Settings  ⌘,',
+                label: [
+                  'Settings',
+                  ?keyHintFor(ref, 'app.settings'),
+                ].join('  '),
                 size: 14,
                 onTap: () => showSettingsSheet(context),
               ),
@@ -552,16 +558,46 @@ class _SideRow extends StatelessWidget {
 class _StatusBar extends ConsumerWidget {
   const _StatusBar();
 
+  /// The few keys worth knowing in [scope], read from the active keymap.
+  static String _hints(Keymap? k, String scope) {
+    String? key(String action) => k?.hint(action, mac: isMac);
+    String line(List<(String?, String)> parts) => [
+      for (final (keys, what) in parts)
+        if (keys != null) '$keys $what',
+    ].join(' · ');
+    final next = key('nav.next'), prev = key('nav.prev');
+    return switch (scope) {
+      'search' => 'esc back · ↵ search',
+      'dialog' => 'esc cancel · ↵ confirm',
+      'compose' => line([
+        (key('compose.send') ?? modKey('↵'), 'send'),
+        (modKey('A', shift: true), 'attach'),
+        ('esc', 'close'),
+      ]),
+      'thread' => line([
+        (key('thread.reply'), 'reply'),
+        (key('thread.archive'), 'archive'),
+        (key('nav.back'), 'back'),
+      ]),
+      _ => line([
+        (next != null && prev != null ? '$next/$prev' : null, 'move'),
+        (key('thread.archive'), 'archive'),
+        (key('thread.reply'), 'reply'),
+        (key('search.focus'), 'search'),
+        (key('palette.open'), 'commands'),
+      ]),
+    };
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = context.s;
     final query = ref.watch(queryProvider);
-    final threads =
-        ref.watch(threadsProvider).asData?.value ?? const <Thread>[];
+    final threads = ref.watch(threadsProvider).value ?? const <Thread>[];
     final selected = ref.watch(selectedThreadIdProvider);
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final drafts = query.trim() == 'in:drafts'
-        ? ref.watch(draftsProvider).asData?.value.length
+        ? ref.watch(draftsProvider).value?.length
         : null;
     final pos = threads.indexWhere((t) => t.id == selected);
     final position = drafts != null
@@ -569,6 +605,8 @@ class _StatusBar extends ConsumerWidget {
         : (pos >= 0 ? '${pos + 1}/${threads.length}' : '${threads.length}');
     final scope = ref.watch(scopeProvider);
     final notice = ref.watch(noticeProvider);
+    final pending = ref.watch(pendingChordProvider);
+    final keymap = ref.watch(keymapProvider).value;
     return Container(
       height: 24,
       color: s.bg2,
@@ -621,7 +659,33 @@ class _StatusBar extends ConsumerWidget {
                       child: child,
                     ),
                   ),
-                  child: notice != null
+                  // A started sequence (g …) wins: the keys that follow matter now.
+                  child: pending != null && keymap != null
+                      ? Text.rich(
+                          TextSpan(
+                            children: [
+                              TextSpan(
+                                text: '$pending … ',
+                                style: mono(context, size: 11, color: s.blue),
+                              ),
+                              TextSpan(
+                                text: [
+                                  for (final (keys, action)
+                                      in keymap.continuations(pending, {
+                                        scope,
+                                        'global',
+                                      }))
+                                    '$keys ${Keymap.describe(action)}',
+                                ].join(' · '),
+                              ),
+                            ],
+                          ),
+                          key: ValueKey('pending:$pending'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: mono(context, size: 11),
+                        )
+                      : notice != null
                       ? Text(
                           notice,
                           key: ValueKey('notice:$notice'),
@@ -630,14 +694,8 @@ class _StatusBar extends ConsumerWidget {
                           style: mono(context, size: 11, color: s.fg),
                         )
                       : Text(
-                          switch (scope) {
-                            'search' => 'esc back · ↵ search',
-                            'compose' => '⌘↵ send · ⌘⇧A attach · esc close',
-                            'thread' => 'r reply · e archive · esc back',
-                            'dialog' => 'esc cancel · ↵ confirm',
-                            _ => 'j/k move · e archive · r reply · / search · ⌘K commands',
-                          },
-                          key: ValueKey('hints:$scope'),
+                          _hints(keymap, scope),
+                          key: ValueKey('hints:$scope:${keymap?.name}'),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: mono(context, size: 11),

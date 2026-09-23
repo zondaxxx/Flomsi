@@ -407,3 +407,48 @@ class Segmented<T> extends StatelessWidget {
     );
   }
 }
+
+/// Scrolls its child into view when it becomes selected: the row j/k or the arrow keys
+/// move to never sits outside the list.
+class RevealOnSelect extends StatefulWidget {
+  const RevealOnSelect({
+    super.key,
+    required this.selected,
+    required this.child,
+  });
+  final bool selected;
+  final Widget child;
+
+  @override
+  State<RevealOnSelect> createState() => _RevealOnSelectState();
+}
+
+class _RevealOnSelectState extends State<RevealOnSelect> {
+  // Only a change of selection scrolls: a row that is built while already selected
+  // (the list grew above it) stays where the reader left it.
+  @override
+  void didUpdateWidget(RevealOnSelect old) {
+    super.didUpdateWidget(old);
+    if (widget.selected && !old.selected) _reveal();
+  }
+
+  void _reveal() => WidgetsBinding.instance.addPostFrameCallback((_) async {
+    if (!mounted) return;
+    final duration = Motion.of(context, Motion.fast);
+    // Below the fold: bring it up to the bottom edge; above: down to the top edge.
+    await Scrollable.ensureVisible(
+      context,
+      duration: duration,
+      alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtEnd,
+    );
+    if (!mounted) return;
+    await Scrollable.ensureVisible(
+      context,
+      duration: duration,
+      alignmentPolicy: ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+    );
+  });
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}

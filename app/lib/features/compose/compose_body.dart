@@ -436,7 +436,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
               children: [
                 IconBtn(
                   icon: CupertinoIcons.paperclip,
-                  label: 'Attach files  ⌘⇧A',
+                  label: 'Attach files  ${modKey('A', shift: true)}',
                   onTap: _attach,
                 ),
                 const SizedBox(width: 8),
@@ -455,7 +455,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
                 const SizedBox(width: 8),
                 SmallButton(
                   label: _sending ? 'Sending…' : 'Send',
-                  hint: kTouch ? null : '⌘↵',
+                  hint: kTouch ? null : modKey('↵'),
                   primary: true,
                   height: 30,
                   onPressed: _sending ? null : send,

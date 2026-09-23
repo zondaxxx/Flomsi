@@ -50,13 +50,35 @@ class Keymap {
     return prettyChord(b.keys.first, mac: mac);
   }
 
+  /// Readable name of an action for hints: `nav.goInbox` → `inbox`.
+  static String describe(String action) =>
+      const {
+        'nav.goInbox': 'inbox',
+        'nav.goArchive': 'archive',
+        'nav.goStarred': 'starred',
+        'nav.goSent': 'sent',
+        'nav.goDrafts': 'drafts',
+      }[action] ??
+      action.split('.').last.replaceFirst(RegExp('^go'), '').toLowerCase();
+
+  /// What can follow a started sequence ([prefix] = `g`) in [scopes]: (`g i`, action).
+  List<(String, String)> continuations(String prefix, Set<String> scopes) => [
+    for (final b in bindings)
+      if (b.scopes.any(scopes.contains))
+        for (final k in b.keys)
+          if (k.startsWith('$prefix ')) (prettyChord(k), b.action),
+  ];
+
   static String prettyChord(String chord, {bool mac = true}) => chord
       .split(' ')
       .map(
         (part) => part
             .split('+')
             .map(
+              // With a modifier a letter is written as on the key cap: ⌘K.
               (k) => switch (k) {
+                _ when part.contains('+') && RegExp(r'^[a-z]$').hasMatch(k) =>
+                  k.toUpperCase(),
                 'mod' => mac ? '⌘' : 'ctrl',
                 'shift' => '⇧',
                 'alt' => mac ? '⌥' : 'alt',
@@ -88,66 +110,145 @@ class Keymap {
   }
 }
 
-/// Normalize a key event into a chord token like "e", "#", "mod+k", "g".
-String? chordFor(KeyEvent e) {
-  if (e is! KeyDownEvent) return null;
-  final pressed = HardwareKeyboard.instance;
-  final meta = pressed.isMetaPressed;
-  final ctrl = pressed.isControlPressed;
-  final alt = pressed.isAltPressed;
-  final shift = pressed.isShiftPressed;
-  final key = e.logicalKey;
+/// What the key at each position types on a US layout, unshifted and shifted. Letters are
+/// left out: the engine already reports a-z as logical keys on every layout.
+final Map<PhysicalKeyboardKey, (String, String)> _usPunctuation = {
+  PhysicalKeyboardKey.digit1: ('1', '!'),
+  PhysicalKeyboardKey.digit2: ('2', '@'),
+  PhysicalKeyboardKey.digit3: ('3', '#'),
+  PhysicalKeyboardKey.digit4: ('4', r'$'),
+  PhysicalKeyboardKey.digit5: ('5', '%'),
+  PhysicalKeyboardKey.digit6: ('6', '^'),
+  PhysicalKeyboardKey.digit7: ('7', '&'),
+  PhysicalKeyboardKey.digit8: ('8', '*'),
+  PhysicalKeyboardKey.digit9: ('9', '('),
+  PhysicalKeyboardKey.digit0: ('0', ')'),
+  PhysicalKeyboardKey.minus: ('-', '_'),
+  PhysicalKeyboardKey.equal: ('=', '+'),
+  PhysicalKeyboardKey.bracketLeft: ('[', '{'),
+  PhysicalKeyboardKey.bracketRight: (']', '}'),
+  PhysicalKeyboardKey.backslash: (r'\', '|'),
+  PhysicalKeyboardKey.semicolon: (';', ':'),
+  PhysicalKeyboardKey.quote: ("'", '"'),
+  PhysicalKeyboardKey.backquote: ('`', '~'),
+  PhysicalKeyboardKey.comma: (',', '<'),
+  PhysicalKeyboardKey.period: ('.', '>'),
+  PhysicalKeyboardKey.slash: ('/', '?'),
+};
 
-  if (key == LogicalKeyboardKey.metaLeft ||
-      key == LogicalKeyboardKey.metaRight ||
-      key == LogicalKeyboardKey.controlLeft ||
-      key == LogicalKeyboardKey.controlRight ||
-      key == LogicalKeyboardKey.shiftLeft ||
-      key == LogicalKeyboardKey.shiftRight ||
-      key == LogicalKeyboardKey.altLeft ||
-      key == LogicalKeyboardKey.altRight) {
-    return null;
-  }
+final _letters = {
+  for (var c = 0x61; c <= 0x7a; c++)
+    LogicalKeyboardKey(LogicalKeyboardKey.keyA.keyId + c - 0x61):
+        String.fromCharCode(c),
+};
 
-  String base;
-  if (key == LogicalKeyboardKey.enter ||
-      key == LogicalKeyboardKey.numpadEnter) {
-    base = 'enter';
-  } else if (key == LogicalKeyboardKey.escape) {
-    base = 'escape';
-  } else if (key == LogicalKeyboardKey.space) {
-    base = 'space';
-  } else if (key == LogicalKeyboardKey.backspace) {
-    base = 'backspace';
-  } else if (key == LogicalKeyboardKey.tab) {
-    base = 'tab';
-  } else if (key == LogicalKeyboardKey.arrowUp) {
-    base = 'arrowup';
-  } else if (key == LogicalKeyboardKey.arrowDown) {
-    base = 'arrowdown';
-  } else if (key == LogicalKeyboardKey.arrowLeft) {
-    base = 'arrowleft';
-  } else if (key == LogicalKeyboardKey.arrowRight) {
-    base = 'arrowright';
-  } else {
-    final ch = e.character;
-    if (ch != null &&
-        ch.isNotEmpty &&
-        !meta &&
-        !ctrl &&
-        !alt &&
-        ch.trim().isNotEmpty) {
-      // Printable: keep the produced character so "#", "*", "/" and "?" work on any layout.
-      return ch.length == 1 && RegExp(r'[A-Za-z]').hasMatch(ch)
-          ? ch.toLowerCase()
-          : ch;
+final _named = {
+  LogicalKeyboardKey.enter: 'enter',
+  LogicalKeyboardKey.numpadEnter: 'enter',
+  LogicalKeyboardKey.escape: 'escape',
+  LogicalKeyboardKey.space: 'space',
+  LogicalKeyboardKey.backspace: 'backspace',
+  LogicalKeyboardKey.tab: 'tab',
+  LogicalKeyboardKey.arrowUp: 'arrowup',
+  LogicalKeyboardKey.arrowDown: 'arrowdown',
+  LogicalKeyboardKey.arrowLeft: 'arrowleft',
+  LogicalKeyboardKey.arrowRight: 'arrowright',
+};
+
+final _modifierKeys = {
+  LogicalKeyboardKey.metaLeft,
+  LogicalKeyboardKey.metaRight,
+  LogicalKeyboardKey.controlLeft,
+  LogicalKeyboardKey.controlRight,
+  LogicalKeyboardKey.shiftLeft,
+  LogicalKeyboardKey.shiftRight,
+  LogicalKeyboardKey.altLeft,
+  LogicalKeyboardKey.altRight,
+  LogicalKeyboardKey.altGraph,
+};
+
+bool _ascii(String s) => s.codeUnits.every((c) => c >= 0x21 && c < 0x7f);
+
+/// Chord tokens for one key press, best first: `e`, `#`, `mod+k`, `g`.
+///
+/// The typed character comes first, so a layout's own `/` or `#` works wherever it sits.
+/// When the layout types something else (Cyrillic `у` on the E key, `№` on shift+3), the
+/// key's place on a US keyboard follows, so the shortcuts keep working on the macOS
+/// "Русская" layout without switching. On Windows AltGr arrives as ctrl+alt: a character
+/// typed that way counts as a character, not as a shortcut.
+List<String> chordCandidates({
+  required PhysicalKeyboardKey physical,
+  required LogicalKeyboardKey logical,
+  required String? character,
+  required bool meta,
+  required bool ctrl,
+  required bool alt,
+  required bool shift,
+}) {
+  if (_modifierKeys.contains(logical)) return const [];
+  final named = _named[logical];
+  final printable =
+      character != null && character.isNotEmpty && character.trim().isNotEmpty;
+  // Windows reports AltGr as ctrl+alt. A real AltGr character is printable; macOS gives
+  // ⌃⌥E a control character (0x05), which stays a shortcut.
+  final altGr =
+      ctrl &&
+      alt &&
+      !meta &&
+      printable &&
+      character.codeUnits.every((c) => c >= 0x20);
+
+  if (named == null && printable && (!meta && !ctrl && !alt || altGr)) {
+    final out = <String>[];
+    void add(String c) {
+      if (!out.contains(c)) out.add(c);
     }
-    base = key.keyLabel.toLowerCase();
-    if (base.isEmpty) return null;
+
+    if (character.length == 1 && RegExp(r'[A-Za-z]').hasMatch(character)) {
+      add(character.toLowerCase());
+    } else if (_ascii(character)) {
+      add(character);
+    }
+    // What the key would mean on a US keyboard, only when this layout typed something
+    // no binding can name (у, №). A layout that typed a real ASCII character (AZERTY's
+    // shift+3 is 3, Dvorak's z sits on the US slash) meant that character; falling
+    // through to # or / would delete or search by surprise. AltGr characters are what
+    // they are, too.
+    if (!altGr && !_ascii(character)) {
+      final letter = _letters[logical];
+      if (letter != null) add(letter);
+      final us = _usPunctuation[physical];
+      if (us != null) add(shift ? us.$2 : us.$1);
+    }
+    return out;
   }
+
+  final base =
+      named ??
+      _letters[logical] ??
+      _usPunctuation[physical]?.$1 ??
+      logical.keyLabel.toLowerCase();
+  if (base.isEmpty) return const [];
   final mods = <String>[];
   if (meta || ctrl) mods.add('mod');
   if (alt) mods.add('alt');
   if (shift && base.length > 1) mods.add('shift');
-  return [...mods, base].join('+');
+  return [
+    [...mods, base].join('+'),
+  ];
+}
+
+/// Chord tokens for a key event with the keyboard's current modifiers.
+List<String> chordsFor(KeyEvent e) {
+  if (e is! KeyDownEvent) return const [];
+  final k = HardwareKeyboard.instance;
+  return chordCandidates(
+    physical: e.physicalKey,
+    logical: e.logicalKey,
+    character: e.character,
+    meta: k.isMetaPressed,
+    ctrl: k.isControlPressed,
+    alt: k.isAltPressed,
+    shift: k.isShiftPressed,
+  );
 }

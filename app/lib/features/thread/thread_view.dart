@@ -23,9 +23,12 @@ class ThreadBody extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = context.s;
-    final thread = ref.watch(selectedThreadProvider).asData?.value;
-    final threads =
-        ref.watch(threadsProvider).asData?.value ?? const <Thread>[];
+    // Across a reload (every sync event) the thread stays on screen; only a different
+    // selection clears it until that one loads.
+    final selectedId = ref.watch(selectedThreadIdProvider);
+    final loaded = ref.watch(selectedThreadProvider).value;
+    final thread = loaded?.id == selectedId ? loaded : null;
+    final threads = ref.watch(threadsProvider).value ?? const <Thread>[];
     final actions = ShellActions(ref: ref, context: context);
     final pos = thread == null
         ? -1
@@ -58,7 +61,7 @@ class ThreadBody extends ConsumerWidget {
                   _Tool(
                     icon: CupertinoIcons.arrowshape_turn_up_left,
                     label: 'Reply',
-                    keyHint: 'r',
+                    keyHint: keyHintFor(ref, 'thread.reply'),
                     enabled: enabled,
                     showLabel: labels,
                     onTap: () => actions.openReply(),
@@ -66,7 +69,7 @@ class ThreadBody extends ConsumerWidget {
                   _Tool(
                     icon: CupertinoIcons.arrowshape_turn_up_right,
                     label: 'Forward',
-                    keyHint: 'f',
+                    keyHint: keyHintFor(ref, 'thread.forward'),
                     enabled: enabled,
                     showLabel: labels,
                     onTap: actions.openForward,
@@ -80,7 +83,7 @@ class ThreadBody extends ConsumerWidget {
                   _Tool(
                     icon: CupertinoIcons.archivebox,
                     label: 'Archive',
-                    keyHint: 'e',
+                    keyHint: keyHintFor(ref, 'thread.archive'),
                     enabled: enabled,
                     showLabel: labels,
                     onTap: actions.archiveSelected,
@@ -88,7 +91,7 @@ class ThreadBody extends ConsumerWidget {
                   _Tool(
                     icon: CupertinoIcons.clock,
                     label: thread?.snoozed ?? false ? 'Snoozed' : 'Snooze',
-                    keyHint: 'h',
+                    keyHint: keyHintFor(ref, 'thread.snooze'),
                     enabled: enabled,
                     showLabel: labels,
                     onTap: actions.snoozeSelected,
@@ -96,7 +99,7 @@ class ThreadBody extends ConsumerWidget {
                   _Tool(
                     icon: CupertinoIcons.folder,
                     label: 'Move',
-                    keyHint: 'l',
+                    keyHint: keyHintFor(ref, 'thread.label'),
                     enabled: enabled,
                     showLabel: labels,
                     onTap: actions.moveSelected,
@@ -104,7 +107,7 @@ class ThreadBody extends ConsumerWidget {
                   _Tool(
                     icon: CupertinoIcons.trash,
                     label: 'Delete',
-                    keyHint: '#',
+                    keyHint: keyHintFor(ref, 'thread.delete'),
                     enabled: enabled,
                     showLabel: labels,
                     onTap: actions.trashSelected,
@@ -154,7 +157,8 @@ class ThreadBody extends ConsumerWidget {
             decoration: BoxDecoration(
               border: Border(top: BorderSide(color: s.border)),
             ),
-            child: _QuickReply(thread: thread),
+            // Keyed by thread: a half-written reply never moves to another thread.
+            child: _QuickReply(key: ValueKey(thread.id), thread: thread),
           ),
       ],
     );
@@ -207,8 +211,7 @@ class _ThreadContentState extends ConsumerState<_ThreadContent> {
     final thread = widget.thread;
     final pad = widget.pad;
     final messages =
-        ref.watch(messagesProvider(thread.id)).asData?.value ??
-        const <Message>[];
+        ref.watch(messagesProvider(thread.id)).value ?? const <Message>[];
     final first = messages.firstOrNull;
     return ListView(
       padding: EdgeInsets.fromLTRB(pad, 30, pad, 24),
@@ -450,14 +453,14 @@ class _Tool extends StatelessWidget {
   final bool showLabel;
   final IconData icon;
   final String label;
-  final String keyHint;
+  final String? keyHint;
   final bool enabled;
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) {
     final s = context.s;
     return Tooltip(
-      message: showLabel ? '' : '$label  $keyHint',
+      message: showLabel ? '' : [label, ?keyHint].join('  '),
       child: HoverRegion(
         onTap: enabled ? onTap : null,
         builder: (context, hovered) => AnimatedContainer(
@@ -476,8 +479,10 @@ class _Tool extends StatelessWidget {
                 if (showLabel) ...[
                   const SizedBox(width: 6),
                   Text(label, style: ui(context, size: 12.5)),
-                  const SizedBox(width: 6),
-                  KeyHint(keyHint),
+                  if (keyHint case final k?) ...[
+                    const SizedBox(width: 6),
+                    KeyHint(k),
+                  ],
                 ],
               ],
             ),
@@ -490,7 +495,7 @@ class _Tool extends StatelessWidget {
 
 /// One-line reply from the reading pane. ↵ sends; the composer is a keystroke away for anything longer.
 class _QuickReply extends ConsumerStatefulWidget {
-  const _QuickReply({required this.thread});
+  const _QuickReply({super.key, required this.thread});
   final Thread thread;
   @override
   ConsumerState<_QuickReply> createState() => _QuickReplyState();

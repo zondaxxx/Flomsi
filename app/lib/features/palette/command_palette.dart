@@ -153,7 +153,11 @@ class _CommandPaletteState extends ConsumerState<CommandPalette> {
         Align(
           alignment: const Alignment(0, -0.6),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 600),
+            // At most 60% of the window: long lists scroll inside instead of covering it.
+            constraints: BoxConstraints(
+              maxWidth: 600,
+              maxHeight: MediaQuery.sizeOf(context).height * 0.6,
+            ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Appear(
@@ -213,37 +217,41 @@ class _CommandPaletteState extends ConsumerState<CommandPalette> {
                             ),
                           ),
                           Flexible(
-                            child: ListView(
-                              shrinkWrap: true,
+                            // Every row is built (the lists are short), so the arrow keys
+                            // can scroll to any of them, wrap-around included.
+                            child: SingleChildScrollView(
                               padding: const EdgeInsets.symmetric(vertical: 6),
-                              children: [
-                                if (matches.isEmpty)
-                                  Padding(
-                                    padding: const EdgeInsets.all(14),
-                                    child: Text(
-                                      'No matches',
-                                      style: ui(context, color: s.fg3),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  if (matches.isEmpty)
+                                    Padding(
+                                      padding: const EdgeInsets.all(14),
+                                      child: Text(
+                                        'No matches',
+                                        style: ui(context, color: s.fg3),
+                                      ),
                                     ),
-                                  ),
-                                for (final g in groups.entries) ...[
-                                  SectionLabel(
-                                    g.key,
-                                    padding: const EdgeInsets.fromLTRB(
-                                      14,
-                                      8,
-                                      14,
-                                      2,
+                                  for (final g in groups.entries) ...[
+                                    SectionLabel(
+                                      g.key,
+                                      padding: const EdgeInsets.fromLTRB(
+                                        14,
+                                        8,
+                                        14,
+                                        2,
+                                      ),
                                     ),
-                                  ),
-                                  for (final c in g.value)
-                                    _Row(
-                                      command: c,
-                                      query: q,
-                                      selected: (flat++) == _index,
-                                      onTap: () => _run(c),
-                                    ),
+                                    for (final c in g.value)
+                                      _Row(
+                                        command: c,
+                                        query: q,
+                                        selected: (flat++) == _index,
+                                        onTap: () => _run(c),
+                                      ),
+                                  ],
                                 ],
-                              ],
+                              ),
                             ),
                           ),
                           Container(
@@ -304,36 +312,39 @@ class _Row extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = context.s;
     final c = command;
-    return HoverRegion(
-      onTap: onTap,
-      builder: (context, hovered) => AnimatedContainer(
-        duration: Motion.of(context, Motion.fast),
-        height: 30,
-        margin: const EdgeInsets.symmetric(horizontal: 6),
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        decoration: BoxDecoration(
-          color: selected
-              ? s.selected
-              : (hovered ? s.hover : Colors.transparent),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Row(
-          children: [
-            Expanded(child: _highlight(context, c.title, query)),
-            if (c.detail != null)
-              Padding(
-                padding: const EdgeInsets.only(left: 12),
-                child: Text(
-                  c.detail!,
-                  style: mono(context, size: 11, color: s.fg3),
+    return RevealOnSelect(
+      selected: selected,
+      child: HoverRegion(
+        onTap: onTap,
+        builder: (context, hovered) => AnimatedContainer(
+          duration: Motion.of(context, Motion.fast),
+          height: 30,
+          margin: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: selected
+                ? s.selected
+                : (hovered ? s.hover : Colors.transparent),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            children: [
+              Expanded(child: _highlight(context, c.title, query)),
+              if (c.detail != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: Text(
+                    c.detail!,
+                    style: mono(context, size: 11, color: s.fg3),
+                  ),
                 ),
-              ),
-            if (c.hint != null)
-              Padding(
-                padding: const EdgeInsets.only(left: 12),
-                child: KeyHint(c.hint!, color: s.fg2),
-              ),
-          ],
+              if (c.hint != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 12),
+                  child: KeyHint(c.hint!, color: s.fg2),
+                ),
+            ],
+          ),
         ),
       ),
     );

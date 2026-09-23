@@ -161,6 +161,16 @@ final isMac =
     defaultTargetPlatform == TargetPlatform.macOS ||
     defaultTargetPlatform == TargetPlatform.iOS;
 
+/// The key for [action] in the active keymap as this platform writes it (`e`, `⌘K`,
+/// `ctrl+K`), or null while the keymap loads or when nothing is bound.
+String? keyHintFor(WidgetRef ref, String action) =>
+    ref.watch(keymapProvider).value?.hint(action, mac: isMac);
+
+/// A built-in shortcut that is not in the keymap: `⌘⇧A` on Apple platforms, `ctrl+shift+A`
+/// elsewhere.
+String modKey(String key, {bool shift = false}) =>
+    isMac ? '⌘${shift ? '⇧' : ''}$key' : 'ctrl+${shift ? 'shift+' : ''}$key';
+
 /// The draft being written, or null when no composer is open.
 final composeProvider = NotifierProvider<ComposeController, Draft?>(
   ComposeController.new,

@@ -496,7 +496,7 @@ class _KeysPicker extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final s = context.s;
-    final keymap = ref.watch(keymapProvider).asData?.value;
+    final keymap = ref.watch(keymapProvider).value;
     final current = keymap?.name ?? 'vim';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -516,7 +516,8 @@ class _KeysPicker extends ConsumerWidget {
             child: Text(
               [
                 for (final (action, what) in _sample)
-                  if (keymap.hint(action) case final hint?) '$what $hint',
+                  if (keymap.hint(action, mac: isMac) case final hint?)
+                    '$what $hint',
               ].join(' · '),
               key: ValueKey(keymap.name),
               style: mono(context, size: 11, color: s.fg3),

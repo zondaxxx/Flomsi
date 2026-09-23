@@ -29,8 +29,15 @@ class ThreadListBody extends ConsumerStatefulWidget {
 class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   final searchController = TextEditingController();
   final searchFocus = FocusNode(debugLabel: 'search');
-  final _listKey = GlobalKey<AnimatedListState>();
+  var _listKey = GlobalKey<AnimatedListState>();
   final _items = <Thread>[];
+
+  /// The query [_items] shows. A different query is a different list: it starts at its
+  /// top instead of animating from the old one.
+  String? _itemsQuery;
+  // A new list for a new query starts at its top; nothing to restore.
+  final _scroll = ScrollController(keepScrollOffset: false);
+  final _selectedRowKey = GlobalKey(debugLabel: 'selected row');
   String _filter = 'all';
 
   @override
@@ -47,6 +54,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   void dispose() {
     searchController.dispose();
     searchFocus.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -62,6 +70,26 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
       'starred' => '$q is:starred'.trim(),
       _ => q,
     };
+  }
+
+  /// A selection far from the rows on screen (k with nothing selected, a thread opened
+  /// from elsewhere) has no row built for RevealOnSelect: jump near it first.
+  void _revealFar(int? id) {
+    if (id == null) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      if (_selectedRowKey.currentContext != null) return;
+      final i = _items.indexWhere((t) => t.id == id);
+      if (i < 0) return;
+      final pos = _scroll.position;
+      final row = (pos.maxScrollExtent + pos.viewportDimension) / _items.length;
+      pos.jumpTo(
+        (i * row - (pos.viewportDimension - row) / 2).clamp(
+          0.0,
+          pos.maxScrollExtent,
+        ),
+      );
+    });
   }
 
   /// A swiped row leaves the list at once; the repository event that follows finds it already gone.
@@ -116,7 +144,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     final s = context.s;
     final draftsView = ref.watch(queryProvider).trim() == 'in:drafts';
     final draftCount = draftsView
-        ? ref.watch(draftsProvider).asData?.value.length ?? 0
+        ? ref.watch(draftsProvider).value?.length ?? 0
         : 0;
     final threads = ref.watch(threadsProvider);
     final selected = ref.watch(selectedThreadIdProvider);
@@ -125,8 +153,21 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     );
     final accounts = ref.watch(accountsProvider).value;
     final locked = [...?accounts?.where((a) => a.needsPassword)];
-    final list = threads.asData?.value;
-    if (list != null) _sync(list);
+    final query = ref.watch(queryProvider);
+    final sameQuery = query == _itemsQuery;
+    final list = threads.value;
+    if (list != null) {
+      if (sameQuery) {
+        _sync(list);
+      } else if (!threads.isLoading && !threads.hasError) {
+        _items
+          ..clear()
+          ..addAll(list);
+        _itemsQuery = query;
+        _listKey = GlobalKey<AnimatedListState>();
+      }
+    }
+    ref.listen(selectedThreadIdProvider, (_, id) => _revealFar(id));
     final unread = list?.where((t) => t.unread).length ?? 0;
     final starred = list?.where((t) => t.starred).length ?? 0;
 
@@ -219,6 +260,9 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
           child: draftsView
               ? const _DraftList()
               : threads.when(
+                  // A sync event reloads the list; keep showing it meanwhile. A new
+                  // folder or search waits for its own rows.
+                  skipLoadingOnReload: sameQuery,
                   loading: () => const SizedBox.shrink(),
                   error: (e, _) => Center(
                     child: Text('$e', style: mono(context, color: s.red)),
@@ -229,6 +273,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                             : const EmptyNote('No mail'))
                       : AnimatedList(
                           key: _listKey,
+                          controller: _scroll,
                           initialItemCount: _items.length,
                           itemBuilder: (context, i, anim) {
                             if (i >= _items.length) {
@@ -247,7 +292,16 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                             );
                             return _Transition(
                               anim: anim,
-                              child: _touch ? _swipeable(t, row) : row,
+                              child: RevealOnSelect(
+                                key: ValueKey('reveal-${t.id}'),
+                                selected: t.id == selected,
+                                child: KeyedSubtree(
+                                  key: t.id == selected
+                                      ? _selectedRowKey
+                                      : null,
+                                  child: _touch ? _swipeable(t, row) : row,
+                                ),
+                              ),
                             );
                           },
                         ),
@@ -625,6 +679,7 @@ class _DraftList extends ConsumerWidget {
     return ref
         .watch(draftsProvider)
         .when(
+          skipLoadingOnReload: true,
           loading: () => const SizedBox.shrink(),
           error: (e, _) => Center(
             child: Text('$e', style: mono(context, color: s.red)),

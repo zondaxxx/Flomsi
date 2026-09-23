@@ -26,7 +26,7 @@ class ShellActions {
   final VoidCallback? onOpen;
 
   Future<void> move(int delta) async {
-    final threads = ref.read(threadsProvider).asData?.value;
+    final threads = ref.read(threadsProvider).value;
     if (threads == null || threads.isEmpty) return;
     final cur = ref.read(selectedThreadIdProvider);
     final i = threads.indexWhere((t) => t.id == cur);
@@ -215,7 +215,10 @@ class ShellActions {
 
   List<Command> commands() {
     final repo = ref.read(repositoryProvider);
-    final labels = ref.read(labelsProvider).asData?.value ?? const <Label>[];
+    // Hints come from the active keymap, so they match what the keys do (⌘ on macOS only).
+    final keymap = ref.read(keymapProvider).value;
+    String? key(String action) => keymap?.hint(action, mac: isMac);
+    final labels = ref.read(labelsProvider).value ?? const <Label>[];
     final mode = ref.read(appearanceProvider);
     final modeLabel = switch (mode) {
       ThemeMode.system => 'System',
@@ -227,21 +230,21 @@ class ShellActions {
         id: 'archive',
         title: 'Archive',
         group: 'Message',
-        hint: 'e',
+        hint: key('thread.archive'),
         run: archiveSelected,
       ),
       Command(
         id: 'trash',
         title: 'Delete',
         group: 'Message',
-        hint: '#',
+        hint: key('thread.delete'),
         run: trashSelected,
       ),
       Command(
         id: 'star',
         title: 'Star / Unstar',
         group: 'Message',
-        hint: '*',
+        hint: key('thread.star'),
         run: toggleStar,
       ),
       Command(
@@ -260,14 +263,14 @@ class ShellActions {
         id: 'inbox',
         title: 'Go to Inbox',
         group: 'Go',
-        hint: 'g i',
+        hint: key('nav.goInbox'),
         run: () => ref.read(queryProvider.notifier).set(''),
       ),
       Command(
         id: 'starred',
         title: 'Go to Starred',
         group: 'Go',
-        hint: 'g s',
+        hint: key('nav.goStarred'),
         run: () => ref.read(queryProvider.notifier).set('is:starred'),
       ),
       Command(
@@ -301,7 +304,7 @@ class ShellActions {
         title: 'Settings…',
         group: 'App',
         detail: 'Accounts, signatures, keys, appearance',
-        hint: '⌘,',
+        hint: key('app.settings'),
         run: () => showSettingsSheet(context),
       ),
       Command(
