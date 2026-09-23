@@ -174,6 +174,8 @@ pub struct Folder {
     pub selectable: bool,
     /// The hierarchy separator the server uses (`/`, `.`), when known.
     pub delimiter: Option<String>,
+    /// The oldest UID the sync covers; older cached mail came from a search.
+    pub floor_uid: Option<u32>,
 }
 
 impl Folder {

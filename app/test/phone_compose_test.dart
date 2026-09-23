@@ -37,5 +37,16 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.byType(ComposeBody), findsNothing);
+
+    // Android's back button instead of ×: the next New message still opens.
+    await tester.tap(find.byIcon(CupertinoIcons.square_pencil));
+    await tester.pumpAndSettle();
+    expect(find.byType(ComposeBody), findsOneWidget);
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.byType(ComposeBody), findsNothing);
+    await tester.tap(find.byIcon(CupertinoIcons.square_pencil));
+    await tester.pumpAndSettle();
+    expect(find.byType(ComposeBody), findsOneWidget);
   });
 }

@@ -8,7 +8,8 @@ library;
 String? htmlColour(String? v) {
   final c = v?.trim();
   if (c == null || c.isEmpty) return null;
-  if (RegExp(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$').hasMatch(c)) {
+  if (RegExp(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$')
+      .hasMatch(c)) {
     return c.toLowerCase();
   }
   if (RegExp(r'^([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$').hasMatch(c)) {

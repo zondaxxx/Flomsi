@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/mail.dart';
+import 'api/signin.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -69,7 +70,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.13.0';
 
   @override
-  int get rustContentHash => -652840498;
+  int get rustContentHash => -993182842;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -127,6 +128,11 @@ abstract class RustLibApi extends BaseApi {
     required int limit,
   });
 
+  Future<OlderDto> crateApiMailLoadOlder({
+    required PlatformInt64 accountId,
+    required String query,
+  });
+
   Future<void> crateApiMailMarkRead({
     required PlatformInt64 threadId,
     required bool read,
@@ -145,6 +151,35 @@ abstract class RustLibApi extends BaseApi {
   Future<DraftDto> crateApiMailNewDraft({PlatformInt64? accountId});
 
   Future<PlatformInt64?> crateApiMailNextSnoozeWake();
+
+  Future<OAuthStartDto> crateApiSigninOauthBegin({
+    required String provider,
+    required bool mobile,
+    String? expectEmail,
+  });
+
+  void crateApiSigninOauthCancel({required String session});
+
+  Future<AccountDto> crateApiSigninOauthComplete({
+    required String provider,
+    required String code,
+    required String verifier,
+    required String redirectUri,
+    String? expectEmail,
+  });
+
+  Future<AccountDto> crateApiSigninOauthFinish({required String session});
+
+  Future<AccountDto> crateApiSigninOauthFinishWithRedirect({
+    required String session,
+    required String redirect,
+  });
+
+  Future<MobileAuthDto> crateApiSigninOauthMobileRequest({
+    required String provider,
+  });
+
+  List<String> crateApiSigninOauthProviders({required bool mobile});
 
   Future<String> crateApiMailOpenAttachment({
     required PlatformInt64 messageId,
@@ -174,6 +209,11 @@ abstract class RustLibApi extends BaseApi {
     PlatformInt64? id,
     required String kind,
     required DraftDto draft,
+  });
+
+  Future<int> crateApiMailSearchServer({
+    required PlatformInt64 accountId,
+    required String query,
   });
 
   Future<String?> crateApiMailSendDraft({required DraftDto draft});
@@ -684,6 +724,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<OlderDto> crateApiMailLoadOlder({
+    required PlatformInt64 accountId,
+    required String query,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_i_64(accountId, serializer);
+          sse_encode_String(query, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 15,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_older_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiMailLoadOlderConstMeta,
+        argValues: [accountId, query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMailLoadOlderConstMeta => const TaskConstMeta(
+    debugName: "load_older",
+    argNames: ["accountId", "query"],
+  );
+
+  @override
   Future<void> crateApiMailMarkRead({
     required PlatformInt64 threadId,
     required bool read,
@@ -697,7 +771,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 15,
+            funcId: 16,
             port: port_,
           );
         },
@@ -731,7 +805,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 16,
+            funcId: 17,
             port: port_,
           );
         },
@@ -765,7 +839,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 17,
+            funcId: 18,
             port: port_,
           );
         },
@@ -795,7 +869,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 18,
+            funcId: 19,
             port: port_,
           );
         },
@@ -822,7 +896,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 19,
+            funcId: 20,
             port: port_,
           );
         },
@@ -841,6 +915,231 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       const TaskConstMeta(debugName: "next_snooze_wake", argNames: []);
 
   @override
+  Future<OAuthStartDto> crateApiSigninOauthBegin({
+    required String provider,
+    required bool mobile,
+    String? expectEmail,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(provider, serializer);
+          sse_encode_bool(mobile, serializer);
+          sse_encode_opt_String(expectEmail, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 21,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_o_auth_start_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSigninOauthBeginConstMeta,
+        argValues: [provider, mobile, expectEmail],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSigninOauthBeginConstMeta => const TaskConstMeta(
+    debugName: "oauth_begin",
+    argNames: ["provider", "mobile", "expectEmail"],
+  );
+
+  @override
+  void crateApiSigninOauthCancel({required String session}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(session, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 22)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_unit,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSigninOauthCancelConstMeta,
+        argValues: [session],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSigninOauthCancelConstMeta =>
+      const TaskConstMeta(debugName: "oauth_cancel", argNames: ["session"]);
+
+  @override
+  Future<AccountDto> crateApiSigninOauthComplete({
+    required String provider,
+    required String code,
+    required String verifier,
+    required String redirectUri,
+    String? expectEmail,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(provider, serializer);
+          sse_encode_String(code, serializer);
+          sse_encode_String(verifier, serializer);
+          sse_encode_String(redirectUri, serializer);
+          sse_encode_opt_String(expectEmail, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 23,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_account_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSigninOauthCompleteConstMeta,
+        argValues: [provider, code, verifier, redirectUri, expectEmail],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSigninOauthCompleteConstMeta =>
+      const TaskConstMeta(
+        debugName: "oauth_complete",
+        argNames: [
+          "provider",
+          "code",
+          "verifier",
+          "redirectUri",
+          "expectEmail",
+        ],
+      );
+
+  @override
+  Future<AccountDto> crateApiSigninOauthFinish({required String session}) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(session, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 24,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_account_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSigninOauthFinishConstMeta,
+        argValues: [session],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSigninOauthFinishConstMeta =>
+      const TaskConstMeta(debugName: "oauth_finish", argNames: ["session"]);
+
+  @override
+  Future<AccountDto> crateApiSigninOauthFinishWithRedirect({
+    required String session,
+    required String redirect,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(session, serializer);
+          sse_encode_String(redirect, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 25,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_account_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSigninOauthFinishWithRedirectConstMeta,
+        argValues: [session, redirect],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSigninOauthFinishWithRedirectConstMeta =>
+      const TaskConstMeta(
+        debugName: "oauth_finish_with_redirect",
+        argNames: ["session", "redirect"],
+      );
+
+  @override
+  Future<MobileAuthDto> crateApiSigninOauthMobileRequest({
+    required String provider,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_String(provider, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 26,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_mobile_auth_dto,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiSigninOauthMobileRequestConstMeta,
+        argValues: [provider],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSigninOauthMobileRequestConstMeta =>
+      const TaskConstMeta(
+        debugName: "oauth_mobile_request",
+        argNames: ["provider"],
+      );
+
+  @override
+  List<String> crateApiSigninOauthProviders({required bool mobile}) {
+    return handler.executeSync(
+      SyncTask(
+        callFfi: () {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_bool(mobile, serializer);
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 27)!;
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_list_String,
+          decodeErrorData: null,
+        ),
+        constMeta: kCrateApiSigninOauthProvidersConstMeta,
+        argValues: [mobile],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiSigninOauthProvidersConstMeta =>
+      const TaskConstMeta(debugName: "oauth_providers", argNames: ["mobile"]);
+
+  @override
   Future<String> crateApiMailOpenAttachment({
     required PlatformInt64 messageId,
     required int idx,
@@ -854,7 +1153,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 20,
+            funcId: 28,
             port: port_,
           );
         },
@@ -884,7 +1183,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 21,
+            funcId: 29,
             port: port_,
           );
         },
@@ -912,7 +1211,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 22,
+            funcId: 30,
             port: port_,
           );
         },
@@ -944,7 +1243,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 23,
+            funcId: 31,
             port: port_,
           );
         },
@@ -971,7 +1270,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(name, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 24)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_String,
@@ -994,7 +1293,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(name, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 25)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 33)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_String,
@@ -1026,7 +1325,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 26,
+            funcId: 34,
             port: port_,
           );
         },
@@ -1062,7 +1361,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 27,
+            funcId: 35,
             port: port_,
           );
         },
@@ -1083,6 +1382,40 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
+  Future<int> crateApiMailSearchServer({
+    required PlatformInt64 accountId,
+    required String query,
+  }) {
+    return handler.executeNormal(
+      NormalTask(
+        callFfi: (port_) {
+          final serializer = SseSerializer(generalizedFrbRustBinding);
+          sse_encode_i_64(accountId, serializer);
+          sse_encode_String(query, serializer);
+          pdeCallFfi(
+            generalizedFrbRustBinding,
+            serializer,
+            funcId: 36,
+            port: port_,
+          );
+        },
+        codec: SseCodec(
+          decodeSuccessData: sse_decode_u_32,
+          decodeErrorData: sse_decode_AnyhowException,
+        ),
+        constMeta: kCrateApiMailSearchServerConstMeta,
+        argValues: [accountId, query],
+        apiImpl: this,
+      ),
+    );
+  }
+
+  TaskConstMeta get kCrateApiMailSearchServerConstMeta => const TaskConstMeta(
+    debugName: "search_server",
+    argNames: ["accountId", "query"],
+  );
+
+  @override
   Future<String?> crateApiMailSendDraft({required DraftDto draft}) {
     return handler.executeNormal(
       NormalTask(
@@ -1092,7 +1425,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 28,
+            funcId: 37,
             port: port_,
           );
         },
@@ -1124,7 +1457,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 29,
+            funcId: 38,
             port: port_,
           );
         },
@@ -1156,7 +1489,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 30,
+            funcId: 39,
             port: port_,
           );
         },
@@ -1190,7 +1523,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 31,
+            funcId: 40,
             port: port_,
           );
         },
@@ -1217,7 +1550,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         callFfi: () {
           final serializer = SseSerializer(generalizedFrbRustBinding);
           sse_encode_String(imapHost, serializer);
-          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 32)!;
+          return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 41)!;
         },
         codec: SseCodec(
           decodeSuccessData: sse_decode_opt_box_autoadd_server_dto,
@@ -1247,7 +1580,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 33,
+            funcId: 42,
             port: port_,
           );
         },
@@ -1277,7 +1610,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 34,
+            funcId: 43,
             port: port_,
           );
         },
@@ -1307,7 +1640,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
             pdeCallFfi(
               generalizedFrbRustBinding,
               serializer,
-              funcId: 35,
+              funcId: 44,
               port: port_,
             );
           },
@@ -1345,7 +1678,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 36,
+            funcId: 45,
             port: port_,
           );
         },
@@ -1383,7 +1716,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 37,
+            funcId: 46,
             port: port_,
           );
         },
@@ -1415,7 +1748,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 38,
+            funcId: 47,
             port: port_,
           );
         },
@@ -1443,7 +1776,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 39,
+            funcId: 48,
             port: port_,
           );
         },
@@ -1470,7 +1803,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 40,
+            funcId: 49,
             port: port_,
           );
         },
@@ -1498,7 +1831,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 41,
+            funcId: 50,
             port: port_,
           );
         },
@@ -1532,7 +1865,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 42,
+            funcId: 51,
             port: port_,
           );
         },
@@ -1566,7 +1899,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 43,
+            funcId: 52,
             port: port_,
           );
         },
@@ -1601,7 +1934,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 44,
+            funcId: 53,
             port: port_,
           );
         },
@@ -1630,7 +1963,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           pdeCallFfi(
             generalizedFrbRustBinding,
             serializer,
-            funcId: 45,
+            funcId: 54,
             port: port_,
           );
         },
@@ -1672,8 +2005,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   AccountDto dco_decode_account_dto(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 13)
-      throw Exception('unexpected arr length: expect 13 but see ${arr.length}');
+    if (arr.length != 14)
+      throw Exception('unexpected arr length: expect 14 but see ${arr.length}');
     return AccountDto(
       id: dco_decode_i_64(arr[0]),
       email: dco_decode_String(arr[1]),
@@ -1688,6 +2021,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       smtpPort: dco_decode_u_16(arr[10]),
       smtpSecurity: dco_decode_String(arr[11]),
       localBridge: dco_decode_bool(arr[12]),
+      auth: dco_decode_String(arr[13]),
     );
   }
 
@@ -1923,6 +2257,47 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MobileAuthDto dco_decode_mobile_auth_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return MobileAuthDto(
+      clientId: dco_decode_String(arr[0]),
+      redirectUri: dco_decode_String(arr[1]),
+      authorizationEndpoint: dco_decode_String(arr[2]),
+      tokenEndpoint: dco_decode_String(arr[3]),
+      scopes: dco_decode_list_String(arr[4]),
+      parameters: dco_decode_list_String(arr[5]),
+    );
+  }
+
+  @protected
+  OAuthStartDto dco_decode_o_auth_start_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 3)
+      throw Exception('unexpected arr length: expect 3 but see ${arr.length}');
+    return OAuthStartDto(
+      session: dco_decode_String(arr[0]),
+      url: dco_decode_String(arr[1]),
+      callbackScheme: dco_decode_String(arr[2]),
+    );
+  }
+
+  @protected
+  OlderDto dco_decode_older_dto(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 2)
+      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    return OlderDto(
+      fetched: dco_decode_u_32(arr[0]),
+      more: dco_decode_bool(arr[1]),
+    );
+  }
+
+  @protected
   String? dco_decode_opt_String(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_String(raw);
@@ -2099,6 +2474,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     var var_smtpPort = sse_decode_u_16(deserializer);
     var var_smtpSecurity = sse_decode_String(deserializer);
     var var_localBridge = sse_decode_bool(deserializer);
+    var var_auth = sse_decode_String(deserializer);
     return AccountDto(
       id: var_id,
       email: var_email,
@@ -2113,6 +2489,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       smtpPort: var_smtpPort,
       smtpSecurity: var_smtpSecurity,
       localBridge: var_localBridge,
+      auth: var_auth,
     );
   }
 
@@ -2427,6 +2804,46 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  MobileAuthDto sse_decode_mobile_auth_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_clientId = sse_decode_String(deserializer);
+    var var_redirectUri = sse_decode_String(deserializer);
+    var var_authorizationEndpoint = sse_decode_String(deserializer);
+    var var_tokenEndpoint = sse_decode_String(deserializer);
+    var var_scopes = sse_decode_list_String(deserializer);
+    var var_parameters = sse_decode_list_String(deserializer);
+    return MobileAuthDto(
+      clientId: var_clientId,
+      redirectUri: var_redirectUri,
+      authorizationEndpoint: var_authorizationEndpoint,
+      tokenEndpoint: var_tokenEndpoint,
+      scopes: var_scopes,
+      parameters: var_parameters,
+    );
+  }
+
+  @protected
+  OAuthStartDto sse_decode_o_auth_start_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_session = sse_decode_String(deserializer);
+    var var_url = sse_decode_String(deserializer);
+    var var_callbackScheme = sse_decode_String(deserializer);
+    return OAuthStartDto(
+      session: var_session,
+      url: var_url,
+      callbackScheme: var_callbackScheme,
+    );
+  }
+
+  @protected
+  OlderDto sse_decode_older_dto(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_fetched = sse_decode_u_32(deserializer);
+    var var_more = sse_decode_bool(deserializer);
+    return OlderDto(fetched: var_fetched, more: var_more);
+  }
+
+  @protected
   String? sse_decode_opt_String(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -2664,6 +3081,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_u_16(self.smtpPort, serializer);
     sse_encode_String(self.smtpSecurity, serializer);
     sse_encode_bool(self.localBridge, serializer);
+    sse_encode_String(self.auth, serializer);
   }
 
   @protected
@@ -2925,6 +3343,38 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.role, serializer);
     sse_encode_bool(self.gmail, serializer);
     sse_encode_String(self.message, serializer);
+  }
+
+  @protected
+  void sse_encode_mobile_auth_dto(
+    MobileAuthDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.clientId, serializer);
+    sse_encode_String(self.redirectUri, serializer);
+    sse_encode_String(self.authorizationEndpoint, serializer);
+    sse_encode_String(self.tokenEndpoint, serializer);
+    sse_encode_list_String(self.scopes, serializer);
+    sse_encode_list_String(self.parameters, serializer);
+  }
+
+  @protected
+  void sse_encode_o_auth_start_dto(
+    OAuthStartDto self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.session, serializer);
+    sse_encode_String(self.url, serializer);
+    sse_encode_String(self.callbackScheme, serializer);
+  }
+
+  @protected
+  void sse_encode_older_dto(OlderDto self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_32(self.fetched, serializer);
+    sse_encode_bool(self.more, serializer);
   }
 
   @protected

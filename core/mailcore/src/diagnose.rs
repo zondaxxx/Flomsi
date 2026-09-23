@@ -16,6 +16,102 @@ pub enum ErrorKind {
     Server,
     /// Something local: database, keychain, disk.
     Local,
+    /// Signing in on the provider's page did not end in an account (see [SignIn]).
+    Cancelled,
+    Denied,
+    Scope,
+    NoRefresh,
+    Admin,
+    ImapOff,
+    DuplicatePassword,
+    WrongAccount,
+    Timeout,
+}
+
+impl ErrorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ErrorKind::Auth => "auth",
+            ErrorKind::Network => "network",
+            ErrorKind::Tls => "tls",
+            ErrorKind::Server => "server",
+            ErrorKind::Local => "local",
+            ErrorKind::Cancelled => "cancelled",
+            ErrorKind::Denied => "denied",
+            ErrorKind::Scope => "scope",
+            ErrorKind::NoRefresh => "no_refresh",
+            ErrorKind::Admin => "admin",
+            ErrorKind::ImapOff => "imap_off",
+            ErrorKind::DuplicatePassword => "duplicate_password",
+            ErrorKind::WrongAccount => "wrong_account",
+            ErrorKind::Timeout => "timeout",
+        }
+    }
+}
+
+/// `sign-in: <kind>: <detail>` as the core words a sign-in that went nowhere.
+fn sign_in(message: &str) -> Option<Diagnosis> {
+    let rest = &message[message.find("sign-in: ")? + "sign-in: ".len()..];
+    let (kind, detail) = rest.split_once(':').unwrap_or((rest, ""));
+    let detail = detail.trim();
+    let words = |kind, title: &str, hint: Option<&str>| Diagnosis {
+        kind,
+        title: title.into(),
+        hint: hint.map(Into::into),
+    };
+    Some(match kind.trim() {
+        "cancelled" => words(ErrorKind::Cancelled, "Sign-in cancelled", None),
+        "denied" => words(
+            ErrorKind::Denied,
+            "Flomsi didn't get access",
+            Some("It needs permission to read and send your mail."),
+        ),
+        "scope" => words(
+            ErrorKind::Scope,
+            "Mail access wasn't allowed",
+            Some("On Google's page, keep “Read, compose, send and permanently delete all your email from Gmail” ticked."),
+        ),
+        "no_refresh" => words(
+            ErrorKind::NoRefresh,
+            "Only temporary access was given",
+            Some("Try again and allow access."),
+        ),
+        "admin" => words(
+            ErrorKind::Admin,
+            "Your organisation blocks Flomsi",
+            Some("An admin has to allow it."),
+        ),
+        "imap_off" => words(
+            ErrorKind::ImapOff,
+            "IMAP is off for this account",
+            Some("On a work or school account your admin controls this."),
+        ),
+        "duplicate_password" => Diagnosis {
+            kind: ErrorKind::DuplicatePassword,
+            title: format!("{detail} is already added with a password"),
+            hint: Some("Remove it in Settings to switch to signing in with the provider.".into()),
+        },
+        "wrong_account" => {
+            let mut parts = detail.split_whitespace();
+            let got = parts.next().unwrap_or("another address");
+            let want = parts.next().unwrap_or("this account");
+            Diagnosis {
+                kind: ErrorKind::WrongAccount,
+                title: format!("You signed in as {got}, not {want}"),
+                hint: Some("Choose the right account on the provider's page.".into()),
+            }
+        }
+        "timeout" => words(
+            ErrorKind::Timeout,
+            "The sign-in page was open too long",
+            Some("Try again."),
+        ),
+        _ => words(
+            ErrorKind::Auth,
+            "Sign-in didn't finish",
+            Some("Try again. If it keeps failing, see the details."),
+        ),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +156,9 @@ pub fn diagnose(message: &str, host: &str) -> Diagnosis {
     let io = tagged("io:");
     let is_auth = !io && (tagged("auth:") || has(&m, &auth_words) || smtp_auth);
 
+    if let Some(d) = sign_in(message) {
+        return d;
+    }
     if m.contains("is already added") {
         return Diagnosis {
             kind: ErrorKind::Local,

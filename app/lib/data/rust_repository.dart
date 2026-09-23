@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart' show AppLifecycleListener, Color;
+import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
     show AnyhowException, ExternalLibrary;
 
 import '../src/rust/api/mail.dart' as rust;
+import '../src/rust/api/signin.dart' as rust;
 import '../src/rust/frb_generated.dart';
 import 'models.dart';
 import 'repository.dart';
@@ -321,6 +324,7 @@ class RustRepository implements MailRepository {
               : _setup(a.smtpHost, a.smtpPort, a.smtpSecurity),
           localBridge: a.localBridge,
           problem: _problems[a.id.toInt()],
+          auth: a.auth,
         ),
     ];
   }
@@ -532,6 +536,7 @@ class RustRepository implements MailRepository {
       if (_disposed) return;
       try {
         final errors = <String>[];
+        var fetched = 0;
         await Future.wait([
           for (final a in await rust.listAccounts())
             () async {
@@ -543,11 +548,15 @@ class RustRepository implements MailRepository {
                     ? null
                     : await rust.syncAccount(accountId: id, inboxOnly: true),
               );
-              if (s != null) await _absorb(id, s, errors);
+              if (s != null) {
+                fetched += s.fetched;
+                await _absorb(id, s, errors);
+              }
             }(),
         ]);
-        if (errors.isNotEmpty) {
-          _events.add(SyncFinished(fetched: 0, errors: errors));
+        // Mail that came with this sync is new mail like any other (notifications).
+        if (errors.isNotEmpty || fetched > 0) {
+          _events.add(SyncFinished(fetched: fetched, errors: errors));
         }
         _events.add(const ThreadsChanged());
       } catch (_) {
@@ -583,6 +592,71 @@ class RustRepository implements MailRepository {
   Future<int> trash(int threadId) =>
       _after(rust.trashThread(threadId: threadId)).then(_filed);
 
+  /// The accounts a query covers: the one `account:` names, or all.
+  Future<List<Account>> _accountsFor(String query) async {
+    final named = RegExp(r'(?:^|\s)account:(\S+)').firstMatch(query)?.group(1);
+    return [
+      for (final a in await accounts())
+        if (named == null ||
+            a.email.toLowerCase().contains(named.toLowerCase()))
+          a,
+    ];
+  }
+
+  /// Run [call] for each account the query covers, each in its own queue; one account
+  /// that fails does not stop the others. Throws (worded) only when all of them failed.
+  Future<List<T>> _perAccount<T>(
+    String query,
+    Future<T> Function(int accountId) call,
+  ) async {
+    final out = <T>[];
+    Problem? first;
+    var tried = 0;
+    try {
+      for (final a in await _accountsFor(query)) {
+        if (_parked(a.id)) continue;
+        tried++;
+        try {
+          final r = await _serial<T?>(
+            a.id,
+            () async => _parked(a.id) ? null : await call(a.id),
+          );
+          if (r != null) out.add(r);
+        } catch (e) {
+          final p = problemFrom(e, (await _account(a.id))?.imapHost ?? '');
+          if (p.isAuth) await _stop(a.id, p);
+          first ??= p;
+        }
+      }
+    } finally {
+      _events.add(const MailImported());
+      _events.add(const ThreadsChanged());
+    }
+    if (first != null && out.isEmpty && tried > 0) throw first;
+    return out;
+  }
+
+  @override
+  Future<({int fetched, bool more})> loadOlder(String query) async {
+    final rs = await _perAccount(
+      query,
+      (id) => rust.loadOlder(accountId: id, query: query),
+    );
+    return (
+      fetched: rs.fold<int>(0, (n, r) => n + r.fetched),
+      more: rs.any((r) => r.more),
+    );
+  }
+
+  @override
+  Future<int> searchServer(String query) async {
+    final rs = await _perAccount(
+      query,
+      (id) => rust.searchServer(accountId: id, query: query),
+    );
+    return rs.fold<int>(0, (n, r) => n + r);
+  }
+
   @override
   Future<String> createRoleFolder(int accountId, String role) async {
     try {
@@ -596,6 +670,7 @@ class RustRepository implements MailRepository {
       throw problemFrom(e, (await _account(accountId))?.imapHost ?? '');
     }
   }
+
   @override
   Future<void> markRead(int threadId, bool read) =>
       _after(rust.markRead(threadId: threadId, read: read));
@@ -737,6 +812,154 @@ class RustRepository implements MailRepository {
     } catch (e) {
       throw problemFrom(e, setup.smtp.host, stage: 'smtp');
     }
+  }
+
+  static bool get _phone => Platform.isIOS || Platform.isAndroid;
+
+  @override
+  List<String> signInProviders() {
+    try {
+      return rust.oauthProviders(mobile: _phone);
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// The sign-in waiting on a browser page (computers), for [cancelSignIn].
+  String? _signInSession;
+
+  @override
+  void cancelSignIn() {
+    final s = _signInSession;
+    if (s != null) rust.oauthCancel(session: s);
+  }
+
+  @override
+  Future<Account> signIn(
+    String provider, {
+    String? loginHint,
+    void Function()? onReturned,
+  }) async {
+    final host = provider == 'google'
+        ? 'imap.gmail.com'
+        : 'outlook.office365.com';
+    final hint = (loginHint?.trim().isEmpty ?? true) ? null : loginHint!.trim();
+    final rust.AccountDto a;
+    try {
+      a = _phone
+          ? await _signInOnPhone(provider, hint, onReturned)
+          : await _signInInBrowser(provider, hint);
+    } on Problem {
+      rethrow;
+    } catch (e) {
+      throw problemFrom(e, host);
+    } finally {
+      _signInSession = null;
+    }
+    // Signed in again: the account that was waiting for it goes on.
+    final id = a.id.toInt();
+    if (_problems.containsKey(id)) {
+      await retryAccount(id);
+    } else {
+      _events.add(const ThreadsChanged());
+      unawaited(_refreshIdleLoops());
+    }
+    return Account(
+      id: id,
+      email: a.email,
+      kind: a.kind,
+      color: _accountColor(a.kind, 0),
+      auth: a.auth,
+    );
+  }
+
+  /// A computer: the default browser, back to a loopback address the core listens on.
+  Future<rust.AccountDto> _signInInBrowser(
+    String provider,
+    String? hint,
+  ) async {
+    final s = await rust.oauthBegin(
+      provider: provider,
+      mobile: false,
+      expectEmail: hint,
+    );
+    _signInSession = s.session;
+    final opened = await launchUrl(
+      Uri.parse(s.url),
+      mode: LaunchMode.externalApplication,
+    );
+    if (!opened) {
+      rust.oauthCancel(session: s.session);
+      throw const Problem(kind: 'local', title: 'No browser opened');
+    }
+    return rust.oauthFinish(session: s.session);
+  }
+
+  /// A phone: the system's sign-in sheet (AppAuth); the core trades the code it returns.
+  Future<rust.AccountDto> _signInOnPhone(
+    String provider,
+    String? hint,
+    void Function()? onReturned,
+  ) async {
+    final r = await rust.oauthMobileRequest(provider: provider);
+    final params = <String, String>{};
+    final prompt = <String>[];
+    for (final p in r.parameters) {
+      final i = p.indexOf('=');
+      if (i < 0) continue;
+      final (k, v) = (p.substring(0, i), p.substring(i + 1));
+      if (k == 'prompt') {
+        prompt.add(v);
+      } else {
+        params[k] = v;
+      }
+    }
+    final AuthorizationResponse res;
+    try {
+      res = await const FlutterAppAuth().authorize(
+        AuthorizationRequest(
+          r.clientId,
+          r.redirectUri,
+          serviceConfiguration: AuthorizationServiceConfiguration(
+            authorizationEndpoint: r.authorizationEndpoint,
+            tokenEndpoint: r.tokenEndpoint,
+          ),
+          scopes: r.scopes,
+          loginHint: hint,
+          additionalParameters: params,
+          promptValues: prompt,
+        ),
+      );
+    } on FlutterAppAuthUserCancelledException {
+      throw const Problem(kind: 'cancelled', title: 'Sign-in cancelled');
+    } on FlutterAppAuthPlatformException catch (e) {
+      // The provider's own answer on its page (said no, or an admin rule).
+      final text =
+          '${e.platformErrorDetails.error} ${e.platformErrorDetails.errorDescription}';
+      final kind = text.contains('access_denied')
+          ? 'denied'
+          : RegExp(r'admin_policy_enforced|AADSTS65001|AADSTS90094')
+                .hasMatch(text)
+          ? 'admin'
+          : 'failed';
+      throw problemFrom('sign-in: $kind: $text', '');
+    }
+    onReturned?.call();
+    final code = res.authorizationCode;
+    final verifier = res.codeVerifier;
+    if (code == null || verifier == null) {
+      throw const Problem(
+        kind: 'auth',
+        title: 'The sign-in page gave nothing back',
+      );
+    }
+    return rust.oauthComplete(
+      provider: provider,
+      code: code,
+      verifier: verifier,
+      redirectUri: r.redirectUri,
+      expectEmail: hint,
+    );
   }
 
   @override

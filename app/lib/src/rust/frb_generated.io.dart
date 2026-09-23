@@ -4,6 +4,7 @@
 // ignore_for_file: unused_import, unused_element, unnecessary_import, duplicate_ignore, invalid_use_of_internal_member, annotate_overrides, non_constant_identifier_names, curly_braces_in_flow_control_structures, prefer_const_literals_to_create_immutables, unused_field
 
 import 'api/mail.dart';
+import 'api/signin.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -109,6 +110,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MissingFolderDto dco_decode_missing_folder_dto(dynamic raw);
+
+  @protected
+  MobileAuthDto dco_decode_mobile_auth_dto(dynamic raw);
+
+  @protected
+  OAuthStartDto dco_decode_o_auth_start_dto(dynamic raw);
+
+  @protected
+  OlderDto dco_decode_older_dto(dynamic raw);
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
@@ -253,6 +263,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   MissingFolderDto sse_decode_missing_folder_dto(SseDeserializer deserializer);
+
+  @protected
+  MobileAuthDto sse_decode_mobile_auth_dto(SseDeserializer deserializer);
+
+  @protected
+  OAuthStartDto sse_decode_o_auth_start_dto(SseDeserializer deserializer);
+
+  @protected
+  OlderDto sse_decode_older_dto(SseDeserializer deserializer);
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
@@ -445,6 +464,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
     MissingFolderDto self,
     SseSerializer serializer,
   );
+
+  @protected
+  void sse_encode_mobile_auth_dto(MobileAuthDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_o_auth_start_dto(
+    OAuthStartDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_older_dto(OlderDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);

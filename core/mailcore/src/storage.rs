@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 10;
+const SCHEMA_VERSION: i32 = 11;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -212,6 +212,17 @@ const SCHEMA_V10: &str = r#"
 ALTER TABLE folders ADD COLUMN delimiter TEXT;
 "#;
 
+/// v11: the oldest UID a folder's sync covers. Older mail comes in on request (the floor
+/// moves down) or as a server search result (the floor stays), so a search never makes
+/// the next sync fetch years of mail. Synced folders start at their oldest cached UID, or
+/// at UIDNEXT when nothing is cached (everything there was moved away).
+const SCHEMA_V11: &str = r#"
+ALTER TABLE folders ADD COLUMN floor_uid INTEGER;
+UPDATE folders SET floor_uid = COALESCE(
+  (SELECT MIN(uid) FROM messages WHERE folder_id = folders.id), uidnext)
+WHERE uidvalidity IS NOT NULL;
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -303,6 +314,9 @@ impl Store {
             }
             if version < 10 {
                 tx.execute_batch(SCHEMA_V10)?;
+            }
+            if version < 11 {
+                tx.execute_batch(SCHEMA_V11)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -455,6 +469,7 @@ impl Store {
             last_sync_at: r.get::<_, Option<i64>>("last_sync_at")?.map(dt),
             selectable: r.get::<_, i64>("selectable")? != 0,
             delimiter: r.get("delimiter")?,
+            floor_uid: r.get::<_, Option<i64>>("floor_uid")?.map(|v| v as u32),
         })
     }
 
@@ -550,6 +565,29 @@ impl Store {
         })
     }
 
+    /// Tests: put the floor anywhere.
+    #[cfg(test)]
+    pub(crate) fn force_floor(&self, folder_id: i64, uid: u32) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE folders SET floor_uid=?2 WHERE id=?1",
+                params![folder_id, uid],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Move the folder's sync floor to [uid] (lower only; None clears it).
+    pub fn set_floor(&self, folder_id: i64, uid: u32) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE folders SET floor_uid = MIN(COALESCE(floor_uid, ?2), ?2) WHERE id=?1",
+                params![folder_id, uid],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn update_folder_state(
         &self,
         folder_id: i64,
@@ -576,7 +614,7 @@ impl Store {
             tx.execute("DELETE FROM messages WHERE folder_id=?1", [folder_id])?;
             tx.execute("DELETE FROM fetch_holes WHERE folder_id=?1", [folder_id])?;
             tx.execute(
-                "UPDATE folders SET uidvalidity=NULL, uidnext=NULL, highest_modseq=NULL WHERE id=?1",
+                "UPDATE folders SET uidvalidity=NULL, uidnext=NULL, highest_modseq=NULL, floor_uid=NULL WHERE id=?1",
                 [folder_id],
             )?;
             Self::refresh_all_threads(&tx)?;
@@ -2283,6 +2321,41 @@ mod tests {
         assert_eq!(hits("paid"), 1);
         assert_eq!(hits("from:hetzner"), 1);
         assert_eq!(hits("z@x.dev"), 1);
+    }
+
+    #[test]
+    fn upgrading_to_v11_gives_every_synced_folder_a_floor() {
+        let conn = Connection::open_in_memory().unwrap();
+        for step in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+            SCHEMA_V9, SCHEMA_V10,
+        ] {
+            conn.execute_batch(step).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 10).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO accounts(kind,email,imap_host,imap_port,auth_kind,created_at) VALUES('imap','t@x','h',993,'password',0);
+               INSERT INTO folders(account_id,remote_name,role,uidvalidity,uidnext) VALUES(1,'INBOX','inbox',7,400);
+               INSERT INTO folders(account_id,remote_name,role,uidvalidity,uidnext) VALUES(1,'Archive','archive',7,90);
+               INSERT INTO folders(account_id,remote_name,role) VALUES(1,'Junk','junk');
+               INSERT INTO threads(account_id,subject) VALUES(1,'Invoice');
+               INSERT INTO messages(account_id,folder_id,uid,thread_id,subject,from_name,from_addr,to_json,date)
+                 VALUES(1,1,350,1,'Invoice','Hetzner','billing@hetzner.com','[]',0);"#,
+        )
+        .unwrap();
+        let s = Store::init(conn).unwrap();
+        let floor = |name: &str| {
+            s.folders(1)
+                .unwrap()
+                .into_iter()
+                .find(|f| f.remote_name == name)
+                .unwrap()
+                .floor_uid
+        };
+        assert_eq!(floor("INBOX"), Some(350), "the oldest cached message");
+        // Everything there was moved away: the sync covered up to UIDNEXT, not below it.
+        assert_eq!(floor("Archive"), Some(90));
+        assert_eq!(floor("Junk"), None, "never synced");
     }
 
     #[test]

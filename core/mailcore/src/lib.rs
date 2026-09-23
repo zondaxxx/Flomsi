@@ -11,6 +11,7 @@ pub mod compose;
 pub mod diagnose;
 pub mod error;
 pub mod files;
+pub mod http;
 pub mod logging;
 pub mod model;
 pub mod probe;
@@ -50,6 +51,12 @@ use tokio::sync::broadcast;
 pub const SECRET_PASSWORD: &str = "password";
 pub const SECRET_REFRESH_TOKEN: &str = "refresh_token";
 pub const SECRET_ACCESS_TOKEN: &str = "access_token";
+/// The app registration an OAuth account was signed in with (JSON [auth::OAuthClient]),
+/// needed to refresh its access token.
+pub const SECRET_OAUTH_CLIENT: &str = "oauth_client";
+
+/// An access token is refreshed this long before it runs out.
+const TOKEN_MARGIN_SECS: i64 = 120;
 
 /// Raw messages fetched on demand are cached up to this size; bigger ones are fetched again.
 const RAW_CACHE_LIMIT: usize = 32 * 1024 * 1024;
@@ -84,6 +91,21 @@ pub struct Core {
     store: Arc<Store>,
     engine: SyncEngine,
     data_dir: PathBuf,
+    token_lock: tokio::sync::Mutex<()>,
+}
+
+/// Access tokens are kept as `expires_at|token`.
+fn store_access_token(email: &str, tokens: &auth::Tokens) -> Result<()> {
+    secrets::set(
+        email,
+        SECRET_ACCESS_TOKEN,
+        &format!("{}|{}", tokens.expires_at, tokens.access_token),
+    )
+}
+
+fn parse_access_token(stored: &str) -> Option<(i64, String)> {
+    let (at, token) = stored.split_once('|')?;
+    Some((at.parse().ok()?, token.to_string()))
 }
 
 impl Core {
@@ -97,6 +119,7 @@ impl Core {
             store,
             engine,
             data_dir: data_dir.to_path_buf(),
+            token_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -150,7 +173,12 @@ impl Core {
         // Files first: if a viewer still holds one (Windows), fail before anything
         // irreversible so the removal can simply be retried.
         self.forget_account_files(&a)?;
-        for k in [SECRET_PASSWORD, SECRET_REFRESH_TOKEN, SECRET_ACCESS_TOKEN] {
+        for k in [
+            SECRET_PASSWORD,
+            SECRET_REFRESH_TOKEN,
+            SECRET_ACCESS_TOKEN,
+            SECRET_OAUTH_CLIENT,
+        ] {
             secrets::delete(&a.email, k)?;
         }
         self.store.delete_account(id)
@@ -200,31 +228,183 @@ impl Core {
         )))
     }
 
-    async fn connect(&self, account: &Account) -> Result<ImapProvider> {
-        let cred = match account.auth {
-            AuthKind::Password => {
-                Credential::Password(secrets::get(&account.email, SECRET_PASSWORD)?.ok_or_else(
-                    || Error::Secrets(format!("no password stored for {}", account.email)),
-                )?)
+    /// Add a Gmail or Microsoft account signed in through the browser, or sign an existing
+    /// one in again. The address comes from the ID token and the servers from the
+    /// provider; IMAP sign-in is checked before anything is kept. [expect]: the address
+    /// being signed in again (another one is refused). Refusals come back as
+    /// `Error::Auth("sign-in: <kind>: …")` for the app to put in words.
+    pub async fn add_oauth_account(
+        &self,
+        client: &auth::OAuthClient,
+        tokens: &auth::Tokens,
+        expect: Option<&str>,
+    ) -> Result<Account> {
+        let email = tokens
+            .id_token
+            .as_deref()
+            .and_then(auth::email_from_id_token)
+            .ok_or_else(|| Error::Auth("sign-in: failed: no address came back".into()))?;
+        if let Some(want) = expect.filter(|w| !w.is_empty()) {
+            if !want.eq_ignore_ascii_case(&email) {
+                return Err(Error::Auth(format!(
+                    "sign-in: wrong_account: {email} {want}"
+                )));
             }
-            AuthKind::XOAuth2 => Credential::AccessToken(
-                secrets::get(&account.email, SECRET_ACCESS_TOKEN)?.ok_or_else(|| {
-                    Error::Secrets(format!("no access token for {}", account.email))
-                })?,
+        }
+        // Google lets people untick mail on its consent page: then there is nothing to do.
+        if client.provider == auth::OAuthProvider::Google
+            && tokens.scope.as_deref().is_some_and(|s| {
+                !s.split_whitespace()
+                    .any(|x| x == "https://mail.google.com/")
+            })
+        {
+            return Err(Error::Auth(
+                "sign-in: scope: mail access was not allowed".into(),
+            ));
+        }
+        let refresh = tokens.refresh_token.clone().ok_or_else(|| {
+            Error::Auth("sign-in: no_refresh: only temporary access was given".into())
+        })?;
+        let existing = self
+            .store
+            .accounts()?
+            .into_iter()
+            .find(|a| a.email.eq_ignore_ascii_case(&email));
+        if let Some(a) = &existing {
+            if a.auth != AuthKind::XOAuth2 {
+                return Err(Error::Auth(format!("sign-in: duplicate_password: {email}")));
+            }
+        }
+        let (kind, imap_host, smtp_host, smtp_port, smtp_security) = match client.provider {
+            auth::OAuthProvider::Google => (
+                ProviderKind::Gmail,
+                "imap.gmail.com",
+                "smtp.gmail.com",
+                465,
+                Security::Tls,
+            ),
+            auth::OAuthProvider::Microsoft => (
+                ProviderKind::Outlook,
+                "outlook.office365.com",
+                "smtp.office365.com",
+                587,
+                Security::StartTls,
             ),
         };
-        ImapProvider::connect_with(
-            &account.imap_host,
-            account.imap_port,
-            Transport {
-                security: account.imap_security,
-                local_bridge: account.local_bridge,
-            },
+        let (host, port, transport) = match &existing {
+            Some(a) => (
+                a.imap_host.clone(),
+                a.imap_port,
+                Transport {
+                    security: a.imap_security,
+                    local_bridge: a.local_bridge,
+                },
+            ),
+            None => (imap_host.to_string(), 993, Transport::default()),
+        };
+        let mut p = ImapProvider::connect_with(
+            &host,
+            port,
+            transport,
             &[],
-            &account.email,
-            cred,
+            &email,
+            Credential::AccessToken(tokens.access_token.clone()),
         )
         .await
+        .map_err(|e| match e {
+            // Signed in with the provider, but its mail server says no: IMAP is off.
+            Error::Auth(m) => Error::Auth(format!("sign-in: imap_off: {m}")),
+            other => other,
+        })?;
+        let _ = p.logout().await;
+        let client_json = serde_json::to_string(client)?;
+        secrets::set(&email, SECRET_REFRESH_TOKEN, &refresh)?;
+        secrets::set(&email, SECRET_OAUTH_CLIENT, &client_json)?;
+        store_access_token(&email, tokens)?;
+        if let Some(a) = existing {
+            return Ok(a);
+        }
+        self.store.add_account(&NewAccount {
+            kind,
+            email: email.clone(),
+            display_name: String::new(),
+            imap_host: imap_host.into(),
+            imap_port: 993,
+            smtp_host: smtp_host.into(),
+            smtp_port,
+            auth: AuthKind::XOAuth2,
+            imap_security: Security::Tls,
+            smtp_security: Some(smtp_security),
+            local_bridge: false,
+        })
+    }
+
+    /// A current access token for an OAuth account: the stored one while it lasts, else a
+    /// new one from the refresh token (which the provider may also replace). With [fresh],
+    /// always a new one (the server turned the stored one down).
+    async fn access_token(&self, account: &Account, fresh: bool) -> Result<String> {
+        // One refresh at a time: two syncs must not race to spend a rotating refresh token.
+        let _one = self.token_lock.lock().await;
+        if !fresh {
+            if let Some((expires_at, token)) = secrets::get(&account.email, SECRET_ACCESS_TOKEN)?
+                .as_deref()
+                .and_then(parse_access_token)
+            {
+                if expires_at - TOKEN_MARGIN_SECS > chrono::Utc::now().timestamp() {
+                    return Ok(token);
+                }
+            }
+        }
+        let client: auth::OAuthClient = serde_json::from_str(
+            &secrets::get(&account.email, SECRET_OAUTH_CLIENT)?
+                .ok_or_else(|| Error::Auth(format!("{} needs to sign in again", account.email)))?,
+        )?;
+        let refresh = secrets::get(&account.email, SECRET_REFRESH_TOKEN)?
+            .ok_or_else(|| Error::Auth(format!("{} needs to sign in again", account.email)))?;
+        let tokens = auth::refresh(&client, &refresh).await?;
+        if let Some(r) = &tokens.refresh_token {
+            secrets::set(&account.email, SECRET_REFRESH_TOKEN, r)?;
+        }
+        store_access_token(&account.email, &tokens)?;
+        Ok(tokens.access_token)
+    }
+
+    async fn connect(&self, account: &Account) -> Result<ImapProvider> {
+        let transport = Transport {
+            security: account.imap_security,
+            local_bridge: account.local_bridge,
+        };
+        let open = |cred| {
+            ImapProvider::connect_with(
+                &account.imap_host,
+                account.imap_port,
+                transport,
+                &[],
+                &account.email,
+                cred,
+            )
+        };
+        match account.auth {
+            AuthKind::Password => {
+                open(Credential::Password(
+                    secrets::get(&account.email, SECRET_PASSWORD)?.ok_or_else(|| {
+                        Error::Secrets(format!("no password stored for {}", account.email))
+                    })?,
+                ))
+                .await
+            }
+            AuthKind::XOAuth2 => {
+                let token = self.access_token(account, false).await?;
+                match open(Credential::AccessToken(token)).await {
+                    // Revoked early, or a clock that is off: one new token, then the verdict.
+                    Err(Error::Auth(_)) => {
+                        let token = self.access_token(account, true).await?;
+                        open(Credential::AccessToken(token)).await
+                    }
+                    r => r,
+                }
+            }
+        }
     }
 
     pub async fn sync_account(&self, account_id: i64, opts: &SyncOptions) -> Result<SyncReport> {
@@ -266,6 +446,154 @@ impl Core {
         };
         provider.logout().await?;
         Ok(outcome)
+    }
+
+    /// The folders a list query covers on one account: its role (Inbox when none), and on
+    /// Gmail, or where there is no Archive, All Mail for the archive.
+    fn folders_for(&self, account: &Account, role: FolderRole) -> Result<Vec<Folder>> {
+        let folders = self.store.folders(account.id)?;
+        let with = |r: FolderRole| -> Vec<Folder> {
+            folders
+                .iter()
+                .filter(|f| f.role == r && f.selectable)
+                .cloned()
+                .collect()
+        };
+        let gmail = account.kind == ProviderKind::Gmail
+            || account.imap_host.to_ascii_lowercase().contains("gmail");
+        Ok(match role {
+            FolderRole::Archive if gmail || with(FolderRole::Archive).is_empty() => {
+                with(FolderRole::All)
+            }
+            r => with(r),
+        })
+    }
+
+    /// Older mail for the list [query] shows on [account_id]: the next [count] messages of
+    /// each folder it covers, below what the sync holds. Returns how many arrived and
+    /// whether the server has older mail still. A folder that fails is skipped (and the
+    /// first such error returned only when nothing else came in).
+    pub async fn load_older(
+        &self,
+        account_id: i64,
+        query: &str,
+        count: usize,
+    ) -> Result<(usize, bool)> {
+        let account = self.store.account(account_id)?;
+        let q = Query::parse(query);
+        let role = q.folder.unwrap_or(FolderRole::Inbox);
+        let folders = self.folders_for(&account, role)?;
+        if folders.is_empty() {
+            return Ok((0, false));
+        }
+        // Gmail's archive is All Mail without the inbox: older inbox mail must not come in
+        // as archived.
+        let only = (role == FolderRole::Archive
+            && folders.iter().all(|f| f.role == FolderRole::All))
+        .then_some("NOT X-GM-LABELS \\Inbox");
+        let mut p = self.connect(&account).await?;
+        let r = async {
+            let (mut fetched, mut more, mut first_error) = (0, false, None);
+            for f in &folders {
+                match self
+                    .engine
+                    .load_older(&account, &mut p, f, count, only, &SyncOptions::default())
+                    .await
+                {
+                    Ok((n, m)) => {
+                        fetched += n;
+                        more |= m;
+                    }
+                    Err(e @ Error::Io(_)) => return Err(e),
+                    Err(e) => {
+                        log::warn!("{}: older mail not loaded: {e}", f.remote_name);
+                        more = true;
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+            match first_error {
+                Some(e) if fetched == 0 => Err(e),
+                _ => Ok((fetched, more)),
+            }
+        }
+        .await;
+        let _ = p.logout().await;
+        r
+    }
+
+    /// Look on [account_id]'s server for what [query] names, beyond what is cached: in All
+    /// Mail and the inbox on Gmail (so a match still in the inbox shows there), elsewhere
+    /// in every synced folder but Spam, Trash and Drafts (or the one folder the query
+    /// names). Up to [limit] matches per folder are stored and then show in [threads]. A
+    /// folder that fails is skipped. Returns how many arrived.
+    pub async fn search_server(&self, account_id: i64, query: &str, limit: usize) -> Result<usize> {
+        let account = self.store.account(account_id)?;
+        let q = Query::parse(query);
+        if q.imap_criteria(false).is_none() {
+            return Ok(0);
+        }
+        let gmail = account.kind == ProviderKind::Gmail
+            || account.imap_host.to_ascii_lowercase().contains("gmail");
+        let everywhere = || -> Result<Vec<Folder>> {
+            Ok(self
+                .store
+                .folders(account.id)?
+                .into_iter()
+                .filter(|f| {
+                    f.selectable
+                        && !matches!(
+                            f.role,
+                            FolderRole::Junk | FolderRole::Trash | FolderRole::Drafts
+                        )
+                })
+                .collect())
+        };
+        let folders: Vec<Folder> = match q.folder {
+            Some(role) => self.folders_for(&account, role)?,
+            None if gmail => {
+                let all = self.folders_for(&account, FolderRole::All)?;
+                if all.is_empty() {
+                    // All Mail hidden from IMAP: the labels there are, then.
+                    everywhere()?
+                } else {
+                    [all, self.folders_for(&account, FolderRole::Inbox)?].concat()
+                }
+            }
+            None => everywhere()?,
+        };
+        if folders.is_empty() {
+            return Ok(0);
+        }
+        let mut p = self.connect(&account).await?;
+        let r = async {
+            let (mut found, mut first_error) = (0, None);
+            for f in &folders {
+                // A folder never synced has no UIDVALIDITY yet to keep matches under.
+                if f.uidvalidity.is_none() {
+                    continue;
+                }
+                match self
+                    .engine
+                    .search_server(&account, &mut p, f, &q, limit, &SyncOptions::default())
+                    .await
+                {
+                    Ok(n) => found += n,
+                    Err(e @ Error::Io(_)) => return Err(e),
+                    Err(e) => {
+                        log::warn!("{}: not searched: {e}", f.remote_name);
+                        first_error.get_or_insert(e);
+                    }
+                }
+            }
+            match first_error {
+                Some(e) if found == 0 => Err(e),
+                _ => Ok(found),
+            }
+        }
+        .await;
+        let _ = p.logout().await;
+        r
     }
 
     /// Create the folder Archive or Delete needs when the server has none. It is marked
@@ -472,11 +800,9 @@ impl Core {
                     Error::Secrets(format!("no password stored for {}", account.email))
                 })?,
             ),
-            AuthKind::XOAuth2 => SmtpCredential::AccessToken(
-                secrets::get(&account.email, SECRET_ACCESS_TOKEN)?.ok_or_else(|| {
-                    Error::Secrets(format!("no access token for {}", account.email))
-                })?,
-            ),
+            AuthKind::XOAuth2 => {
+                SmtpCredential::AccessToken(self.access_token(&account, false).await?)
+            }
         };
         let (host, port) = if account.smtp_host.is_empty() {
             smtp::guess_smtp(&account.imap_host).ok_or_else(|| {
@@ -979,6 +1305,7 @@ mod tests {
             last_sync_at: None,
             selectable: true,
             delimiter: None,
+            floor_uid: None,
         };
         let state = |validity, next| provider::FolderState {
             uidvalidity: validity,
@@ -1198,6 +1525,357 @@ mod tests {
         assert!(err.to_string().contains("Show in IMAP"), "{err}");
         assert!(err.to_string().contains("All Mail"), "{err}");
         assert!(fake.with(|s| !s.log.iter().any(|l| l.starts_with("CREATE"))));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn numbered(n: u32, subject: &str) -> Vec<u8> {
+        format!(
+            "From: Anna <anna@studio.dev>\r\nTo: z@x.dev\r\nSubject: {subject}\r\n\
+             Message-ID: <m{n}@studio.dev>\r\nDate: Mon, 1 Jan 2024 10:00:00 +0000\r\n\r\n\
+             Body {n}.\r\n"
+        )
+        .into_bytes()
+    }
+
+    /// 30 messages in INBOX (UID 3 is the one a search looks for), synced with a window of 10.
+    async fn thirty(tag: &str) -> (provider::fake_imap::FakeImap, Core, PathBuf, i64) {
+        use crate::provider::fake_imap::FakeImap;
+        let fake = FakeImap::start(&format!("{tag}@x.dev"), "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            for n in 1..=30 {
+                let subject = if n == 3 {
+                    "Quarterly report".to_string()
+                } else {
+                    format!("Note {n}")
+                };
+                s.deliver("INBOX", &numbered(n, &subject), &[]);
+            }
+        });
+        let (core, dir, account) = core_on(&fake, tag).await;
+        let opts = SyncOptions {
+            roles: vec![FolderRole::Inbox],
+            initial_window: 10,
+            ..SyncOptions::default()
+        };
+        assert_eq!(core.sync_account(account, &opts).await.unwrap().fetched, 10);
+        (fake, core, dir, account)
+    }
+
+    #[tokio::test]
+    async fn older_mail_comes_in_pages_until_there_is_none() {
+        let (_fake, core, dir, account) = thirty("older").await;
+        assert_eq!(core.load_older(account, "", 10).await.unwrap(), (10, true));
+        assert_eq!(core.load_older(account, "", 10).await.unwrap(), (10, false));
+        assert_eq!(core.load_older(account, "", 10).await.unwrap(), (0, false));
+        assert_eq!(core.threads("", 100).unwrap().len(), 30);
+        // The next sync keeps all of it and fetches nothing again.
+        let r = core
+            .sync_account(account, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!((r.fetched, r.removed), (0, 0));
+        assert_eq!(core.threads("", 100).unwrap().len(), 30);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_server_search_finds_old_mail_without_pulling_in_the_years_between() {
+        let (fake, core, dir, account) = thirty("srvsearch").await;
+        assert!(core.threads("quarterly", 10).unwrap().is_empty());
+        assert_eq!(
+            core.search_server(account, "quarterly", 50).await.unwrap(),
+            1
+        );
+        let found = core.threads("quarterly", 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].subject, "Quarterly report");
+        // Nothing to look for: the server is not asked.
+        assert_eq!(
+            core.search_server(account, "is:unread", 50).await.unwrap(),
+            0
+        );
+
+        // The next sync fetches none of UIDs 4..20, and still follows the found one's flags.
+        fake.with(|s| s.set_flags("INBOX", 3, &["\\Seen"]));
+        let r = core
+            .sync_account(account, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(r.fetched, 0);
+        assert_eq!(core.threads("", 100).unwrap().len(), 11);
+        assert_eq!(core.threads("quarterly is:unread", 10).unwrap().len(), 0);
+        // Deleted on the server: gone here too.
+        fake.with(|s| {
+            let b = s.boxes.get_mut("INBOX").unwrap();
+            b.msgs.retain(|m| m.uid != 3);
+        });
+        core.sync_account(account, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(core.threads("quarterly", 10).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A token endpoint over TLS: refresh token "r1" is worth access token "tok2" until
+    /// [revoked]; every request is counted.
+    struct FakeTokens {
+        url: String,
+        requests: Arc<std::sync::atomic::AtomicUsize>,
+        revoked: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl FakeTokens {
+        async fn start() -> FakeTokens {
+            use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+            use std::sync::atomic::Ordering;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+            let cert = ck.cert.der().clone();
+            let key =
+                PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
+            *crate::http::TEST_ROOT.lock().unwrap() = Some(cert.clone());
+            let config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let revoked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (n, gone) = (requests.clone(), revoked.clone());
+            tokio::spawn(async move {
+                loop {
+                    let Ok((tcp, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let Ok(mut tls) = acceptor.accept(tcp).await else {
+                        continue;
+                    };
+                    n.fetch_add(1, Ordering::SeqCst);
+                    let mut buf = vec![0u8; 4096];
+                    let mut got = 0;
+                    loop {
+                        let k = tls.read(&mut buf[got..]).await.unwrap_or(0);
+                        got += k;
+                        let text = String::from_utf8_lossy(&buf[..got]);
+                        if k == 0 || text.contains("refresh_token=") {
+                            break;
+                        }
+                    }
+                    let text = String::from_utf8_lossy(&buf[..got]).into_owned();
+                    let ok = text.contains("refresh_token=r1") && !gone.load(Ordering::SeqCst);
+                    let body = if ok {
+                        r#"{"access_token":"tok2","expires_in":3599,"token_type":"Bearer"}"#
+                    } else {
+                        r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#
+                    };
+                    let status = if ok { "200 OK" } else { "400 Bad Request" };
+                    let reply = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = tls.write_all(reply.as_bytes()).await;
+                    let _ = tls.shutdown().await;
+                }
+            });
+            let url = format!("https://localhost:{port}/token");
+            *crate::auth::TEST_TOKEN_URL.lock().unwrap() = Some(url.clone());
+            FakeTokens {
+                url,
+                requests,
+                revoked,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_oauth_account_refreshes_its_token_and_asks_again_only_once() {
+        use crate::provider::fake_imap::FakeImap;
+        use std::sync::atomic::Ordering;
+        let tokens = FakeTokens::start().await;
+        assert!(tokens.url.starts_with("https://localhost:"));
+        let email = "oa@x.dev";
+        // The fake takes XOAUTH2 with the current access token in place of a password.
+        let fake = FakeImap::start(email, "tok2").await;
+        fake.with(|s| s.add_box("INBOX", None));
+        let dir = std::env::temp_dir().join(format!("mailcore-oauth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let core = Core::open(&dir).unwrap();
+        let account = core
+            .store()
+            .add_account(&NewAccount {
+                kind: ProviderKind::Gmail,
+                email: email.into(),
+                display_name: String::new(),
+                imap_host: "localhost".into(),
+                imap_port: fake.port,
+                smtp_host: String::new(),
+                smtp_port: 0,
+                auth: AuthKind::XOAuth2,
+                imap_security: Security::Tls,
+                smtp_security: None,
+                local_bridge: true,
+            })
+            .unwrap();
+        let client = auth::OAuthClient {
+            provider: auth::OAuthProvider::Google,
+            client_id: "cid".into(),
+            client_secret: None,
+        };
+        secrets::set(email, SECRET_REFRESH_TOKEN, "r1").unwrap();
+        secrets::set(
+            email,
+            SECRET_OAUTH_CLIENT,
+            &serde_json::to_string(&client).unwrap(),
+        )
+        .unwrap();
+        let past = chrono::Utc::now().timestamp() - 10;
+        secrets::set(email, SECRET_ACCESS_TOKEN, &format!("{past}|tok1")).unwrap();
+        let opts = SyncOptions::default();
+
+        // Run out: refreshed before signing in.
+        core.sync_account(account.id, &opts).await.unwrap();
+        assert_eq!(tokens.requests.load(Ordering::SeqCst), 1);
+        // Still good: no new request.
+        core.sync_account(account.id, &opts).await.unwrap();
+        assert_eq!(tokens.requests.load(Ordering::SeqCst), 1);
+
+        // Turned down though not expired (revoked early): one new token, then signed in.
+        let later = chrono::Utc::now().timestamp() + 3000;
+        secrets::set(email, SECRET_ACCESS_TOKEN, &format!("{later}|stale")).unwrap();
+        core.sync_account(account.id, &opts).await.unwrap();
+        assert_eq!(tokens.requests.load(Ordering::SeqCst), 2);
+
+        // The grant itself is gone: the account needs signing in, said as an auth error.
+        tokens.revoked.store(true, Ordering::SeqCst);
+        secrets::set(email, SECRET_ACCESS_TOKEN, &format!("{past}|tok2")).unwrap();
+        match core.sync_account(account.id, &opts).await {
+            Err(Error::Auth(m)) => assert!(m.contains("revoked"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn id_token(email: &str) -> String {
+        use base64::Engine;
+        let claims = format!(r#"{{"email":"{email}"}}"#);
+        format!(
+            "e30.{}.sig",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims)
+        )
+    }
+
+    fn google_tokens(email: &str, access: &str, scope: &str) -> auth::Tokens {
+        auth::Tokens {
+            access_token: access.into(),
+            refresh_token: Some(format!("refresh-{access}")),
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+            id_token: Some(id_token(email)),
+            scope: Some(scope.into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn signing_in_again_replaces_the_tokens_and_refusals_are_named() {
+        use crate::provider::fake_imap::FakeImap;
+        let email = "again@x.dev";
+        let fake = FakeImap::start(email, "fresh-token").await;
+        fake.with(|s| s.add_box("INBOX", None));
+        let dir = std::env::temp_dir().join(format!("mailcore-again-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let core = Core::open(&dir).unwrap();
+        let account = core
+            .store()
+            .add_account(&NewAccount {
+                kind: ProviderKind::Gmail,
+                email: email.into(),
+                display_name: String::new(),
+                imap_host: "localhost".into(),
+                imap_port: fake.port,
+                smtp_host: String::new(),
+                smtp_port: 0,
+                auth: AuthKind::XOAuth2,
+                imap_security: Security::Tls,
+                smtp_security: None,
+                local_bridge: true,
+            })
+            .unwrap();
+        let client = auth::OAuthClient {
+            provider: auth::OAuthProvider::Google,
+            client_id: "cid".into(),
+            client_secret: None,
+        };
+        let mail = "https://mail.google.com/ openid email";
+        let refusal = |r: Result<Account>| match r {
+            Err(Error::Auth(m)) => m,
+            other => panic!("{other:?}"),
+        };
+
+        // Someone else's account on the provider's page.
+        let m = refusal(
+            core.add_oauth_account(&client, &google_tokens("bob@x.dev", "t", mail), Some(email))
+                .await,
+        );
+        assert!(m.starts_with("sign-in: wrong_account: bob@x.dev"), "{m}");
+        // The mail box unticked on Google's page.
+        let m = refusal(
+            core.add_oauth_account(&client, &google_tokens(email, "t", "openid email"), None)
+                .await,
+        );
+        assert!(m.starts_with("sign-in: scope:"), "{m}");
+
+        // Signed in again: the same account, its tokens replaced, sync works with them.
+        let again = core
+            .add_oauth_account(
+                &client,
+                &google_tokens(email, "fresh-token", mail),
+                Some(email),
+            )
+            .await
+            .unwrap();
+        assert_eq!(again.id, account.id);
+        assert_eq!(core.store().accounts().unwrap().len(), 1);
+        assert_eq!(
+            secrets::get(email, SECRET_REFRESH_TOKEN)
+                .unwrap()
+                .as_deref(),
+            Some("refresh-fresh-token")
+        );
+        core.sync_account(account.id, &SyncOptions::default())
+            .await
+            .unwrap();
+
+        // A password account at that address is not taken over.
+        let pw = core
+            .store()
+            .add_account(&NewAccount {
+                kind: ProviderKind::Imap,
+                email: "pw@x.dev".into(),
+                display_name: String::new(),
+                imap_host: "imap.x.dev".into(),
+                imap_port: 993,
+                smtp_host: String::new(),
+                smtp_port: 0,
+                auth: AuthKind::Password,
+                imap_security: Security::Tls,
+                smtp_security: None,
+                local_bridge: false,
+            })
+            .unwrap();
+        let _ = pw;
+        let m = refusal(
+            core.add_oauth_account(&client, &google_tokens("pw@x.dev", "t", mail), None)
+                .await,
+        );
+        assert!(
+            m.starts_with("sign-in: duplicate_password: pw@x.dev"),
+            "{m}"
+        );
+        let d = diagnose::diagnose(&format!("auth: {m}"), "imap.gmail.com");
+        assert_eq!(d.kind, diagnose::ErrorKind::DuplicatePassword);
+        assert!(d.title.contains("pw@x.dev"), "{}", d.title);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

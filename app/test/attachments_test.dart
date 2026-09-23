@@ -18,9 +18,8 @@ Widget _host(Widget child) => ProviderScope(
 );
 
 /// A file chip by its whole name (the chip lays out the extension on its own).
-Finder fileNamed(String name) => find.byWidgetPredicate(
-  (w) => w is Semantics && w.properties.label == name,
-);
+Finder fileNamed(String name) =>
+    find.byWidgetPredicate((w) => w is Semantics && w.properties.label == name);
 
 void main() {
   test('sizes read like a file manager', () {

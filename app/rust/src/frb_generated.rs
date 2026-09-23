@@ -39,7 +39,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.13.0";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -652840498;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -993182842;
 
 // Section: executor
 
@@ -547,6 +547,44 @@ fn wire__crate__api__mail__list_threads_impl(
         },
     )
 }
+fn wire__crate__api__mail__load_older_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "load_older",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <i64>::sse_decode(&mut deserializer);
+            let api_query = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::mail::load_older(api_account_id, api_query).await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
 fn wire__crate__api__mail__mark_read_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -724,6 +762,270 @@ fn wire__crate__api__mail__next_snooze_wake_impl(
                     })(),
                 )
             }
+        },
+    )
+}
+fn wire__crate__api__signin__oauth_begin_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "oauth_begin",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider = <String>::sse_decode(&mut deserializer);
+            let api_mobile = <bool>::sse_decode(&mut deserializer);
+            let api_expect_email = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let output_ok = crate::api::signin::oauth_begin(
+                            api_provider,
+                            api_mobile,
+                            api_expect_email,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__signin__oauth_cancel_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "oauth_cancel",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>({
+                    crate::api::signin::oauth_cancel(api_session);
+                })?;
+                std::result::Result::Ok(output_ok)
+            })())
+        },
+    )
+}
+fn wire__crate__api__signin__oauth_complete_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "oauth_complete",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider = <String>::sse_decode(&mut deserializer);
+            let api_code = <String>::sse_decode(&mut deserializer);
+            let api_verifier = <String>::sse_decode(&mut deserializer);
+            let api_redirect_uri = <String>::sse_decode(&mut deserializer);
+            let api_expect_email = <Option<String>>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let output_ok = crate::api::signin::oauth_complete(
+                            api_provider,
+                            api_code,
+                            api_verifier,
+                            api_redirect_uri,
+                            api_expect_email,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__signin__oauth_finish_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "oauth_finish",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let output_ok = crate::api::signin::oauth_finish(api_session).await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__signin__oauth_finish_with_redirect_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "oauth_finish_with_redirect",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_session = <String>::sse_decode(&mut deserializer);
+            let api_redirect = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let output_ok = crate::api::signin::oauth_finish_with_redirect(
+                            api_session,
+                            api_redirect,
+                        )
+                        .await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__signin__oauth_mobile_request_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "oauth_mobile_request",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_provider = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::signin::oauth_mobile_request(api_provider)?;
+                        std::result::Result::Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__signin__oauth_providers_impl(
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "oauth_providers",
+            port: None,
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_mobile = <bool>::sse_decode(&mut deserializer);
+            deserializer.end();
+            transform_result_sse::<_, ()>((move || {
+                let output_ok = Ok::<_, ()>(crate::api::signin::oauth_providers(api_mobile))?;
+                std::result::Result::Ok(output_ok)
+            })())
         },
     )
 }
@@ -1005,6 +1307,44 @@ fn wire__crate__api__mail__save_local_draft_impl(
                             crate::api::mail::save_local_draft(api_id, api_kind, api_draft)?;
                         std::result::Result::Ok(output_ok)
                     })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__mail__search_server_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_async::<flutter_rust_bridge::for_generated::SseCodec, _, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "search_server",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_account_id = <i64>::sse_decode(&mut deserializer);
+            let api_query = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| async move {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || async move {
+                        let output_ok =
+                            crate::api::mail::search_server(api_account_id, api_query).await?;
+                        std::result::Result::Ok(output_ok)
+                    })()
+                    .await,
                 )
             }
         },
@@ -1722,6 +2062,7 @@ impl SseDecode for crate::api::mail::AccountDto {
         let mut var_smtpPort = <u16>::sse_decode(deserializer);
         let mut var_smtpSecurity = <String>::sse_decode(deserializer);
         let mut var_localBridge = <bool>::sse_decode(deserializer);
+        let mut var_auth = <String>::sse_decode(deserializer);
         return crate::api::mail::AccountDto {
             id: var_id,
             email: var_email,
@@ -1736,6 +2077,7 @@ impl SseDecode for crate::api::mail::AccountDto {
             smtp_port: var_smtpPort,
             smtp_security: var_smtpSecurity,
             local_bridge: var_localBridge,
+            auth: var_auth,
         };
     }
 }
@@ -2028,6 +2370,52 @@ impl SseDecode for crate::api::mail::MissingFolderDto {
     }
 }
 
+impl SseDecode for crate::api::signin::MobileAuthDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_clientId = <String>::sse_decode(deserializer);
+        let mut var_redirectUri = <String>::sse_decode(deserializer);
+        let mut var_authorizationEndpoint = <String>::sse_decode(deserializer);
+        let mut var_tokenEndpoint = <String>::sse_decode(deserializer);
+        let mut var_scopes = <Vec<String>>::sse_decode(deserializer);
+        let mut var_parameters = <Vec<String>>::sse_decode(deserializer);
+        return crate::api::signin::MobileAuthDto {
+            client_id: var_clientId,
+            redirect_uri: var_redirectUri,
+            authorization_endpoint: var_authorizationEndpoint,
+            token_endpoint: var_tokenEndpoint,
+            scopes: var_scopes,
+            parameters: var_parameters,
+        };
+    }
+}
+
+impl SseDecode for crate::api::signin::OAuthStartDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_session = <String>::sse_decode(deserializer);
+        let mut var_url = <String>::sse_decode(deserializer);
+        let mut var_callbackScheme = <String>::sse_decode(deserializer);
+        return crate::api::signin::OAuthStartDto {
+            session: var_session,
+            url: var_url,
+            callback_scheme: var_callbackScheme,
+        };
+    }
+}
+
+impl SseDecode for crate::api::mail::OlderDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_fetched = <u32>::sse_decode(deserializer);
+        let mut var_more = <bool>::sse_decode(deserializer);
+        return crate::api::mail::OlderDto {
+            fetched: var_fetched,
+            more: var_more,
+        };
+    }
+}
+
 impl SseDecode for Option<String> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -2249,36 +2637,50 @@ fn pde_ffi_dispatcher_primary_impl(
         12 => wire__crate__api__mail__list_folders_impl(port, ptr, rust_vec_len, data_len),
         13 => wire__crate__api__mail__list_local_drafts_impl(port, ptr, rust_vec_len, data_len),
         14 => wire__crate__api__mail__list_threads_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__mail__mark_read_impl(port, ptr, rust_vec_len, data_len),
-        16 => wire__crate__api__mail__message_html_impl(port, ptr, rust_vec_len, data_len),
-        17 => wire__crate__api__mail__move_thread_impl(port, ptr, rust_vec_len, data_len),
-        18 => wire__crate__api__mail__new_draft_impl(port, ptr, rust_vec_len, data_len),
-        19 => wire__crate__api__mail__next_snooze_wake_impl(port, ptr, rust_vec_len, data_len),
-        20 => wire__crate__api__mail__open_attachment_impl(port, ptr, rust_vec_len, data_len),
-        21 => wire__crate__api__mail__open_core_impl(port, ptr, rust_vec_len, data_len),
-        22 => wire__crate__api__mail__remove_account_impl(port, ptr, rust_vec_len, data_len),
-        23 => wire__crate__api__mail__reply_draft_impl(port, ptr, rust_vec_len, data_len),
-        26 => wire__crate__api__mail__save_attachment_impl(port, ptr, rust_vec_len, data_len),
-        27 => wire__crate__api__mail__save_local_draft_impl(port, ptr, rust_vec_len, data_len),
-        28 => wire__crate__api__mail__send_draft_impl(port, ptr, rust_vec_len, data_len),
-        29 => wire__crate__api__mail__set_setting_impl(port, ptr, rust_vec_len, data_len),
-        30 => wire__crate__api__mail__snooze_thread_impl(port, ptr, rust_vec_len, data_len),
-        31 => wire__crate__api__mail__star_thread_impl(port, ptr, rust_vec_len, data_len),
-        33 => wire__crate__api__mail__sync_account_impl(port, ptr, rust_vec_len, data_len),
-        34 => wire__crate__api__mail__sync_all_impl(port, ptr, rust_vec_len, data_len),
-        35 => wire__crate__api__mail__sync_events_impl(port, ptr, rust_vec_len, data_len),
-        36 => wire__crate__api__mail__test_imap_login_impl(port, ptr, rust_vec_len, data_len),
-        37 => wire__crate__api__mail__test_smtp_login_impl(port, ptr, rust_vec_len, data_len),
-        38 => wire__crate__api__mail__thread_messages_impl(port, ptr, rust_vec_len, data_len),
-        39 => wire__crate__api__mail__trash_thread_impl(port, ptr, rust_vec_len, data_len),
-        40 => wire__crate__api__mail__unread_count_impl(port, ptr, rust_vec_len, data_len),
-        41 => wire__crate__api__mail__unsnooze_thread_impl(port, ptr, rust_vec_len, data_len),
-        42 => wire__crate__api__mail__update_account_impl(port, ptr, rust_vec_len, data_len),
-        43 => {
+        15 => wire__crate__api__mail__load_older_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__mail__mark_read_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__mail__message_html_impl(port, ptr, rust_vec_len, data_len),
+        18 => wire__crate__api__mail__move_thread_impl(port, ptr, rust_vec_len, data_len),
+        19 => wire__crate__api__mail__new_draft_impl(port, ptr, rust_vec_len, data_len),
+        20 => wire__crate__api__mail__next_snooze_wake_impl(port, ptr, rust_vec_len, data_len),
+        21 => wire__crate__api__signin__oauth_begin_impl(port, ptr, rust_vec_len, data_len),
+        23 => wire__crate__api__signin__oauth_complete_impl(port, ptr, rust_vec_len, data_len),
+        24 => wire__crate__api__signin__oauth_finish_impl(port, ptr, rust_vec_len, data_len),
+        25 => wire__crate__api__signin__oauth_finish_with_redirect_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        26 => {
+            wire__crate__api__signin__oauth_mobile_request_impl(port, ptr, rust_vec_len, data_len)
+        }
+        28 => wire__crate__api__mail__open_attachment_impl(port, ptr, rust_vec_len, data_len),
+        29 => wire__crate__api__mail__open_core_impl(port, ptr, rust_vec_len, data_len),
+        30 => wire__crate__api__mail__remove_account_impl(port, ptr, rust_vec_len, data_len),
+        31 => wire__crate__api__mail__reply_draft_impl(port, ptr, rust_vec_len, data_len),
+        34 => wire__crate__api__mail__save_attachment_impl(port, ptr, rust_vec_len, data_len),
+        35 => wire__crate__api__mail__save_local_draft_impl(port, ptr, rust_vec_len, data_len),
+        36 => wire__crate__api__mail__search_server_impl(port, ptr, rust_vec_len, data_len),
+        37 => wire__crate__api__mail__send_draft_impl(port, ptr, rust_vec_len, data_len),
+        38 => wire__crate__api__mail__set_setting_impl(port, ptr, rust_vec_len, data_len),
+        39 => wire__crate__api__mail__snooze_thread_impl(port, ptr, rust_vec_len, data_len),
+        40 => wire__crate__api__mail__star_thread_impl(port, ptr, rust_vec_len, data_len),
+        42 => wire__crate__api__mail__sync_account_impl(port, ptr, rust_vec_len, data_len),
+        43 => wire__crate__api__mail__sync_all_impl(port, ptr, rust_vec_len, data_len),
+        44 => wire__crate__api__mail__sync_events_impl(port, ptr, rust_vec_len, data_len),
+        45 => wire__crate__api__mail__test_imap_login_impl(port, ptr, rust_vec_len, data_len),
+        46 => wire__crate__api__mail__test_smtp_login_impl(port, ptr, rust_vec_len, data_len),
+        47 => wire__crate__api__mail__thread_messages_impl(port, ptr, rust_vec_len, data_len),
+        48 => wire__crate__api__mail__trash_thread_impl(port, ptr, rust_vec_len, data_len),
+        49 => wire__crate__api__mail__unread_count_impl(port, ptr, rust_vec_len, data_len),
+        50 => wire__crate__api__mail__unsnooze_thread_impl(port, ptr, rust_vec_len, data_len),
+        51 => wire__crate__api__mail__update_account_impl(port, ptr, rust_vec_len, data_len),
+        52 => {
             wire__crate__api__mail__update_account_password_impl(port, ptr, rust_vec_len, data_len)
         }
-        44 => wire__crate__api__mail__wait_for_change_impl(port, ptr, rust_vec_len, data_len),
-        45 => wire__crate__api__mail__wake_snoozed_impl(port, ptr, rust_vec_len, data_len),
+        53 => wire__crate__api__mail__wait_for_change_impl(port, ptr, rust_vec_len, data_len),
+        54 => wire__crate__api__mail__wake_snoozed_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2292,9 +2694,11 @@ fn pde_ffi_dispatcher_sync_impl(
     // Codec=Pde (Serialization + dispatch), see doc to use other codecs
     match func_id {
         6 => wire__crate__api__mail__diagnose_error_impl(ptr, rust_vec_len, data_len),
-        24 => wire__crate__api__mail__risky_extension_impl(ptr, rust_vec_len, data_len),
-        25 => wire__crate__api__mail__safe_file_name_impl(ptr, rust_vec_len, data_len),
-        32 => wire__crate__api__mail__suggest_smtp_impl(ptr, rust_vec_len, data_len),
+        22 => wire__crate__api__signin__oauth_cancel_impl(ptr, rust_vec_len, data_len),
+        27 => wire__crate__api__signin__oauth_providers_impl(ptr, rust_vec_len, data_len),
+        32 => wire__crate__api__mail__risky_extension_impl(ptr, rust_vec_len, data_len),
+        33 => wire__crate__api__mail__safe_file_name_impl(ptr, rust_vec_len, data_len),
+        41 => wire__crate__api__mail__suggest_smtp_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -2318,6 +2722,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::mail::AccountDto {
             self.smtp_port.into_into_dart().into_dart(),
             self.smtp_security.into_into_dart().into_dart(),
             self.local_bridge.into_into_dart().into_dart(),
+            self.auth.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -2516,6 +2921,69 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::mail::MissingFolderDto>
     }
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::signin::MobileAuthDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.client_id.into_into_dart().into_dart(),
+            self.redirect_uri.into_into_dart().into_dart(),
+            self.authorization_endpoint.into_into_dart().into_dart(),
+            self.token_endpoint.into_into_dart().into_dart(),
+            self.scopes.into_into_dart().into_dart(),
+            self.parameters.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::signin::MobileAuthDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::signin::MobileAuthDto>
+    for crate::api::signin::MobileAuthDto
+{
+    fn into_into_dart(self) -> crate::api::signin::MobileAuthDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::signin::OAuthStartDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.session.into_into_dart().into_dart(),
+            self.url.into_into_dart().into_dart(),
+            self.callback_scheme.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::signin::OAuthStartDto
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::signin::OAuthStartDto>
+    for crate::api::signin::OAuthStartDto
+{
+    fn into_into_dart(self) -> crate::api::signin::OAuthStartDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::mail::OlderDto {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.fetched.into_into_dart().into_dart(),
+            self.more.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::mail::OlderDto {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::mail::OlderDto> for crate::api::mail::OlderDto {
+    fn into_into_dart(self) -> crate::api::mail::OlderDto {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart for crate::api::mail::SavedDraftDto {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
@@ -2673,6 +3141,7 @@ impl SseEncode for crate::api::mail::AccountDto {
         <u16>::sse_encode(self.smtp_port, serializer);
         <String>::sse_encode(self.smtp_security, serializer);
         <bool>::sse_encode(self.local_bridge, serializer);
+        <String>::sse_encode(self.auth, serializer);
     }
 }
 
@@ -2874,6 +3343,35 @@ impl SseEncode for crate::api::mail::MissingFolderDto {
         <String>::sse_encode(self.role, serializer);
         <bool>::sse_encode(self.gmail, serializer);
         <String>::sse_encode(self.message, serializer);
+    }
+}
+
+impl SseEncode for crate::api::signin::MobileAuthDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.client_id, serializer);
+        <String>::sse_encode(self.redirect_uri, serializer);
+        <String>::sse_encode(self.authorization_endpoint, serializer);
+        <String>::sse_encode(self.token_endpoint, serializer);
+        <Vec<String>>::sse_encode(self.scopes, serializer);
+        <Vec<String>>::sse_encode(self.parameters, serializer);
+    }
+}
+
+impl SseEncode for crate::api::signin::OAuthStartDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <String>::sse_encode(self.session, serializer);
+        <String>::sse_encode(self.url, serializer);
+        <String>::sse_encode(self.callback_scheme, serializer);
+    }
+}
+
+impl SseEncode for crate::api::mail::OlderDto {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <u32>::sse_encode(self.fetched, serializer);
+        <bool>::sse_encode(self.more, serializer);
     }
 }
 

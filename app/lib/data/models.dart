@@ -38,10 +38,21 @@ class Account {
     this.smtp,
     this.localBridge = false,
     this.problem,
+    this.auth = 'password',
   });
   final int id;
   final String email;
   final String kind; // gmail, imap, outlook, jmap
+
+  /// `password` or `xoauth2` (signed in on the provider's page).
+  final String auth;
+
+  /// The provider to sign in with again: `google`, `microsoft`, or null for a password.
+  String? get signInProvider => auth != 'xoauth2'
+      ? null
+      : kind == 'outlook'
+      ? 'microsoft'
+      : 'google';
   final Color color;
   final int unread;
 
@@ -392,6 +403,11 @@ class SyncFinished extends RepoEvent {
 
 class ThreadsChanged extends RepoEvent {
   const ThreadsChanged();
+}
+
+/// Older mail came in on request (Load older, server search): not new mail.
+class MailImported extends RepoEvent {
+  const MailImported();
 }
 
 String formatWhen(DateTime d, {DateTime? now}) {

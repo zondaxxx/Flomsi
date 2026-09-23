@@ -10,6 +10,7 @@ import 'package:macos_window_utils/macos_window_utils.dart';
 import 'data/mock_repository.dart';
 import 'data/repository.dart';
 import 'data/rust_repository.dart';
+import 'features/notify/new_mail.dart';
 import 'features/shell/editor_shell.dart';
 import 'features/shell/notice_host.dart';
 import 'features/shell/startup_error.dart';
@@ -60,12 +61,33 @@ Future<void> _launch() async {
   }
 }
 
-void _run(MailRepository repo) => runApp(
-  ProviderScope(
+void _run(MailRepository repo) {
+  final container = ProviderContainer(
     overrides: [repositoryProvider.overrideWithValue(repo)],
-    child: const MailApp(),
-  ),
-);
+  );
+  runApp(
+    UncontrolledProviderScope(container: container, child: const MailApp()),
+  );
+  if (repo is RustRepository) unawaited(_announceNewMail(container, repo));
+}
+
+/// New mail while Flomsi is not in front becomes a system notification; a tap opens the
+/// conversation in the inbox.
+Future<void> _announceNewMail(ProviderContainer c, MailRepository repo) async {
+  // The shell opens it: selected on a computer, its own page on a phone.
+  await MailNotifications.init(
+    onOpen: (id) {
+      c.read(queryProvider.notifier).set('');
+      c.read(openThreadProvider.notifier).open(id);
+    },
+  );
+  await NewMailWatcher(
+    repo: repo,
+    announce: MailNotifications.announce,
+    inFront: () =>
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed,
+  ).start();
+}
 
 class MailApp extends ConsumerWidget {
   const MailApp({super.key});

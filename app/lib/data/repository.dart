@@ -21,6 +21,14 @@ abstract class MailRepository {
   /// folder's name.
   Future<String> createRoleFolder(int accountId, String role);
 
+  /// Older mail for the list [query] shows, from every account it covers: how many
+  /// messages arrived and whether the servers have older ones still.
+  Future<({int fetched, bool more})> loadOlder(String query);
+
+  /// Look on the servers for what [query] names, beyond the cached mail; the matches then
+  /// show in [threads]. Returns how many arrived.
+  Future<int> searchServer(String query);
+
   /// Folders of one account, for "Move to…".
   Future<List<Folder>> accountFolders(int accountId);
 
@@ -77,6 +85,23 @@ abstract class MailRepository {
   /// Sign in to IMAP, then SMTP, without storing anything. Throws a [Problem] whose
   /// stage says which server refused.
   Future<void> checkAccount(AccountSetup setup, String password);
+
+  /// Providers this build can sign in with on their own page: `google`, `microsoft`.
+  List<String> signInProviders();
+
+  /// Sign in on the provider's page (the browser on a computer, the system sign-in sheet
+  /// on a phone) and add the account it names, or, with [loginHint] naming an account
+  /// already here, sign that one in again. [onReturned] runs when the page is done and
+  /// the account is being connected. Throws a [Problem]; kind `cancelled` when the person
+  /// closed the page.
+  Future<Account> signIn(
+    String provider, {
+    String? loginHint,
+    void Function()? onReturned,
+  });
+
+  /// Stop a sign-in on a computer while its browser page is still open.
+  void cancelSignIn();
 
   /// Register an account; the password goes to the OS keychain, never to the database.
   /// Throws a [Problem]; adding an address twice is refused.

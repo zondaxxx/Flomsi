@@ -19,6 +19,10 @@ chrono = "0.4"
 jni = "0.21"
 ndk-context = "0.1"
 
+# Shipped builds carry no debug symbols: the Android library alone was tens of megabytes.
+[profile.release]
+strip = "debuginfo"
+
 [workspace]
 
 # flutter_rust_bridge's #[frb] expands to cfg(frb_expand) checks.

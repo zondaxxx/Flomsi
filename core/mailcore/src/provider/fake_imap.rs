@@ -575,6 +575,38 @@ where
                 let reply = format!("* CAPABILITY {caps}\r\n{}", ok("CAPABILITY"));
                 send(&w, reply.as_bytes()).await?;
             }
+            // XOAUTH2: the password stands for the one access token that is accepted.
+            "AUTHENTICATE" => {
+                use base64::Engine;
+                send(&w, b"+ \r\n").await?;
+                let mut answer = String::new();
+                r.read_line(&mut answer).await?;
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(answer.trim())
+                    .unwrap_or_default();
+                let text = String::from_utf8_lossy(&decoded).into_owned();
+                let field = |k: &str| {
+                    text.split('\x01')
+                        .find_map(|f| f.strip_prefix(k))
+                        .unwrap_or("")
+                        .to_string()
+                };
+                let good = field("user=") == creds.0 && field("auth=Bearer ") == creds.1;
+                if good {
+                    send(&w, ok("AUTHENTICATE").as_bytes()).await?;
+                } else {
+                    // RFC 7628: an error challenge, an empty answer, then NO.
+                    send(&w, b"+ eyJzdGF0dXMiOiI0MDEifQ==\r\n").await?;
+                    let mut empty = String::new();
+                    r.read_line(&mut empty).await?;
+                    send(
+                        &w,
+                        format!("{tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n")
+                            .as_bytes(),
+                    )
+                    .await?;
+                }
+            }
             "NOOP" => send(&w, ok("NOOP").as_bytes()).await?,
             "EXPUNGE" => {
                 let reply = {
@@ -675,6 +707,12 @@ where
                     };
                     let broken = st.broken_uid;
                     let refuse_flags = st.refuse_flag_fetch;
+                    // Gmail: which messages carry the Inbox label (have a copy in INBOX).
+                    let in_inbox: std::collections::HashSet<u64> = st
+                        .boxes
+                        .get("INBOX")
+                        .map(|b| b.msgs.iter().map(|m| m.gm).collect())
+                        .unwrap_or_default();
                     if sub == "SEARCH" {
                         pause = take_pause(&mut st, "SEARCH", &name);
                         pre_pause = take_pause(&mut st, "before SEARCH", &name);
@@ -718,6 +756,24 @@ where
                                 .map(|v| unquote(v).to_ascii_lowercase());
                             let deleted_only =
                                 args.iter().any(|a| a.eq_ignore_ascii_case("DELETED"));
+                            let unseen_only = args.iter().any(|a| a.eq_ignore_ascii_case("UNSEEN"));
+                            // `NOT X-GM-LABELS \Inbox`: what Gmail shows as archived.
+                            let not_inbox = args.windows(3).any(|w| {
+                                w[0].eq_ignore_ascii_case("NOT")
+                                    && w[1].eq_ignore_ascii_case("X-GM-LABELS")
+                                    && w[2].eq_ignore_ascii_case("\\Inbox")
+                            });
+                            // TEXT, FROM and SUBJECT: a substring of the whole message, of
+                            // the From line, of the Subject line (case ignored).
+                            let terms: Vec<(String, String)> = args
+                                .windows(2)
+                                .filter(|w| {
+                                    ["TEXT", "FROM", "SUBJECT"]
+                                        .iter()
+                                        .any(|k| w[0].eq_ignore_ascii_case(k))
+                                })
+                                .map(|w| (w[0].to_ascii_uppercase(), unquote(&w[1]).to_lowercase()))
+                                .collect();
                             let uids: Vec<String> = b
                                 .msgs
                                 .iter()
@@ -725,6 +781,18 @@ where
                                     !deleted_only || m.flags.iter().any(|f| f == "\\Deleted")
                                 })
                                 .filter(|m| hidden != Some(m.uid))
+                                .filter(|m| !unseen_only || !m.flags.iter().any(|f| f == "\\Seen"))
+                                .filter(|m| !not_inbox || !in_inbox.contains(&m.gm))
+                                .filter(|m| {
+                                    let text = String::from_utf8_lossy(&m.raw).to_lowercase();
+                                    terms.iter().all(|(k, v)| match k.as_str() {
+                                        "TEXT" => text.contains(v.as_str()),
+                                        key => text.lines().any(|l| {
+                                            l.starts_with(&format!("{}:", key.to_lowercase()))
+                                                && l.contains(v.as_str())
+                                        }),
+                                    })
+                                })
                                 .filter(|m| {
                                     wanted.as_ref().is_none_or(|w| {
                                         String::from_utf8_lossy(&m.raw)
@@ -2691,5 +2759,61 @@ mod tests {
             "no HIGHESTMODSEQ: CONDSTORE never enabled"
         );
         assert!(fake.with(|s| s.log.iter().any(|l| l == "ENABLE CONDSTORE")));
+    }
+
+    #[tokio::test]
+    async fn older_gmail_archive_mail_leaves_what_is_still_in_the_inbox_alone() {
+        let g = gmail().await;
+        let all_of = |g: &Gmail| {
+            g.store
+                .folders(g.account.id)
+                .unwrap()
+                .into_iter()
+                .find(|f| f.role == FolderRole::All)
+                .unwrap()
+        };
+        // Pretend the sync covers only what exists now, then older mail shows up below it:
+        // one message still in the inbox, one archived.
+        let top = g.fake.with(|s| s.boxes[GMAIL_ALL].next_uid);
+        const RECEIPT: &[u8] = b"From: Shop <orders@shop.dev>\r\nTo: z@gmail.com\r\nSubject: Old receipt\r\nMessage-ID: <receipt@shop.dev>\r\nDate: Mon, 3 Mar 2025 10:00:00 +0000\r\n\r\nThanks.\r\n";
+        g.fake.with(|s| {
+            s.deliver_gmail(&["INBOX"], LATER, &["\\Seen"]);
+            s.deliver_gmail(&[], RECEIPT, &["\\Seen"]);
+        });
+        // The sync's floor sits above them, as if they were older than its window.
+        let past = g.fake.with(|s| s.boxes[GMAIL_ALL].next_uid);
+        g.store.force_floor(all_of(&g).id, past).unwrap();
+        let _ = top;
+        let mut p = ImapProvider::connect_trusting(
+            "localhost",
+            g.fake.port,
+            "z@gmail.com",
+            Credential::Password("secret".into()),
+            std::slice::from_ref(&g.fake.cert),
+        )
+        .await
+        .unwrap();
+        let before = g.subjects("in:archive").len();
+        g.engine
+            .load_older(
+                &g.account,
+                &mut p,
+                &all_of(&g),
+                10,
+                Some("NOT X-GM-LABELS \\Inbox"),
+                &SyncOptions::default(),
+            )
+            .await
+            .unwrap();
+        let log = g.fake.with(|s| s.log.clone());
+        assert!(log.iter().any(|l| l.contains("NOT X-GM-LABELS")), "{log:?}");
+        // The archived one came in; the one still in the inbox did not show as archived.
+        let archived = g.subjects("in:archive");
+        assert!(!archived.contains(&"CI passed".to_string()), "{archived:?}");
+        assert!(
+            archived.contains(&"Old receipt".to_string()),
+            "{archived:?}"
+        );
+        assert_eq!(archived.len(), before + 1);
     }
 }

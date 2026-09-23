@@ -39,9 +39,17 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   final _selectedRowKey = GlobalKey(debugLabel: 'selected row');
   String _filter = 'all';
 
+  /// The folder, account or label the list shows (set from outside: sidebar, keys,
+  /// notifications). Filters narrow it; typed search looks everywhere.
+  String _base = '';
+
+  /// The last query this list set itself, to tell it from one set from outside.
+  String? _composed;
+
   @override
   void initState() {
     super.initState();
+    _base = ref.read(queryProvider);
     searchFocus.addListener(
       () => ref
           .read(scopeProvider.notifier)
@@ -59,11 +67,15 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
 
   void focusSearch() => searchFocus.requestFocus();
 
-  void onSearchChanged(String v) =>
-      ref.read(queryProvider.notifier).set(_compose(v));
+  void onSearchChanged(String v) => _setQuery(_compose(v));
 
-  String _compose(String base) {
-    final q = base.trim();
+  void _setQuery(String q) {
+    _composed = q;
+    ref.read(queryProvider.notifier).set(q);
+  }
+
+  String _compose(String typed) {
+    final q = typed.trim().isEmpty ? _base : typed.trim();
     return switch (_filter) {
       'unread' => '$q is:unread'.trim(),
       'starred' => '$q is:starred'.trim(),
@@ -167,8 +179,24 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
       }
     }
     ref.listen(selectedThreadIdProvider, (_, id) => _revealFar(id));
-    final unread = list?.where((t) => t.unread).length ?? 0;
-    final starred = list?.where((t) => t.starred).length ?? 0;
+    // Another folder chosen elsewhere: it becomes the base, and the filter and search
+    // text that belonged to the last one go.
+    ref.listen(queryProvider, (_, next) {
+      if (next == _composed) return;
+      _composed = null;
+      _base = next;
+      if (_filter != 'all' || searchController.text.isNotEmpty) {
+        setState(() => _filter = 'all');
+        searchController.clear();
+      }
+    });
+    // Counts only where they mean what they say: over a filtered list they would not.
+    final unread = _filter == 'all'
+        ? list?.where((t) => t.unread).length
+        : null;
+    final starred = _filter == 'all'
+        ? list?.where((t) => t.starred).length
+        : null;
 
     return Column(
       children: [
@@ -202,7 +230,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
               else ...[
                 _FilterButton(
                   label: 'All',
-                  count: list?.length ?? 0,
+                  count: _filter == 'all' ? list?.length : null,
                   active: _filter == 'all',
                   onTap: () => _setFilter('all'),
                 ),
@@ -219,12 +247,6 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                   onTap: () => _setFilter('starred'),
                 ),
               ],
-              const Spacer(),
-              IconBtn(
-                icon: CupertinoIcons.line_horizontal_3_decrease,
-                label: 'Sort: newest',
-                onTap: () {},
-              ),
             ],
           ),
         ),
@@ -313,6 +335,14 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                         ),
                 ),
         ),
+        if (!draftsView &&
+            (accounts?.isNotEmpty ?? false) &&
+            MoreFromServer.offered(query))
+          MoreFromServer(
+            key: ValueKey('more-$query'),
+            query: query,
+            shown: list?.length ?? 0,
+          ),
       ],
     );
   }
@@ -356,7 +386,9 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
         }
         // Nothing moved (not in the inbox, already deleted, or no folder for it): bring
         // the row back.
-        if (n == 0) notice.show(archive ? 'Not in the inbox' : 'Nothing to delete');
+        if (n == 0) {
+          notice.show(archive ? 'Not in the inbox' : 'Nothing to delete');
+        }
         if (mounted) ref.invalidate(threadsProvider);
       },
       child: row,
@@ -365,7 +397,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
 
   void _setFilter(String f) {
     setState(() => _filter = f);
-    ref.read(queryProvider.notifier).set(_compose(searchController.text));
+    _setQuery(_compose(searchController.text));
   }
 }
 
@@ -508,12 +540,13 @@ class _FilterButton extends StatelessWidget {
     required this.onTap,
   });
   final String label;
-  final int count;
+  final int? count;
   final bool active;
   final VoidCallback onTap;
   @override
   Widget build(BuildContext context) {
     final s = context.s;
+    final count = this.count;
     return HoverRegion(
       onTap: onTap,
       builder: (context, hovered) => AnimatedContainer(
@@ -531,11 +564,13 @@ class _FilterButton extends StatelessWidget {
               label,
               style: ui(context, size: 12, color: active ? s.fg : s.fg2),
             ),
-            const SizedBox(width: 5),
-            Text(
-              '$count',
-              style: mono(context, size: 11, color: active ? s.fg2 : s.fg3),
-            ),
+            if (count != null) ...[
+              const SizedBox(width: 5),
+              Text(
+                '$count',
+                style: mono(context, size: 11, color: active ? s.fg2 : s.fg3),
+              ),
+            ],
           ],
         ),
       ),
@@ -830,6 +865,143 @@ class DraftRow extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The foot of the list: more of what is here, older mail of this folder from the
+/// server, or the same search on the server.
+class MoreFromServer extends ConsumerStatefulWidget {
+  const MoreFromServer({super.key, required this.query, required this.shown});
+  final String query;
+
+  /// How many conversations the list holds now.
+  final int shown;
+
+  static List<String> _tokens(String q) =>
+      q.split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+
+  /// Words, a sender or recipient, a subject or a date: something to look for.
+  static bool searching(String query) => _tokens(query).any(
+    (t) =>
+        !t.startsWith('#') &&
+        !RegExp(r'^(in|is|has|account|label):').hasMatch(t),
+  );
+
+  /// A folder as it is (optionally one account's): older mail of it can be fetched.
+  static bool folderView(String query) {
+    final t = _tokens(query).where((t) => !t.startsWith('account:')).toList();
+    return t.isEmpty ||
+        (t.length == 1 &&
+            RegExp(r'^in:(inbox|sent|archive|all|spam|junk|trash)$')
+                .hasMatch(t.first));
+  }
+
+  static bool offered(String query) => searching(query) || folderView(query);
+
+  @override
+  ConsumerState<MoreFromServer> createState() => _MoreFromServerState();
+}
+
+class _MoreFromServerState extends ConsumerState<MoreFromServer> {
+  bool _busy = false;
+
+  /// This list has everything the server has (per query; a new query starts over).
+  bool _done = false;
+
+  /// The list is a full page: there is more here before anything is asked of a server.
+  bool get _moreHere => widget.shown >= ref.read(listLimitProvider);
+
+  Future<void> _run() async {
+    if (_busy || _done) return;
+    if (_moreHere) {
+      ref.read(listLimitProvider.notifier).grow();
+      return;
+    }
+    final repo = ref.read(repositoryProvider);
+    final notice = ref.read(noticeProvider.notifier);
+    final limit = ref.read(listLimitProvider.notifier);
+    final searching = MoreFromServer.searching(widget.query);
+    setState(() => _busy = true);
+    try {
+      if (searching) {
+        final n = await repo.searchServer(widget.query);
+        notice.show(
+          n == 0 ? 'Nothing more on the server' : 'Found $n more on the server',
+        );
+        if (n > 0) limit.grow(n);
+        _done = true;
+      } else {
+        final r = await repo.loadOlder(widget.query);
+        notice.show(
+          r.fetched == 0
+              ? 'No older mail on the server'
+              : '${r.fetched} older ${r.fetched == 1 ? 'message' : 'messages'}',
+        );
+        // Room in the list for what came, so it shows.
+        if (r.fetched > 0) limit.grow(r.fetched);
+        _done = !r.more;
+      }
+    } catch (e) {
+      notice.show(e is Problem ? e.title : '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    ref.watch(listLimitProvider);
+    final searching = MoreFromServer.searching(widget.query);
+    final label = _moreHere && !_busy
+        ? 'Show more'
+        : _busy
+        ? (searching ? 'Searching the server…' : 'Loading older mail…')
+        : _done
+        ? (searching ? 'Searched the server' : 'All mail is here')
+        : (searching ? 'Search on the server' : 'Load older mail');
+    return Container(
+      height: 32,
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: s.border)),
+      ),
+      child: HoverRegion(
+        onTap: _busy || _done ? null : _run,
+        builder: (context, hovered) => Container(
+          color: hovered && !_done ? s.hover : null,
+          alignment: Alignment.center,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_busy) ...[
+                SizedBox(
+                  width: 10,
+                  height: 10,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 1.5,
+                    color: s.fg3,
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ] else if (!_done) ...[
+                Icon(
+                  searching
+                      ? CupertinoIcons.cloud
+                      : CupertinoIcons.arrow_down_circle,
+                  size: 12,
+                  color: s.fg3,
+                ),
+                const SizedBox(width: 6),
+              ],
+              Text(
+                label,
+                style: mono(context, size: 11.5, color: _done ? s.fg3 : s.fg2),
+              ),
+            ],
+          ),
         ),
       ),
     );

@@ -285,10 +285,22 @@ impl SyncEngine {
             let since = folder
                 .highest_modseq
                 .filter(|_| state.highest_modseq.is_some());
+            // The synced range, plus the odd older message a server search brought in (all
+            // of them as one range when there are many).
             let set = if since.is_some() {
                 "1:*".to_string()
             } else {
-                format!("{lo}:{hi}")
+                let start = folder.floor_uid.map_or(*lo, |f| f.max(*lo));
+                let older: Vec<String> = local_uids
+                    .iter()
+                    .filter(|u| **u < start)
+                    .map(u32::to_string)
+                    .collect();
+                match older.len() {
+                    0 => format!("{start}:{hi}"),
+                    n if n <= 200 => format!("{start}:{hi},{}", older.join(",")),
+                    _ => format!("{lo}:{hi}"),
+                }
             };
             let local: HashSet<u32> = local_uids.iter().copied().collect();
             // A server that refuses the flag fetch must not also stop new mail: skip the flags
@@ -358,7 +370,12 @@ impl SyncEngine {
         let floor = if first_sync {
             None
         } else {
-            local.iter().min().copied().or(folder.uidnext)
+            // Never the oldest cached UID while a floor or UIDNEXT is known: that may be a
+            // search result from years back.
+            folder
+                .floor_uid
+                .or(folder.uidnext)
+                .or_else(|| local.iter().min().copied())
         };
         // UIDs asked for before and not received are asked for again, whatever the floor.
         let holes = self.store.fetch_holes(folder.id)?;
@@ -379,9 +396,128 @@ impl SyncEngine {
         if first_sync && new_uids.len() > window {
             new_uids = new_uids.split_off(new_uids.len() - window);
         }
+        let fetched = self
+            .fetch_into(account, provider, folder, &new_uids, opts)
+            .await?;
+        // The oldest message the sync now covers, or where the next one will come when the
+        // folder is empty, so a later search result is never taken for it.
+        if first_sync || folder.floor_uid.is_none() {
+            let covered = match floor {
+                Some(f) => Some(f),
+                None => self.store.uids(folder.id)?.first().copied(),
+            };
+            if let Some(f) = covered.or(Some(state.uidnext)) {
+                self.store.set_floor(folder.id, f)?;
+            }
+        }
+
+        // A change held back for a waiting op must come again next time: keep the old
+        // HIGHESTMODSEQ so CHANGEDSINCE still covers it.
+        let modseq = if held_back {
+            folder.highest_modseq
+        } else {
+            state.highest_modseq
+        };
+        self.store
+            .update_folder_state(folder.id, state.uidvalidity, state.uidnext, modseq)?;
+        Ok((fetched, removed))
+    }
+
+    /// Older mail of [folder], on request: up to [count] of the newest messages below the
+    /// oldest one the sync covers. The floor moves down to them, so later syncs keep their
+    /// flags current. Returns how many arrived and whether older ones remain.
+    pub async fn load_older<P: Provider>(
+        &self,
+        account: &Account,
+        provider: &mut P,
+        folder: &crate::model::Folder,
+        count: usize,
+        only: Option<&str>,
+        opts: &SyncOptions,
+    ) -> Result<(usize, bool)> {
+        let state = provider.select(&folder.remote_name).await?;
+        // Not synced yet, or rebuilt on the server: the next sync starts it over.
+        if folder.uidvalidity != Some(state.uidvalidity) {
+            return Ok((0, true));
+        }
+        let local: HashSet<u32> = self.store.uids(folder.id)?.into_iter().collect();
+        let Some(floor) = folder
+            .floor_uid
+            .or(folder.uidnext)
+            .or_else(|| local.iter().min().copied())
+        else {
+            return Ok((0, false));
+        };
+        let (_, moves_waiting) = self.store.pending_uids(account.id, &folder.remote_name)?;
+        // [only]: the part of the folder the list shows (Gmail's archive: not in the inbox).
+        let all = match only {
+            Some(criteria) => provider.search(criteria).await?,
+            None => provider.uids().await?,
+        };
+        let older: Vec<u32> = all
+            .into_iter()
+            .filter(|u| *u < floor && !moves_waiting.contains(u))
+            .collect();
+        let take = &older[older.len().saturating_sub(count)..];
+        let wanted: Vec<u32> = take
+            .iter()
+            .copied()
+            .filter(|u| !local.contains(u))
+            .collect();
+        let fetched = self
+            .fetch_into(account, provider, folder, &wanted, opts)
+            .await?;
+        if let Some(lowest) = take.first() {
+            self.store.set_floor(folder.id, *lowest)?;
+        }
+        Ok((fetched, older.len() > take.len()))
+    }
+
+    /// Look on the server for what [query] names in [folder] and store up to [limit] of the
+    /// newest matches not cached yet. The floor stays: a match from years ago is kept
+    /// without the next sync fetching everything since. Returns how many arrived.
+    pub async fn search_server<P: Provider>(
+        &self,
+        account: &Account,
+        provider: &mut P,
+        folder: &crate::model::Folder,
+        query: &crate::search::Query,
+        limit: usize,
+        opts: &SyncOptions,
+    ) -> Result<usize> {
+        let Some(criteria) = query.imap_criteria(provider.literal_plus()) else {
+            return Ok(0);
+        };
+        let state = provider.select(&folder.remote_name).await?;
+        if folder.uidvalidity != Some(state.uidvalidity) {
+            return Ok(0);
+        }
+        let local: HashSet<u32> = self.store.uids(folder.id)?.into_iter().collect();
+        let (_, moves_waiting) = self.store.pending_uids(account.id, &folder.remote_name)?;
+        let found: Vec<u32> = provider
+            .search(&criteria)
+            .await?
+            .into_iter()
+            .filter(|u| !local.contains(u) && !moves_waiting.contains(u))
+            .collect();
+        let newest = &found[found.len().saturating_sub(limit)..];
+        self.fetch_into(account, provider, folder, newest, opts)
+            .await
+    }
+
+    /// Fetch [uids] of the selected [folder] and store them, 50 at a time, oldest first.
+    /// A UID asked for and not received is remembered as a hole and asked for again.
+    async fn fetch_into<P: Provider>(
+        &self,
+        account: &Account,
+        provider: &mut P,
+        folder: &crate::model::Folder,
+        uids: &[u32],
+        opts: &SyncOptions,
+    ) -> Result<usize> {
         let mut fetched = 0;
         let now = Utc::now();
-        for chunk in new_uids.chunks(50) {
+        for chunk in uids.chunks(50) {
             let mut batch = 0;
             let got = provider.fetch(chunk).await?;
             // Asked for and not received (no body, or the server refused that one): a hole,
@@ -428,7 +564,7 @@ impl SyncEngine {
                 batch += 1;
             }
             fetched += batch;
-            if batch > 0 && new_uids.len() > chunk.len() {
+            if batch > 0 && uids.len() > chunk.len() {
                 self.emit(SyncEvent::Folder {
                     account_id: account.id,
                     folder: folder.remote_name.clone(),
@@ -437,17 +573,7 @@ impl SyncEngine {
                 });
             }
         }
-
-        // A change held back for a waiting op must come again next time: keep the old
-        // HIGHESTMODSEQ so CHANGEDSINCE still covers it.
-        let modseq = if held_back {
-            folder.highest_modseq
-        } else {
-            state.highest_modseq
-        };
-        self.store
-            .update_folder_state(folder.id, state.uidvalidity, state.uidnext, modseq)?;
-        Ok((fetched, removed))
+        Ok(fetched)
     }
 
     /// Push pending local operations to the server. Failed ops stay queued with an attempt count.

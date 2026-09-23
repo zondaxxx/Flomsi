@@ -176,7 +176,9 @@ void main() {
     expect(short, contains('…'));
     expect(middleEllipsis('report.pdf'), 'report.pdf');
     // Whole characters only: an emoji is never cut in half.
-    final emoji = middleEllipsis('Q3 report final 📊📊📊📊📊📊📊📊 v2 approved and signed.pdf');
+    final emoji = middleEllipsis(
+      'Q3 report final 📊📊📊📊📊📊📊📊 v2 approved and signed.pdf',
+    );
     expect(emoji, endsWith('.pdf'));
     expect(emoji.runes.every((r) => r < 0xD800 || r > 0xDFFF), isTrue);
     expect(emoji.characters.length, lessThanOrEqualTo(34));
@@ -187,7 +189,10 @@ void main() {
     expect(htmlColour('336699'), '#336699');
     expect(htmlColour('Navy'), 'navy');
     expect(htmlColour('red" onclick="x'), isNull);
-    expect(styleValue('color: #333; background: #000', 'background-color'), '#000');
+    expect(
+      styleValue('color: #333; background: #000', 'background-color'),
+      '#000',
+    );
     expect(styleValue('background-color:navy', 'background-color'), 'navy');
     expect(styleValue('font-size: 12px', 'color'), isNull);
     expect(isDarkColour('#000'), isTrue);

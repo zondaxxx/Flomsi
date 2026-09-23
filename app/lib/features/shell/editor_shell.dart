@@ -58,22 +58,28 @@ class _EditorShellState extends ConsumerState<EditorShell> {
   /// closes itself when the compose state clears (sent, discarded, closed).
   void _openComposeOnPhone(BuildContext context) {
     if (MediaQuery.sizeOf(context).width >= 700) return;
-    Navigator.of(context).push(
-      PageRouteBuilder(
-        transitionDuration: Motion.of(context, Motion.base),
-        reverseTransitionDuration: Motion.of(context, Motion.fast),
-        pageBuilder: (_, a, _) => FadeTransition(
-          opacity: a,
-          child: SlideTransition(
-            position: Tween(
-              begin: const Offset(0, 0.03),
-              end: Offset.zero,
-            ).animate(CurvedAnimation(parent: a, curve: Motion.curve)),
-            child: const _PhoneCompose(),
+    // However the page goes (×, Send, Android's back), the composer state goes with it;
+    // otherwise the next New message would find it still open and do nothing.
+    Navigator.of(context)
+        .push(
+          PageRouteBuilder(
+            transitionDuration: Motion.of(context, Motion.base),
+            reverseTransitionDuration: Motion.of(context, Motion.fast),
+            pageBuilder: (_, a, _) => FadeTransition(
+              opacity: a,
+              child: SlideTransition(
+                position: Tween(
+                  begin: const Offset(0, 0.03),
+                  end: Offset.zero,
+                ).animate(CurvedAnimation(parent: a, curve: Motion.curve)),
+                child: const _PhoneCompose(),
+              ),
+            ),
           ),
-        ),
-      ),
-    );
+        )
+        .then((_) {
+          if (mounted) ref.read(composeProvider.notifier).close();
+        });
   }
 
   @override
@@ -81,6 +87,13 @@ class _EditorShellState extends ConsumerState<EditorShell> {
     final s = context.s;
     ref.listen<Draft?>(composeProvider, (prev, next) {
       if (prev == null && next != null) _openComposeOnPhone(context);
+    });
+    // A conversation asked for from outside (a tapped notification).
+    ref.listen<int?>(openThreadProvider, (_, id) {
+      if (id == null) return;
+      ref.read(openThreadProvider.notifier).done();
+      ref.read(selectedThreadIdProvider.notifier).select(id);
+      _openOnPhone(context);
     });
     final actions = ShellActions(
       ref: ref,
@@ -96,6 +109,19 @@ class _EditorShellState extends ConsumerState<EditorShell> {
       actions: actions.keymap(),
       child: Scaffold(
         backgroundColor: s.bg,
+        // Where the sidebar has no room (phones, a narrow window) it slides in instead.
+        drawer: MediaQuery.sizeOf(context).width < 1100
+            ? Drawer(
+                width: 280,
+                backgroundColor: s.bg2,
+                shape: const RoundedRectangleBorder(),
+                child: SafeArea(
+                  child: _Sidebar(
+                    onPicked: () => Navigator.of(context).maybePop(),
+                  ),
+                ),
+              )
+            : null,
         body: SafeArea(
           top: touch,
           bottom: touch,
@@ -111,6 +137,7 @@ class _EditorShellState extends ConsumerState<EditorShell> {
                       _TopBar(
                         listKey: _listKey,
                         compact: phone,
+                        sidebarHidden: !threePane,
                         actions: actions,
                       ),
                       const Hairline(),
@@ -177,10 +204,14 @@ class _TopBar extends ConsumerWidget {
   const _TopBar({
     required this.listKey,
     required this.compact,
+    required this.sidebarHidden,
     required this.actions,
   });
   final GlobalKey<ThreadListBodyState> listKey;
   final bool compact;
+
+  /// No room for the sidebar: a button opens it as a drawer.
+  final bool sidebarHidden;
   final ShellActions actions;
 
   @override
@@ -248,30 +279,48 @@ class _TopBar extends ConsumerWidget {
       padding: EdgeInsets.only(left: mac && !compact ? 80 : 12, right: 12),
       child: Row(
         children: [
+          if (sidebarHidden) ...[
+            IconBtn(
+              icon: CupertinoIcons.sidebar_left,
+              label: 'Folders and accounts',
+              size: compact ? 18 : 15,
+              onTap: () => Scaffold.of(context).openDrawer(),
+            ),
+            const SizedBox(width: 6),
+          ],
           if (compact)
             Expanded(child: titleArea)
           else
             SizedBox(width: 150, child: titleArea),
           if (!compact) ...[
-            const Spacer(),
-            SizedBox(
-              width: 520,
-              child: QuietField(
-                controller: listKey.currentState?.searchController,
-                focusNode: listKey.currentState?.searchFocus,
-                hint: 'Search mail or run a command',
-                height: 28,
-                fontSize: 13,
-                leading: Icon(CupertinoIcons.search, size: 13, color: s.fg3),
-                trailing: switch (keyHintFor(ref, 'palette.open')) {
-                  final k? => KeyHint(k),
-                  null => null,
-                },
-                onChanged: (v) => listKey.currentState?.onSearchChanged(v),
-                onSubmitted: (_) => blurTextInput(),
+            const SizedBox(width: 12),
+            // Up to 520 wide, centred; narrower when the window is.
+            Expanded(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: QuietField(
+                    controller: listKey.currentState?.searchController,
+                    focusNode: listKey.currentState?.searchFocus,
+                    hint: 'Search mail or run a command',
+                    height: 28,
+                    fontSize: 13,
+                    leading: Icon(
+                      CupertinoIcons.search,
+                      size: 13,
+                      color: s.fg3,
+                    ),
+                    trailing: switch (keyHintFor(ref, 'palette.open')) {
+                      final k? => KeyHint(k),
+                      null => null,
+                    },
+                    onChanged: (v) => listKey.currentState?.onSearchChanged(v),
+                    onSubmitted: (_) => blurTextInput(),
+                  ),
+                ),
               ),
             ),
-            const Spacer(),
+            const SizedBox(width: 12),
           ],
           Row(
             mainAxisSize: MainAxisSize.min,
@@ -403,7 +452,10 @@ class _TopBar extends ConsumerWidget {
 }
 
 class _Sidebar extends ConsumerWidget {
-  const _Sidebar();
+  const _Sidebar({this.onPicked});
+
+  /// In a drawer: close it once a folder is chosen.
+  final VoidCallback? onPicked;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -432,8 +484,10 @@ class _Sidebar extends ConsumerWidget {
                     _SideRow(
                       entry: e,
                       selected: e.query == query,
-                      onTap: () =>
-                          ref.read(queryProvider.notifier).set(e.query ?? ''),
+                      onTap: () {
+                        ref.read(queryProvider.notifier).set(e.query ?? '');
+                        onPicked?.call();
+                      },
                     ),
               ],
             ),

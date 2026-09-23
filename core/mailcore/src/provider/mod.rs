@@ -56,6 +56,12 @@ pub trait Provider {
     async fn select(&mut self, folder: &str) -> Result<FolderState>;
     /// All UIDs currently in the selected folder.
     async fn uids(&mut self) -> Result<Vec<u32>>;
+    /// UIDs in the selected folder matching IMAP SEARCH [criteria].
+    async fn search(&mut self, criteria: &str) -> Result<Vec<u32>>;
+    /// The server takes `{n+}` literals inside a command (RFC 7888).
+    fn literal_plus(&self) -> bool {
+        false
+    }
     /// Full messages for the given UIDs of the selected folder.
     async fn fetch(&mut self, uids: &[u32]) -> Result<Vec<FetchedMessage>>;
     /// Flags for the UIDs in `uid_set` (e.g. `1:*`, `120:4500`), or only those changed since

@@ -14,6 +14,9 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: macOSWindowUtilsViewController.flutterViewController)
 
+    // Closing only hides the window: the app keeps running and the Dock brings it back.
+    self.isReleasedWhenClosed = false
+
     super.awakeFromNib()
   }
 }

@@ -10,6 +10,16 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Sign-in with Google and Microsoft: the app registrations, baked in at build time (a build
+# without them hides those buttons). Client IDs of installed apps are not secret, nor is
+# Google's desktop "secret"; they live in repository secrets to stay out of the source.
+env:
+  FLOMSI_GOOGLE_CLIENT_ID: ${{ secrets.FLOMSI_GOOGLE_CLIENT_ID }}
+  FLOMSI_GOOGLE_CLIENT_SECRET: ${{ secrets.FLOMSI_GOOGLE_CLIENT_SECRET }}
+  FLOMSI_GOOGLE_IOS_CLIENT_ID: ${{ secrets.FLOMSI_GOOGLE_IOS_CLIENT_ID }}
+  FLOMSI_GOOGLE_ANDROID_CLIENT_ID: ${{ secrets.FLOMSI_GOOGLE_ANDROID_CLIENT_ID }}
+  FLOMSI_MICROSOFT_CLIENT_ID: ${{ secrets.FLOMSI_MICROSOFT_CLIENT_ID }}
+
 jobs:
   core:
     name: core (rust)
@@ -140,6 +150,8 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: app
+      - name: sign-in URL schemes
+        run: scripts/ios_url_schemes.sh
       - run: flutter build ios --release --no-codesign
         working-directory: app
       # Unsigned: for sideloading (AltStore, Sideloadly), which signs it on the way in.
@@ -178,8 +190,20 @@ jobs:
           cache: true
       - run: flutter pub get
         working-directory: app
+      - name: release key
+        env:
+          KEYSTORE_B64: ${{ secrets.FLOMSI_ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/flomsi.jks"
+            echo "FLOMSI_KEYSTORE_PATH=$RUNNER_TEMP/flomsi.jks" >> "$GITHUB_ENV"
+          else
+            echo "no release key: the APK is signed with this runner's debug key"
+          fi
       - run: flutter build apk --release
         working-directory: app
+        env:
+          FLOMSI_KEYSTORE_PASSWORD: ${{ secrets.FLOMSI_KEYSTORE_PASSWORD }}
       - uses: actions/upload-artifact@v4
         with:
           name: Flomsi-android

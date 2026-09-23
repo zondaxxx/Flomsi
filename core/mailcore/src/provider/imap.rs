@@ -851,6 +851,28 @@ impl Provider for ImapProvider {
         self.after(r)
     }
 
+    async fn search(&mut self, criteria: &str) -> Result<Vec<u32>> {
+        let r: Result<Vec<u32>> = async {
+            let s = self.s()?;
+            let mut v: Vec<u32> = checked(s, &format!("UID SEARCH {criteria}"), search_ids)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            Ok(v)
+        }
+        .await;
+        self.after(r)
+    }
+
+    /// LITERAL+ and LITERAL- (RFC 7888; Gmail has the latter) both take `{n+}` for the
+    /// short strings a search sends.
+    fn literal_plus(&self) -> bool {
+        self.has_capability("LITERAL+") || self.has_capability("LITERAL-")
+    }
+
     async fn uids(&mut self) -> Result<Vec<u32>> {
         let r: Result<Vec<u32>> = async {
             let s = self.s()?;

@@ -156,6 +156,24 @@ Future<FiledDto> archiveThread({required PlatformInt64 threadId}) =>
 Future<FiledDto> trashThread({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailTrashThread(threadId: threadId);
 
+/// The next 200 older messages of each folder the list `query` shows, on one account.
+Future<OlderDto> loadOlder({
+  required PlatformInt64 accountId,
+  required String query,
+}) => RustLib.instance.api.crateApiMailLoadOlder(
+  accountId: accountId,
+  query: query,
+);
+
+/// Look on one account's server for what `query` names; matches then show in `threads`.
+Future<int> searchServer({
+  required PlatformInt64 accountId,
+  required String query,
+}) => RustLib.instance.api.crateApiMailSearchServer(
+  accountId: accountId,
+  query: query,
+);
+
 /// Create the `archive` or `trash` folder the account's server is missing; returns its name.
 Future<String> createRoleFolder({
   required PlatformInt64 accountId,
@@ -302,6 +320,9 @@ class AccountDto {
   /// A bridge on this computer (Proton) whose self-signed certificate is accepted.
   final bool localBridge;
 
+  /// `password` or `xoauth2` (signed in on the provider's page).
+  final String auth;
+
   const AccountDto({
     required this.id,
     required this.email,
@@ -316,6 +337,7 @@ class AccountDto {
     required this.smtpPort,
     required this.smtpSecurity,
     required this.localBridge,
+    required this.auth,
   });
 
   @override
@@ -332,7 +354,8 @@ class AccountDto {
       smtpHost.hashCode ^
       smtpPort.hashCode ^
       smtpSecurity.hashCode ^
-      localBridge.hashCode;
+      localBridge.hashCode ^
+      auth.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -351,7 +374,8 @@ class AccountDto {
           smtpHost == other.smtpHost &&
           smtpPort == other.smtpPort &&
           smtpSecurity == other.smtpSecurity &&
-          localBridge == other.localBridge;
+          localBridge == other.localBridge &&
+          auth == other.auth;
 }
 
 class AttachmentDto {
@@ -671,6 +695,26 @@ class MissingFolderDto {
           role == other.role &&
           gmail == other.gmail &&
           message == other.message;
+}
+
+class OlderDto {
+  final int fetched;
+
+  /// The server has older mail still.
+  final bool more;
+
+  const OlderDto({required this.fetched, required this.more});
+
+  @override
+  int get hashCode => fetched.hashCode ^ more.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OlderDto &&
+          runtimeType == other.runtimeType &&
+          fetched == other.fetched &&
+          more == other.more;
 }
 
 /// A draft kept on this device. `kind` is fresh, reply or forward.

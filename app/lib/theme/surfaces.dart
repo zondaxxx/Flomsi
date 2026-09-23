@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../platform.dart';
 import 'motion.dart';
 import 'tokens.dart';
 
@@ -32,6 +33,15 @@ class HoverRegion extends StatefulWidget {
 
 class _HoverRegionState extends State<HoverRegion> {
   bool _hover = false;
+
+  /// A finger on it: touch screens show the same highlight while pressed.
+  bool _pressed = false;
+
+  void _press(bool on) {
+    if (!kTouch || widget.onTap == null || _pressed == on) return;
+    setState(() => _pressed = on);
+  }
+
   @override
   Widget build(BuildContext context) => MouseRegion(
     cursor: widget.cursor,
@@ -40,8 +50,11 @@ class _HoverRegionState extends State<HoverRegion> {
     child: GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: widget.onTap,
+      onTapDown: (_) => _press(true),
+      onTapUp: (_) => _press(false),
+      onTapCancel: () => _press(false),
       onDoubleTap: widget.onDoubleTap,
-      child: widget.builder(context, _hover),
+      child: widget.builder(context, _hover || _pressed),
     ),
   );
 }

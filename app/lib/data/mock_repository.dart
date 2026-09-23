@@ -464,6 +464,57 @@ class MockRepository implements MailRepository {
     _events.add(const ThreadsChanged());
   }
 
+  /// The providers this demo offers to sign in with (a test can change it).
+  List<String> providers = const ['google'];
+
+  @override
+  List<String> signInProviders() => providers;
+
+  @override
+  void cancelSignIn() {}
+
+  /// What the next [signIn] does instead of succeeding (a test sets it).
+  Problem? signInFails;
+
+  @override
+  Future<Account> signIn(
+    String provider, {
+    String? loginHint,
+    void Function()? onReturned,
+  }) async {
+    onReturned?.call();
+    final fail = signInFails;
+    if (fail != null) {
+      signInFails = null;
+      throw fail;
+    }
+    final a = Account(
+      id: 90 + providers.indexOf(provider),
+      email: provider == 'google' ? 'you@gmail.com' : 'you@outlook.com',
+      kind: provider == 'google' ? 'gmail' : 'outlook',
+      color: const Color(0xFF74ADE8),
+    );
+    signedIn.add(a.email);
+    _events.add(const ThreadsChanged());
+    return a;
+  }
+
+  /// Addresses signed in through [signIn], for tests.
+  final List<String> signedIn = [];
+
+  /// How many older messages each "Load older" call brings (a test can change it).
+  int olderOnServer = 0;
+
+  @override
+  Future<({int fetched, bool more})> loadOlder(String query) async {
+    final n = olderOnServer;
+    olderOnServer = 0;
+    return (fetched: n, more: false);
+  }
+
+  @override
+  Future<int> searchServer(String query) async => 0;
+
   /// Accounts whose server has no Archive folder yet (for trying the ask-and-create path).
   final Set<int> noArchive = {};
 

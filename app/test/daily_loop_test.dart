@@ -1,3 +1,4 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -209,37 +210,125 @@ void main() {
     expect(find.text('for the first thread'), findsNothing);
   });
 
-  testWidgets('archive without an Archive folder asks, creates it and files the thread', (
+  testWidgets(
+    'archive without an Archive folder asks, creates it and files the thread',
+    (tester) async {
+      await shell(tester);
+      final all = await repo.threads('');
+      final first = all[0];
+      repo.noArchive.add(first.accountId);
+      c.read(selectedThreadIdProvider.notifier).select(first.id);
+      await tester.pumpAndSettle();
+
+      // Declined: nothing moves and the thread stays selected.
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+      await tester.pumpAndSettle();
+      expect(find.text('No Archive folder'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect((await repo.threads('')).map((t) => t.id), contains(first.id));
+      expect(c.read(selectedThreadIdProvider), first.id);
+
+      // Accepted: the folder is made and the thread archived; the next one is selected.
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create Archive'));
+      await tester.pumpAndSettle();
+      expect(repo.noArchive, isEmpty);
+      expect(
+        (await repo.threads('')).map((t) => t.id),
+        isNot(contains(first.id)),
+      );
+      expect(c.read(selectedThreadIdProvider), all[1].id);
+      await settle(tester);
+    },
+  );
+
+  for (final size in [const Size(900, 700), const Size(390, 800)]) {
+    testWidgets('folders are one tap away at ${size.width.toInt()} px', (
+      tester,
+    ) async {
+      await shell(tester, size: size);
+      expect(find.byType(Drawer), findsNothing);
+      await tester.tap(find.byIcon(CupertinoIcons.sidebar_left));
+      await tester.pumpAndSettle();
+      expect(find.byType(Drawer), findsOneWidget);
+      await tester.tap(
+        find.descendant(of: find.byType(Drawer), matching: find.text('Sent')),
+      );
+      await tester.pumpAndSettle();
+      expect(c.read(queryProvider), 'in:sent');
+      expect(find.byType(Drawer), findsNothing, reason: 'closed after a pick');
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  for (final w in <double>[360, 480, 700, 820, 1024, 1100, 1280, 1600]) {
+    testWidgets('nothing overflows at ${w.toInt()} px', (tester) async {
+      await shell(tester, size: Size(w, 760));
+      final all = await repo.threads('');
+      c.read(selectedThreadIdProvider.notifier).select(all[1].id);
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('older mail and server search sit at the foot of the list', (
     tester,
   ) async {
     await shell(tester);
-    final all = await repo.threads('');
-    final first = all[0];
-    repo.noArchive.add(first.accountId);
-    c.read(selectedThreadIdProvider.notifier).select(first.id);
+    repo.olderOnServer = 5;
+    expect(find.text('Load older mail'), findsOneWidget);
+    await tester.tap(find.text('Load older mail'));
     await tester.pumpAndSettle();
+    expect(c.read(noticeProvider), '5 older messages');
+    expect(find.text('All mail is here'), findsOneWidget);
 
-    // Declined: nothing moves and the thread stays selected.
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
+    c.read(queryProvider.notifier).set('from:anna invoice');
     await tester.pumpAndSettle();
-    expect(find.text('No Archive folder'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    expect(find.text('Search on the server'), findsOneWidget);
+    await tester.tap(find.text('Search on the server'));
     await tester.pumpAndSettle();
-    expect((await repo.threads('')).map((t) => t.id), contains(first.id));
-    expect(c.read(selectedThreadIdProvider), first.id);
+    expect(c.read(noticeProvider), 'Nothing more on the server');
 
-    // Accepted: the folder is made and the thread archived; the next one is selected.
-    await tester.sendKeyEvent(LogicalKeyboardKey.keyE);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Create Archive'));
-    await tester.pumpAndSettle();
-    expect(repo.noArchive, isEmpty);
-    expect(
-      (await repo.threads('')).map((t) => t.id),
-      isNot(contains(first.id)),
-    );
-    expect(c.read(selectedThreadIdProvider), all[1].id);
+    // Kept on this device: nothing to fetch.
+    for (final q in ['in:snoozed', '#work']) {
+      c.read(queryProvider.notifier).set(q);
+      await tester.pumpAndSettle();
+      expect(find.byType(MoreFromServer), findsNothing, reason: q);
+    }
     await settle(tester);
+  });
+
+  testWidgets('a filter narrows the folder instead of leaving it', (
+    tester,
+  ) async {
+    await shell(tester);
+    Finder chip(String label) => find.descendant(
+      of: find.byType(ThreadListBody),
+      matching: find.text(label),
+    );
+    c.read(queryProvider.notifier).set('in:archive');
+    await tester.pumpAndSettle();
+    await tester.tap(chip('Unread'));
+    await tester.pumpAndSettle();
+    expect(c.read(queryProvider), 'in:archive is:unread');
+    await tester.tap(chip('All'));
+    await tester.pumpAndSettle();
+    expect(c.read(queryProvider), 'in:archive');
+    // Another folder from elsewhere: the filter that belonged to the last one goes.
+    await tester.tap(chip('Starred'));
+    await tester.pumpAndSettle();
+    c.read(queryProvider.notifier).set('in:sent');
+    await tester.pumpAndSettle();
+    await tester.tap(chip('Unread'));
+    await tester.pumpAndSettle();
+    expect(c.read(queryProvider), 'in:sent is:unread');
+  });
+
+  testWidgets('a wide window shows the sidebar itself', (tester) async {
+    await shell(tester);
+    expect(find.byIcon(CupertinoIcons.sidebar_left), findsNothing);
   });
 
   testWidgets('the palette takes at most 60% of the window', (tester) async {

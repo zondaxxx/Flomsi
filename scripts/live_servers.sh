@@ -21,7 +21,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=localhost \
 # Read inside the mailpit container, whatever user it runs as.
 chmod 644 "$DIR/key.pem"
 
-for u in roles probe send idle smoke; do
+for u in roles probe send idle older smoke; do
   echo "$u@flomsi.test:{PLAIN}$PASSWORD"
 done >"$DIR/users"
 

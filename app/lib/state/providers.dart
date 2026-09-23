@@ -7,6 +7,7 @@ import '../data/mock_repository.dart';
 import '../data/models.dart';
 import '../data/repository.dart';
 import '../keymap/keymap.dart';
+import '../platform.dart';
 
 final repositoryProvider = Provider<MailRepository>((ref) => MockRepository());
 
@@ -40,10 +41,26 @@ class QueryController extends Notifier<String> {
   void set(String q) => state = q;
 }
 
+/// How many conversations the list asks for: a page to begin with, more as the user
+/// reaches the end (or as older mail comes in); back to one page for every new query.
+final listLimitProvider = NotifierProvider<ListLimit, int>(ListLimit.new);
+
+class ListLimit extends Notifier<int> {
+  static const page = 100;
+  @override
+  int build() {
+    ref.watch(queryProvider);
+    return page;
+  }
+
+  void grow([int by = page]) => state = state + by;
+}
+
 final threadsProvider = FutureProvider<List<Thread>>((ref) async {
   ref.watch(repoTickProvider);
   final q = ref.watch(queryProvider);
-  return ref.watch(repositoryProvider).threads(q);
+  final limit = ref.watch(listLimitProvider);
+  return ref.watch(repositoryProvider).threads(q, limit: limit);
 });
 
 final accountsProvider = FutureProvider<List<Account>>((ref) async {
@@ -147,6 +164,7 @@ class SyncStatusController extends Notifier<SyncStatus> {
                   lastError: errors.join(' · '),
                 );
         case ThreadsChanged():
+        case MailImported():
           break;
       }
     });
@@ -162,9 +180,21 @@ final isMac =
     defaultTargetPlatform == TargetPlatform.iOS;
 
 /// The key for [action] in the active keymap as this platform writes it (`e`, `⌘K`,
-/// `ctrl+K`), or null while the keymap loads or when nothing is bound.
+/// `ctrl+K`), or null while the keymap loads, when nothing is bound, and on touch
+/// screens, where there is no keyboard to press it on.
 String? keyHintFor(WidgetRef ref, String action) =>
-    ref.watch(keymapProvider).value?.hint(action, mac: isMac);
+    kTouch ? null : ref.watch(keymapProvider).value?.hint(action, mac: isMac);
+
+/// A conversation to open, asked for from outside the list (a tapped notification). The
+/// shell selects it and, on a phone, opens its page.
+final openThreadProvider = NotifierProvider<OpenThread, int?>(OpenThread.new);
+
+class OpenThread extends Notifier<int?> {
+  @override
+  int? build() => null;
+  void open(int threadId) => state = threadId;
+  void done() => state = null;
+}
 
 /// A built-in shortcut that is not in the keymap: `⌘⇧A` on Apple platforms, `ctrl+shift+A`
 /// elsewhere.

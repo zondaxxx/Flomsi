@@ -5,14 +5,13 @@ use flutter_rust_bridge::frb;
 use mailcore::compose::{AttachmentSource, Draft, DraftAttachment};
 use mailcore::sanitize::html_to_text;
 use mailcore::Address;
-use mailcore::diagnose::ErrorKind;
 use mailcore::{AuthKind, Core, FolderRole, NewAccount, ProviderKind, Security, SyncEvent, SyncOptions};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 static CORE: OnceLock<Core> = OnceLock::new();
 
-fn core() -> Result<&'static Core> {
+pub(crate) fn core() -> Result<&'static Core> {
     CORE.get().ok_or_else(|| anyhow!("core not opened; call open_core first"))
 }
 
@@ -53,6 +52,8 @@ pub struct AccountDto {
     pub smtp_security: String,
     /// A bridge on this computer (Proton) whose self-signed certificate is accepted.
     pub local_bridge: bool,
+    /// `password` or `xoauth2` (signed in on the provider's page).
+    pub auth: String,
 }
 
 /// One server as the add-account form describes it; `security` is `tls` or `starttls`.
@@ -305,7 +306,7 @@ pub fn add_imap_account(
     Ok(account_dto(a, 0))
 }
 
-fn account_dto(a: mailcore::Account, unread: u32) -> AccountDto {
+pub(crate) fn account_dto(a: mailcore::Account, unread: u32) -> AccountDto {
     let (smtp_host, smtp_port) = if a.smtp_host.is_empty() {
         mailcore::smtp::guess_smtp(&a.imap_host).unwrap_or_default()
     } else {
@@ -328,6 +329,7 @@ fn account_dto(a: mailcore::Account, unread: u32) -> AccountDto {
         smtp_port,
         smtp_security: smtp_security.as_str().to_string(),
         local_bridge: a.local_bridge,
+        auth: a.auth.as_str().to_string(),
     }
 }
 
@@ -360,14 +362,7 @@ pub fn suggest_smtp(imap_host: String) -> Option<ServerDto> {
 pub fn diagnose_error(message: String, host: String) -> DiagnosisDto {
     let d = mailcore::diagnose::diagnose(&message, &host);
     DiagnosisDto {
-        kind: match d.kind {
-            ErrorKind::Auth => "auth",
-            ErrorKind::Network => "network",
-            ErrorKind::Tls => "tls",
-            ErrorKind::Server => "server",
-            ErrorKind::Local => "local",
-        }
-        .to_string(),
+        kind: d.kind.as_str().to_string(),
         title: d.title,
         hint: d.hint,
     }
@@ -559,6 +554,23 @@ pub fn archive_thread(thread_id: i64) -> Result<FiledDto> {
 /// To Trash; `moved` is 0 when it was there already (or only in Sent elsewhere).
 pub fn trash_thread(thread_id: i64) -> Result<FiledDto> {
     filed(core()?.actions().trash(thread_id))
+}
+
+pub struct OlderDto {
+    pub fetched: u32,
+    /// The server has older mail still.
+    pub more: bool,
+}
+
+/// The next 200 older messages of each folder the list `query` shows, on one account.
+pub async fn load_older(account_id: i64, query: String) -> Result<OlderDto> {
+    let (fetched, more) = core()?.load_older(account_id, &query, 200).await?;
+    Ok(OlderDto { fetched: fetched as u32, more })
+}
+
+/// Look on one account's server for what `query` names; matches then show in `threads`.
+pub async fn search_server(account_id: i64, query: String) -> Result<u32> {
+    Ok(core()?.search_server(account_id, &query, 100).await? as u32)
 }
 
 /// Create the `archive` or `trash` folder the account's server is missing; returns its name.

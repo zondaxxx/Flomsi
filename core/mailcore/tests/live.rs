@@ -51,6 +51,16 @@ async fn imap(user: &str) -> ImapProvider {
 }
 
 fn message(id: &str, subject: &str) -> Vec<u8> {
+    use base64::Engine;
+    // As a mail program writes it: non-ASCII headers as RFC 2047 words.
+    let subject = if subject.is_ascii() {
+        subject.to_string()
+    } else {
+        format!(
+            "=?UTF-8?B?{}?=",
+            base64::engine::general_purpose::STANDARD.encode(subject)
+        )
+    };
     format!(
         "From: Anna Sokolova <anna@studio.test>\r\nTo: you@flomsi.test\r\nSubject: {subject}\r\n\
          Message-ID: <{id}@studio.test>\r\nDate: Wed, 23 Sep 2026 10:00:00 +0300\r\n\
@@ -361,6 +371,50 @@ async fn idle_wakes_when_mail_arrives() {
         .await
         .unwrap();
     assert_eq!(r.fetched, 1);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn older_mail_and_a_server_search_on_a_real_server() {
+    if !live() {
+        return;
+    }
+    let user = "older@flomsi.test";
+    let mut p = imap(user).await;
+    for n in 1..=12 {
+        let subject = match n {
+            2 => "Счёт за март".to_string(),
+            3 => "Needle in the haystack".to_string(),
+            _ => format!("Note {n}"),
+        };
+        p.append(
+            "INBOX",
+            &message(&format!("old{n}"), &subject),
+            Flags::default(),
+        )
+        .await
+        .unwrap();
+    }
+    p.logout().await.unwrap();
+    let (core, dir, account) = core_for(user, "older");
+    let opts = SyncOptions {
+        roles: vec![FolderRole::Inbox],
+        initial_window: 5,
+        ..SyncOptions::default()
+    };
+    assert_eq!(core.sync_account(account, &opts).await.unwrap().fetched, 5);
+
+    // Found on the server, and the next sync does not pull in what lies between.
+    assert_eq!(core.search_server(account, "needle", 50).await.unwrap(), 1);
+    assert_eq!(core.search_server(account, "счёт", 50).await.unwrap(), 1);
+    assert_eq!(core.threads("", 50).unwrap().len(), 7);
+    assert_eq!(core.sync_account(account, &opts).await.unwrap().fetched, 0);
+
+    assert_eq!(core.load_older(account, "", 3).await.unwrap(), (3, true));
+    let (n, more) = core.load_older(account, "", 10).await.unwrap();
+    assert!(!more);
+    assert_eq!(n, 2, "the two found earlier are already here");
+    assert_eq!(core.threads("", 50).unwrap().len(), 12);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
