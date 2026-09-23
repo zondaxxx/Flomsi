@@ -12,8 +12,11 @@ class BarItem {
     this.onTap,
     this.iconOn,
     this.on,
+    this.toggle = true,
     this.accent = false,
     this.menu,
+    this.menuController,
+    this.onMenuChanged,
     this.key,
   });
   final IconData icon;
@@ -24,11 +27,17 @@ class BarItem {
   final bool? on;
   final IconData? iconOn;
 
+  /// [on] switches something (Unread), rather than saying where one is (Search).
+  final bool toggle;
+
   /// Compose: the accent colour, on or not.
   final bool accent;
 
-  /// A menu that opens upwards from the slot (More).
+  /// A menu that opens upwards from the slot (More), with its controller when the
+  /// screen needs to close it (back), and a call when it opens or closes.
   final List<Widget>? menu;
+  final MenuController? menuController;
+  final VoidCallback? onMenuChanged;
   final Key? key;
 }
 
@@ -48,12 +57,16 @@ class PhoneBottomBar extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
-        child: SizedBox(
-          height: Touch.bottomBar,
-          child: Row(
-            children: [
-              for (final item in items) Expanded(child: _Slot(item: item)),
-            ],
+        // Labels grow with the system text size up to what 56 holds, as tab bars do.
+        child: MediaQuery.withClampedTextScaling(
+          maxScaleFactor: 1.3,
+          child: SizedBox(
+            height: Touch.bottomBar,
+            child: Row(
+              children: [
+                for (final item in items) Expanded(child: _Slot(item: item)),
+              ],
+            ),
           ),
         ),
       ),
@@ -70,6 +83,11 @@ class _Slot extends StatelessWidget {
     final menu = item.menu;
     if (menu == null) return _body(context, item.onTap);
     return MenuAnchor(
+      // A tap outside closes the menu and does nothing else.
+      consumeOutsideTap: true,
+      controller: item.menuController,
+      onOpen: item.onMenuChanged,
+      onClose: item.onMenuChanged,
       alignmentOffset: const Offset(0, 4),
       menuChildren: menu,
       builder: (context, controller, _) => _body(
@@ -90,8 +108,10 @@ class _Slot extends StatelessWidget {
       key: item.key,
       button: true,
       enabled: enabled,
-      toggled: item.on,
+      toggled: item.toggle ? item.on : null,
+      selected: item.toggle ? null : item.on,
       label: item.label,
+      onTap: onTap,
       excludeSemantics: true,
       child: HoverRegion(
         onTap: onTap,

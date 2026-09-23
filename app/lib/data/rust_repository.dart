@@ -402,7 +402,7 @@ class RustRepository implements MailRepository {
   ];
 
   @override
-  Future<void> moveThread(int threadId, int folderId) =>
+  Future<int> moveThread(int threadId, int folderId) =>
       _after(rust.moveThread(threadId: threadId, folderId: folderId));
 
   @override

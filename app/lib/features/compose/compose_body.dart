@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/services.dart';
@@ -12,15 +13,24 @@ import '../../data/repository.dart';
 import '../../platform.dart';
 import '../attachments/attachment_chip.dart';
 import '../../state/providers.dart';
+import '../../theme/app_icons.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
 
 /// Composer in the reading pane: mono-labelled header fields, plain body, send row.
+/// With [phone], a phone's whole screen: Close, the title and Send on top, fields sized
+/// for fingers, and a bar of Attach and Discard over the keyboard.
 class ComposeBody extends ConsumerStatefulWidget {
-  const ComposeBody({super.key, required this.draft, this.compact = false});
+  const ComposeBody({
+    super.key,
+    required this.draft,
+    this.compact = false,
+    this.phone = false,
+  });
   final Draft draft;
   final bool compact;
+  final bool phone;
 
   @override
   ConsumerState<ComposeBody> createState() => _ComposeBodyState();
@@ -33,8 +43,13 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
   late final _body = TextEditingController(text: widget.draft.text);
   final _bodyFocus = FocusNode(debugLabel: 'compose-body');
   final _toFocus = FocusNode(debugLabel: 'compose-to');
+  final _ccFocus = FocusNode(debugLabel: 'compose-cc');
+  final _subjectFocus = FocusNode(debugLabel: 'compose-subject');
   late var _files = [...widget.draft.attachments];
   bool _showCc = false;
+
+  /// Cc was asked for with its button (rather than opening with the draft): it slides in.
+  bool _ccAdded = false;
   bool _sending = false;
   bool _picking = false;
   bool _dragging = false;
@@ -49,6 +64,10 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
   Timer? _saveTimer;
   Future<void> _saving = Future.value();
   bool _done = false;
+  bool _closing = false;
+
+  /// Typed into since the last save: the phone's "Saved" waits for the next one.
+  bool _pending = false;
 
   /// Most servers (Gmail, Outlook, iCloud) refuse messages over 25 MB after base64.
   static const _serverLimit = 25 * 1024 * 1024;
@@ -89,6 +108,8 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     _body.dispose();
     _bodyFocus.dispose();
     _toFocus.dispose();
+    _ccFocus.dispose();
+    _subjectFocus.dispose();
     super.dispose();
   }
 
@@ -126,6 +147,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     final d = _current;
     final fp = _fingerprint(d);
     if (fp == _lastSaved || (fp == _initial && _localId == null)) {
+      if (_pending && mounted) setState(() => _pending = false);
       return _saving;
     }
     _lastSaved = fp;
@@ -133,7 +155,10 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       try {
         _localId = await _repo.saveDraft(d.copyWith(localId: _localId));
         if (!mounted) return;
-        setState(() => _savedAt = DateTime.now());
+        setState(() {
+          _savedAt = DateTime.now();
+          _pending = _fingerprint(_current) != _lastSaved;
+        });
         ref.invalidate(draftsProvider);
       } catch (e) {
         _lastSaved = null; // try again on the next change
@@ -207,9 +232,22 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     ref.read(composeProvider.notifier).close();
   }
 
-  /// Esc and ×: close and keep the draft (unless nothing was typed).
+  /// Esc and ×: close and keep the draft (unless nothing was typed). On a phone, Close and
+  /// the system's back both come here.
   Future<void> _close() async {
-    if (_done) return;
+    if (_done || _closing) return;
+    _closing = true;
+    try {
+      await _closeNow();
+    } finally {
+      _closing = false;
+    }
+  }
+
+  Future<void> _closeNow() async {
+    final notice = ref.read(
+      noticeProvider.notifier,
+    ); // the page may be gone by then
     if (_untouched) {
       await _saving;
       // A draft created in this session and then typed back to the template is noise.
@@ -219,7 +257,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     } else {
       await _saveNow();
       if (_lastSaved == null) return; // save failed: the error stays visible
-      ref.read(noticeProvider.notifier).show('Draft saved');
+      notice.show('Draft saved');
     }
     if (mounted) _leave();
   }
@@ -237,6 +275,55 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     }
     _leave();
   }
+
+  /// The phone's Discard: ask first, since it cannot be undone. If the stored draft
+  /// cannot be deleted, the page stays and says so; Close and Send work again.
+  Future<void> _confirmDiscard() async {
+    final yes = await confirmDialog(
+      context,
+      title: 'Discard this draft?',
+      body: 'It won’t be kept in Drafts.',
+      action: 'Discard',
+      danger: true,
+    );
+    if (!yes || !mounted) return;
+    try {
+      await _discard();
+    } catch (e) {
+      _done = false;
+      if (!mounted) return;
+      setState(() => _error = 'Draft not discarded: ${_reason(e)}');
+    }
+  }
+
+  /// Something typed on the phone: the error line goes, and "Saved" hides until the
+  /// next save.
+  void _edited() {
+    if (_error == null && _pending) return;
+    setState(() {
+      _error = null;
+      _pending = true;
+    });
+  }
+
+  void _removeFile(DraftAttachment f) {
+    setState(() => _files = [..._files]..remove(f));
+    _edited();
+    _scheduleSave();
+  }
+
+  void _addCc() {
+    setState(() {
+      _showCc = true;
+      _ccAdded = true;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _ccFocus.requestFocus();
+    });
+  }
+
+  /// Send waits for a recipient that looks like an address.
+  bool get _hasAddress => _split(_to.text).any((a) => a.contains('@'));
 
   Future<void> send() async {
     final d = _current;
@@ -285,6 +372,31 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     if (mounted) _leave();
   }
 
+  /// ⌘↵ sends, ⌘⇧A attaches, Esc closes (a hardware keyboard, phones included).
+  KeyEventResult _onKey(FocusNode node, KeyEvent e) {
+    if (e is! KeyDownEvent) return KeyEventResult.ignored;
+    final mod =
+        HardwareKeyboard.instance.isMetaPressed ||
+        HardwareKeyboard.instance.isControlPressed;
+    if (mod &&
+        (e.logicalKey == LogicalKeyboardKey.enter ||
+            e.logicalKey == LogicalKeyboardKey.numpadEnter)) {
+      send();
+      return KeyEventResult.handled;
+    }
+    if (mod &&
+        HardwareKeyboard.instance.isShiftPressed &&
+        e.logicalKey == LogicalKeyboardKey.keyA) {
+      _attach();
+      return KeyEventResult.handled;
+    }
+    if (e.logicalKey == LogicalKeyboardKey.escape) {
+      _close();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = context.s;
@@ -294,31 +406,12 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       DraftKind.forward => 'Forward',
       DraftKind.fresh => 'New message',
     };
+    if (widget.phone) {
+      return Focus(onKeyEvent: _onKey, child: _phoneLayout(context, title));
+    }
     final pad = widget.compact ? 16.0 : 44.0;
     final body = Focus(
-      onKeyEvent: (node, e) {
-        if (e is! KeyDownEvent) return KeyEventResult.ignored;
-        final mod =
-            HardwareKeyboard.instance.isMetaPressed ||
-            HardwareKeyboard.instance.isControlPressed;
-        if (mod &&
-            (e.logicalKey == LogicalKeyboardKey.enter ||
-                e.logicalKey == LogicalKeyboardKey.numpadEnter)) {
-          send();
-          return KeyEventResult.handled;
-        }
-        if (mod &&
-            HardwareKeyboard.instance.isShiftPressed &&
-            e.logicalKey == LogicalKeyboardKey.keyA) {
-          _attach();
-          return KeyEventResult.handled;
-        }
-        if (e.logicalKey == LogicalKeyboardKey.escape) {
-          _close();
-          return KeyEventResult.handled;
-        }
-        return KeyEventResult.ignored;
-      },
+      onKeyEvent: _onKey,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -502,6 +595,303 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     );
   }
 
+  /// The phone's screen. Back (Android's button or gesture) closes it the way Close does:
+  /// the draft is kept, and the page goes once it is. While the mail is on its way, both
+  /// wait: leaving then would hide whether it went.
+  Widget _phoneLayout(BuildContext context, String title) {
+    final s = context.s;
+    final ios = defaultTargetPlatform == TargetPlatform.iOS;
+    final ink = s.isDark ? Brightness.light : Brightness.dark;
+    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final saved = _savedAt != null && !_pending;
+    final header = MediaQuery.withClampedTextScaling(
+      maxScaleFactor: 1.3,
+      child: AppBar(
+        backgroundColor: s.bg,
+        surfaceTintColor: Colors.transparent,
+        scrolledUnderElevation: 0,
+        elevation: 0,
+        toolbarHeight: Touch.appBar,
+        automaticallyImplyLeading: false,
+        centerTitle: ios,
+        systemOverlayStyle: SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          statusBarIconBrightness: ink,
+          statusBarBrightness: s.brightness,
+          systemNavigationBarColor: s.bg2,
+          systemNavigationBarIconBrightness: ink,
+        ),
+        shape: Border(bottom: BorderSide(color: s.border)),
+        leading: IconButton(
+          tooltip: 'Close',
+          color: s.fg,
+          disabledColor: s.fg3,
+          icon: Icon(AppIcons.close, size: 24),
+          onPressed: _sending ? null : _close,
+        ),
+        title: Semantics(
+          header: true,
+          child: Text(
+            title,
+            style: ui(context, size: 17, weight: FontWeight.w600, height: 1.3),
+          ),
+        ),
+        actions: [
+          // Only the button follows what is typed in To.
+          ValueListenableBuilder<TextEditingValue>(
+            valueListenable: _to,
+            builder: (context, _, _) => FilledButton(
+              style: FilledButton.styleFrom(
+                minimumSize: const Size(64, 36),
+                tapTargetSize: MaterialTapTargetSize.padded,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                textStyle: ui(context, size: 15, weight: FontWeight.w600),
+              ),
+              onPressed: _sending || !_hasAddress ? null : send,
+              child: Text(_sending ? 'Sending…' : 'Send'),
+            ),
+          ),
+          const SizedBox(width: Touch.gutter),
+        ],
+      ),
+    );
+    // Keyed: rows come and go above the fields (From once accounts load, Cc), and a
+    // field must keep its state, or the keyboard loses it.
+    final fields = [
+      if (accounts.length > 1)
+        _PhoneRow(
+          key: const ValueKey('from'),
+          label: 'From',
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 12),
+            child: Text(
+              widget.draft.from,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: ui(context, size: 16, color: s.fg2),
+            ),
+          ),
+        ),
+      _PhoneRow(
+        key: const ValueKey('to'),
+        label: 'To',
+        trailing: _showCc
+            ? null
+            : TextButton(
+                style: TextButton.styleFrom(
+                  textStyle: ui(context, size: 15, weight: FontWeight.w500),
+                ),
+                onPressed: _addCc,
+                child: const Text('Cc'),
+              ),
+        child: _phoneInput(
+          _to,
+          _toFocus,
+          address: true,
+          next: _showCc ? _ccFocus : _subjectFocus,
+        ),
+      ),
+      if (_showCc)
+        _SizeIn(
+          key: const ValueKey('cc'),
+          animate: _ccAdded,
+          child: _PhoneRow(
+            label: 'Cc',
+            child: _phoneInput(
+              _cc,
+              _ccFocus,
+              address: true,
+              next: _subjectFocus,
+            ),
+          ),
+        ),
+      _PhoneRow(
+        key: const ValueKey('subject'),
+        label: 'Subject',
+        child: _phoneInput(_subject, _subjectFocus, next: _bodyFocus),
+      ),
+      for (final f in _files)
+        _PhoneFile(key: ObjectKey(f), file: f, onRemove: () => _removeFile(f)),
+      if (_encodedSize > _serverLimit)
+        Padding(
+          key: const ValueKey('too-large'),
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: Text(
+            'About ${formatBytes(_encodedSize)} once encoded: most servers refuse mail over 25 MB.',
+            style: ui(context, size: 13, color: s.red),
+          ),
+        ),
+    ];
+    final bodyField = TextField(
+      controller: _body,
+      focusNode: _bodyFocus,
+      maxLines: null,
+      keyboardType: TextInputType.multiline,
+      textCapitalization: TextCapitalization.sentences,
+      onChanged: (_) => _edited(),
+      style: ui(context, size: 16, height: 1.55),
+      cursorColor: s.accentStrong,
+      decoration: const InputDecoration(
+        isDense: true,
+        border: InputBorder.none,
+        contentPadding: EdgeInsets.zero,
+      ),
+    );
+    // One line just above the bar, until the next edit.
+    final error = AnimatedSize(
+      duration: Motion.of(context, Motion.base),
+      curve: Motion.curve,
+      alignment: Alignment.bottomCenter,
+      child: _error == null
+          ? const SizedBox(width: double.infinity)
+          : SafeArea(
+              top: false,
+              bottom: false,
+              child: Semantics(
+                liveRegion: true,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                  child: Row(
+                    children: [
+                      Icon(AppIcons.error, size: 18, color: s.red),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _error!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: ui(context, size: 14, color: s.red),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+    );
+    final bar = DecoratedBox(
+      decoration: BoxDecoration(
+        color: s.bg2,
+        border: Border(top: BorderSide(color: s.border)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: MediaQuery.withClampedTextScaling(
+          maxScaleFactor: 1.3,
+          child: SizedBox(
+            height: Touch.target,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Row(
+                children: [
+                  IconButton(
+                    tooltip: 'Attach files',
+                    color: s.fg2,
+                    icon: Icon(AppIcons.attach, size: 24),
+                    onPressed: _attach,
+                  ),
+                  const SizedBox(width: 4),
+                  AnimatedOpacity(
+                    opacity: saved ? 1 : 0,
+                    duration: Motion.of(context, Motion.base),
+                    curve: Motion.curve,
+                    child: Text(
+                      'Saved',
+                      style: ui(context, size: 13, color: s.fg2),
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    tooltip: 'Discard draft',
+                    color: s.fg2,
+                    disabledColor: s.fg3,
+                    icon: Icon(AppIcons.delete, size: 24),
+                    onPressed: _sending ? null : _confirmDiscard,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && !_sending) _close();
+      },
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          header,
+          Expanded(
+            child: SafeArea(
+              top: false,
+              bottom: false,
+              child: Material(
+                type: MaterialType.transparency,
+                child: CustomScrollView(
+                  slivers: [
+                    SliverList.list(children: fields),
+                    // The body takes the rest of the page; a tap below the text
+                    // still lands in it.
+                    SliverFillRemaining(
+                      hasScrollBody: false,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _bodyFocus.requestFocus,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 14, 16, 24),
+                          child: Align(
+                            alignment: Alignment.topLeft,
+                            child: bodyField,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          error,
+          bar,
+        ],
+      ),
+    );
+  }
+
+  /// A header field on the phone: reading type, the keyboard for what it holds, and
+  /// Next to the field after it.
+  Widget _phoneInput(
+    TextEditingController controller,
+    FocusNode focusNode, {
+    required FocusNode next,
+    bool address = false,
+  }) {
+    final s = context.s;
+    return TextField(
+      controller: controller,
+      focusNode: focusNode,
+      keyboardType: address ? TextInputType.emailAddress : TextInputType.text,
+      textInputAction: TextInputAction.next,
+      textCapitalization: address
+          ? TextCapitalization.none
+          : TextCapitalization.sentences,
+      autocorrect: !address,
+      enableSuggestions: !address,
+      onChanged: (_) => _edited(),
+      onEditingComplete: next.requestFocus,
+      style: ui(context, size: 16),
+      cursorColor: s.accentStrong,
+      decoration: const InputDecoration(
+        isDense: true,
+        border: InputBorder.none,
+        contentPadding: EdgeInsets.symmetric(vertical: 12),
+      ),
+    );
+  }
+
   Widget _link(String text, VoidCallback onTap) => HoverRegion(
     onTap: onTap,
     builder: (context, hovered) => Text(
@@ -593,4 +983,147 @@ class _DropHint extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A header row on the phone: its name in a 64 column, then the field, over a hairline
+/// that starts at the margin. The column grows with large text, so a name never breaks
+/// in the middle.
+class _PhoneRow extends StatelessWidget {
+  const _PhoneRow({
+    super.key,
+    required this.label,
+    required this.child,
+    this.trailing,
+  });
+  final String label;
+  final Widget child;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    final scale = MediaQuery.textScalerOf(context).scale(15) / 15;
+    return Padding(
+      padding: const EdgeInsets.only(left: Touch.gutter),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: s.border)),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: Touch.row),
+          child: Padding(
+            padding: EdgeInsets.only(
+              right: trailing == null ? Touch.gutter : 4,
+            ),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 64 * scale,
+                  child: Text(
+                    label,
+                    style: ui(context, size: 15, color: s.fg2),
+                  ),
+                ),
+                Expanded(child: child),
+                ?trailing,
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A file going with the message: its kind, name and size, and a way to take it off.
+class _PhoneFile extends StatelessWidget {
+  const _PhoneFile({super.key, required this.file, required this.onRemove});
+  final DraftAttachment file;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Padding(
+      padding: const EdgeInsets.only(left: Touch.gutter),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: s.border)),
+        ),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 56),
+          child: Row(
+            children: [
+              Icon(iconForFile(file.mime, file.name), size: 20, color: s.fg2),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      file.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: ui(context, size: 15, height: 1.3),
+                    ),
+                    Text(
+                      formatBytes(file.size),
+                      style: mono(context, size: 12.5, color: s.fg2),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: 'Remove ${file.name}',
+                icon: Icon(AppIcons.close, size: 20, color: s.fg2),
+                onPressed: onRemove,
+              ),
+              const SizedBox(width: 4),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Opens its child downwards from nothing when it first appears, if [animate]; otherwise
+/// it is simply there.
+class _SizeIn extends StatefulWidget {
+  const _SizeIn({super.key, required this.animate, required this.child});
+  final bool animate;
+  final Widget child;
+
+  @override
+  State<_SizeIn> createState() => _SizeInState();
+}
+
+class _SizeInState extends State<_SizeIn> with SingleTickerProviderStateMixin {
+  late final _c = AnimationController(
+    vsync: this,
+    value: widget.animate ? 0 : 1,
+  );
+  late final _size = CurvedAnimation(parent: _c, curve: Motion.curve);
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _c.duration = Motion.of(context, Motion.base);
+    if (_c.isDismissed) _c.forward();
+  }
+
+  @override
+  void dispose() {
+    _size.dispose();
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SizeTransition(
+    sizeFactor: _size,
+    alignment: Alignment.topCenter,
+    child: widget.child,
+  );
 }

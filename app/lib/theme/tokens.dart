@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// F1 · Editor. Palette after One Dark / One Light; IBM Plex Sans for UI, Plex Mono for data.
 class Scheme extends ThemeExtension<Scheme> {
@@ -186,6 +187,32 @@ ThemeData buildTheme(Scheme s) {
       displayColor: s.fg,
     ),
     splashFactory: NoSplash.splashFactory,
+    // Every screen's bar: flat on the page, the system bars' icons readable on it.
+    appBarTheme: AppBarTheme(
+      backgroundColor: s.bg,
+      foregroundColor: s.fg,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      iconTheme: IconThemeData(color: s.fg, size: 24),
+      actionsIconTheme: IconThemeData(color: s.fg, size: 24),
+      titleTextStyle: TextStyle(
+        fontFamily: kSans,
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
+        fontVariations: const [FontVariation.weight(600)],
+        color: s.fg,
+      ),
+      systemOverlayStyle: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: s.isDark ? Brightness.light : Brightness.dark,
+        statusBarBrightness: s.brightness,
+        systemNavigationBarColor: s.bg2,
+        systemNavigationBarIconBrightness: s.isDark
+            ? Brightness.light
+            : Brightness.dark,
+      ),
+    ),
     hoverColor: s.hover,
     dividerColor: s.border,
     iconTheme: IconThemeData(color: s.fg2, size: 15),
@@ -269,6 +296,7 @@ ThemeData buildTheme(Scheme s) {
           fontFamily: kSans,
           fontSize: 15,
           fontWeight: FontWeight.w600,
+          fontVariations: [FontVariation.weight(600)],
         ),
       ),
     ),
@@ -280,6 +308,7 @@ ThemeData buildTheme(Scheme s) {
           fontFamily: kSans,
           fontSize: 15,
           fontWeight: FontWeight.w500,
+          fontVariations: [FontVariation.weight(500)],
         ),
       ),
     ),
@@ -295,6 +324,7 @@ ThemeData buildTheme(Scheme s) {
           fontFamily: kSans,
           fontSize: 15,
           fontWeight: FontWeight.w500,
+          fontVariations: [FontVariation.weight(500)],
         ),
       ),
     ),

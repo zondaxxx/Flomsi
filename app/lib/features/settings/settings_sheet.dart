@@ -13,10 +13,18 @@ import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
 import '../accounts/add_account_sheet.dart';
 import '../accounts/problem_note.dart';
+import '../phone/phone_route.dart';
+import 'phone_settings.dart';
 
 /// Settings over the app: accounts (name, signature, remove), key preset, appearance.
 /// Like the add-account sheet, the dialog key scope is set around it rather than inside it.
+/// A phone gets a screen of its own, pushed like any other.
 Future<void> showSettingsSheet(BuildContext context) async {
+  if (isPhone(context)) {
+    await Navigator.of(context)
+        .push(phonePage<void>((_) => const PhoneSettingsScreen()));
+    return;
+  }
   final scope = ProviderScope.containerOf(
     context,
     listen: false,

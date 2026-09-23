@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -36,18 +37,57 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
   final _listKey = GlobalKey<ThreadListBodyState>();
   final _refreshKey = GlobalKey<RefreshIndicatorState>();
   final _rowMenu = MenuController();
+  final _accountMenu = MenuController();
+  final _moreMenu = MenuController();
   final _menuArea = GlobalKey();
 
-  /// The conversation whose long-press menu is open.
+  /// The conversation whose long-press menu is open, and whether Reply all belongs in it.
   Thread? _menuThread;
+  bool _menuReplyAll = false;
+
+  /// A menu is open: back closes it first.
+  bool get _menuOpen =>
+      _rowMenu.isOpen || _accountMenu.isOpen || _moreMenu.isOpen;
   bool _searching = false;
   bool _scrolled = false;
   Timer? _typing;
 
   @override
+  void initState() {
+    super.initState();
+    // A notification tapped before this screen was there (the app started from it)
+    // is still waiting; later ones come the same way.
+    ref.listenManual<int?>(openThreadProvider, (_, id) {
+      if (id == null) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || ref.read(openThreadProvider) != id) return;
+        ref.read(openThreadProvider.notifier).done();
+        _closeMenus();
+        _leaveSearch();
+        ref.read(listFilterProvider.notifier).set('all');
+        _goTo(mailboxQuery(FolderRole.inbox, null));
+        // Whatever was open goes first (a draft keeps what was typed in it).
+        Navigator.of(context).popUntil((r) => r.isFirst);
+        _openThread(id);
+      });
+    }, fireImmediately: true);
+  }
+
+  @override
   void dispose() {
     _typing?.cancel();
     super.dispose();
+  }
+
+  void _closeMenus() {
+    for (final m in [_rowMenu, _accountMenu, _moreMenu]) {
+      if (m.isOpen) m.close();
+    }
+  }
+
+  /// Rebuild on a menu opening or closing, so back knows to close it.
+  void _menuChanged() {
+    if (mounted) setState(() {});
   }
 
   ShellActions _actions(BuildContext context) =>
@@ -164,12 +204,44 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
   }
 
   Future<void> _openRowMenu(Thread t, Offset at) async {
-    final box = _menuArea.currentContext?.findRenderObject() as RenderBox?;
-    if (box == null) return;
     unawaited(HapticFeedback.mediumImpact());
     ref.read(selectedThreadIdProvider.notifier).select(t.id);
-    setState(() => _menuThread = t);
+    // Reply all only where the last message went to several people (read from this
+    // phone's copy, so the menu is the same every time).
+    List<Message> messages = const [];
+    try {
+      messages = await ref.read(messagesProvider(t.id).future);
+    } catch (_) {
+      // Without them the menu offers Reply.
+    }
+    final box = _menuArea.currentContext?.findRenderObject() as RenderBox?;
+    if (!mounted || box == null) return;
+    setState(() {
+      _menuThread = t;
+      _menuReplyAll = (messages.lastOrNull?.to.length ?? 0) > 1;
+    });
     _rowMenu.open(position: box.globalToLocal(at));
+  }
+
+  /// For a screen reader, which cannot swipe: the same actions on the row itself.
+  Map<CustomSemanticsAction, VoidCallback> _rowActions(Thread t) {
+    final filings = ref.read(pendingFilingProvider.notifier);
+    return {
+      if (_archiveHere)
+        const CustomSemanticsAction(label: 'Archive'): () =>
+            filings.start(t.id, FilingKind.archive),
+      if (_deleteHere)
+        const CustomSemanticsAction(label: 'Delete'): () =>
+            filings.start(t.id, FilingKind.trash),
+      const CustomSemanticsAction(label: 'Reply'): () =>
+          _on(t, (a) => a.openReply()),
+    };
+  }
+
+  /// Run [f] on [t], whatever is selected by then.
+  void _on(Thread t, Future<void> Function(ShellActions a) f) {
+    ref.read(selectedThreadIdProvider.notifier).select(t.id);
+    f(_actions(context));
   }
 
   /// Where swiping right archives: the Inbox (any account, Unread or not).
@@ -246,46 +318,44 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
     final t = _menuThread;
     if (t == null) return const [];
     final s = context.s;
-    final actions = _actions(context);
     final repo = ref.read(repositoryProvider);
     final notice = ref.read(noticeProvider.notifier);
-    // Reply all only where the last message went to several people (when it is loaded).
-    final last = ref.read(messagesProvider(t.id)).value?.lastOrNull;
-    final replyAll = (last?.to.length ?? 0) > 1;
+    // Every item acts on the row that was pressed, not on whatever is selected by then.
+    void on(Future<void> Function(ShellActions a) f) => _on(t, f);
     return [
       PhoneMenuItem(
         title: 'Reply',
         leading: Icon(AppIcons.reply, size: 20),
-        onPressed: () => actions.openReply(),
+        onPressed: () => on((a) => a.openReply()),
       ),
-      if (replyAll)
+      if (_menuReplyAll)
         PhoneMenuItem(
           title: 'Reply all',
           leading: Icon(AppIcons.replyAll, size: 20),
-          onPressed: () => actions.openReply(all: true),
+          onPressed: () => on((a) => a.openReply(all: true)),
         ),
       PhoneMenuItem(
         title: 'Forward',
         leading: Icon(AppIcons.forward, size: 20),
-        onPressed: actions.openForward,
+        onPressed: () => on((a) => a.openForward()),
       ),
       const Divider(height: 1),
       if (_archiveHere)
         PhoneMenuItem(
           title: 'Archive',
           leading: Icon(AppIcons.archive, size: 20),
-          onPressed: actions.archiveSelected,
+          onPressed: () => on((a) => a.archiveSelected()),
         ),
       PhoneMenuItem(
         title: 'Delete',
         danger: true,
         leading: Icon(AppIcons.delete, size: 20, color: s.red),
-        onPressed: actions.trashSelected,
+        onPressed: () => on((a) => a.trashSelected()),
       ),
       PhoneMenuItem(
         title: 'Move to…',
         leading: Icon(AppIcons.move, size: 20),
-        onPressed: actions.moveSelected,
+        onPressed: () => on((a) => a.moveSelected()),
       ),
       if (t.snoozed)
         PhoneMenuItem(
@@ -300,7 +370,7 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
         PhoneMenuItem(
           title: 'Snooze…',
           leading: Icon(AppIcons.snooze, size: 20),
-          onPressed: actions.snoozeSelected,
+          onPressed: () => on((a) => a.snoozeSelected()),
         ),
       const Divider(height: 1),
       PhoneMenuItem(
@@ -312,7 +382,7 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
         title: t.unread ? 'Mark as read' : 'Mark as unread',
         leading: Icon(t.unread ? AppIcons.markRead : AppIcons.unread, size: 20),
         onPressed: () =>
-            t.unread ? repo.markRead(t.id, true) : actions.markUnread(),
+            t.unread ? repo.markRead(t.id, true) : on((a) => a.markUnread()),
       ),
     ];
   }
@@ -322,16 +392,6 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
     final s = context.s;
     ref.listen<Draft?>(composeProvider, (prev, next) {
       if (prev == null && next != null) openPhoneCompose(context, ref);
-    });
-    // A conversation asked for from outside (a tapped notification): the whole Inbox,
-    // then its page.
-    ref.listen<int?>(openThreadProvider, (_, id) {
-      if (id == null) return;
-      ref.read(openThreadProvider.notifier).done();
-      _leaveSearch();
-      ref.read(listFilterProvider.notifier).set('all');
-      _goTo(mailboxQuery(FolderRole.inbox, null));
-      _openThread(id);
     });
     final filter = ref.watch(listFilterProvider);
     ref.watch(queryProvider);
@@ -344,11 +404,17 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
       onOpen: _openThread,
       onRowMenu: _openRowMenu,
       rowWrapper: _swipe,
+      rowActions: _rowActions,
     );
     return PopScope(
-      canPop: _atHome,
+      canPop: _atHome && !_menuOpen,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _back();
+        if (didPop) return;
+        if (_menuOpen) {
+          _closeMenus();
+        } else {
+          _back();
+        }
       },
       child: Scaffold(
         backgroundColor: s.bg,
@@ -362,6 +428,9 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
               )
             : PhoneAppBar(
                 scrolled: _scrolled,
+                accountMenu: _accountMenu,
+                moreMenu: _moreMenu,
+                onMenuChanged: _menuChanged,
                 onPickAccount: _pickAccount,
                 onAddAccount: _addAccount,
                 onSettings: _settings,
@@ -376,9 +445,14 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
             return false;
           },
           child: MenuAnchor(
+            // A tap outside closes the menu and does nothing else.
+            consumeOutsideTap: true,
             controller: _rowMenu,
             menuChildren: _rowMenuItems(context),
-            onClose: () => setState(() => _menuThread = null),
+            onOpen: _menuChanged,
+            onClose: () {
+              if (mounted) setState(() => _menuThread = null);
+            },
             child: KeyedSubtree(key: _menuArea, child: list),
           ),
         ),
@@ -393,6 +467,7 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
               icon: AppIcons.search,
               label: 'Search',
               on: _searching,
+              toggle: false,
               onTap: _enterSearch,
             ),
             BarItem(
@@ -460,6 +535,9 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
   const PhoneAppBar({
     super.key,
     required this.scrolled,
+    required this.accountMenu,
+    required this.moreMenu,
+    required this.onMenuChanged,
     required this.onPickAccount,
     required this.onAddAccount,
     required this.onSettings,
@@ -468,6 +546,11 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
 
   /// The list is scrolled: a hairline sets the bar off from it.
   final bool scrolled;
+
+  /// The account menu and More, held by the screen so back can close them.
+  final MenuController accountMenu;
+  final MenuController moreMenu;
+  final VoidCallback onMenuChanged;
   final void Function(String? email) onPickAccount;
   final VoidCallback onAddAccount;
   final VoidCallback onSettings;
@@ -508,10 +591,14 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
           const SizedBox(width: 2),
           Icon(AppIcons.expand, size: 14, color: s.fg2),
         ],
-        Text(
-          ' · $syncText',
-          maxLines: 1,
-          style: ui(context, size: 13, color: s.fg2, height: 1.3),
+        // The account comes first; the time gives way on a narrow screen.
+        Flexible(
+          child: Text(
+            ' · $syncText',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: ui(context, size: 13, color: s.fg2, height: 1.3),
+          ),
         ),
       ],
     );
@@ -538,6 +625,11 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
     final title = !many
         ? Semantics(header: true, child: block)
         : MenuAnchor(
+            // A tap outside closes the menu and does nothing else.
+            consumeOutsideTap: true,
+            controller: accountMenu,
+            onOpen: onMenuChanged,
+            onClose: onMenuChanged,
             alignmentOffset: const Offset(0, 4),
             menuChildren: [
               PhoneMenuItem(
@@ -585,6 +677,11 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
       title: title,
       actions: [
         MenuAnchor(
+          // A tap outside closes the menu and does nothing else.
+          consumeOutsideTap: true,
+          controller: moreMenu,
+          onOpen: onMenuChanged,
+          onClose: onMenuChanged,
           alignmentOffset: const Offset(-8, 0),
           menuChildren: [
             PhoneMenuItem(

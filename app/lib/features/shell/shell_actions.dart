@@ -44,6 +44,14 @@ class ShellActions {
 
   PendingFilings get _filings => ref.read(pendingFilingProvider.notifier);
 
+  /// The folder role the list shows, or null for a label, Snoozed or a search.
+  FolderRole? get _shownRole {
+    final m = parseMailbox(
+      withoutFilter(ref.read(queryProvider), ref.read(listFilterProvider)),
+    );
+    return m == null || m.label != null || m.snoozed ? null : m.role;
+  }
+
   Future<void> move(int delta) async {
     final threads = ref.read(threadsProvider).value;
     if (threads == null || threads.isEmpty) return;
@@ -113,8 +121,9 @@ class ShellActions {
       FolderRole.sent,
       FolderRole.drafts,
       FolderRole.all,
-      // Already there.
-      if (ref.read(queryProvider).trim().isEmpty) FolderRole.inbox,
+      // Already there: the mailbox on screen (one account's or all of them, Unread
+      // or not).
+      ?_shownRole,
     };
     presentPicker(
       Picker(
@@ -144,8 +153,10 @@ class ShellActions {
                     return;
                   }
                   await move(1);
-                  await repo.moveThread(id, f.id);
-                  ref.read(noticeProvider.notifier).show('Moved to $name');
+                  final n = await repo.moveThread(id, f.id);
+                  ref
+                      .read(noticeProvider.notifier)
+                      .show(n > 0 ? 'Moved to $name' : 'Already in $name');
                 },
               ),
         ],

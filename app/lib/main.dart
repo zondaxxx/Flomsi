@@ -108,7 +108,12 @@ class MailApp extends ConsumerWidget {
     // Touch screens show notices as a docked SnackBar (with Undo where there is one);
     // computers keep them in the status line.
     ref.listen<String?>(noticeProvider, (_, text) {
-      if (!kTouch || text == null) return;
+      if (!kTouch) return;
+      // A notice taken down (its time up, its Undo no longer possible) takes its bar.
+      if (text == null) {
+        messengerKey.currentState?.hideCurrentSnackBar();
+        return;
+      }
       showNoticeSnackBar(ref.read(noticeProvider.notifier).current);
     });
     return MaterialApp(
@@ -134,6 +139,8 @@ void showNoticeSnackBar(Notice? n) {
     SnackBar(
       content: Text(n.text),
       duration: n.ttl ?? const Duration(milliseconds: 2500),
+      // An action does not keep the bar up: Undo lasts as long as the notice.
+      persist: false,
       action: n.action == null
           ? null
           : SnackBarAction(label: n.action!, onPressed: n.onAction ?? () {}),

@@ -12,15 +12,36 @@ import 'welcome_screen.dart';
 
 /// What the app opens on: the start screen until there is an account, then the mail.
 /// Removing the last account brings the start screen back.
-class AppGate extends ConsumerWidget {
+class AppGate extends ConsumerStatefulWidget {
   const AppGate({super.key, this.shell});
 
   /// The mail screen: the phone layout on phones, the editor elsewhere.
   final Widget? shell;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<AppGate> createState() => _AppGateState();
+}
+
+class _AppGateState extends ConsumerState<AppGate> {
+  /// Which layout was shown last, to notice a window crossing between phone and tablet
+  /// sizes (Split View, a foldable).
+  bool? _phone;
+
+  /// The other layout takes over: screens pushed over the old one close (a draft keeps
+  /// what was typed in it, in Drafts), so the new one starts clean.
+  void _switched() => WidgetsBinding.instance.addPostFrameCallback((_) {
+    if (!mounted) return;
+    Navigator.of(context).popUntil((r) => r.isFirst);
+    ref.read(composeProvider.notifier).close();
+  });
+
+  @override
+  Widget build(BuildContext context) {
     final s = context.s;
+    final phone = isPhone(context);
+    if (_phone != null && _phone != phone) _switched();
+    _phone = phone;
+    final shell = widget.shell;
     final accounts = ref.watch(accountsProvider);
     final Widget child = switch (accounts) {
       // No "No mail" flash while the list of accounts is read.
@@ -29,9 +50,7 @@ class AppGate extends ConsumerWidget {
       ),
       AsyncValue(value: _?) => KeyedSubtree(
         key: const ValueKey('mail'),
-        child:
-            shell ??
-            (isPhone(context) ? const PhoneShell() : const EditorShell()),
+        child: shell ?? (phone ? const PhoneShell() : const EditorShell()),
       ),
       AsyncError(:final error) => Scaffold(
         key: const ValueKey('error'),

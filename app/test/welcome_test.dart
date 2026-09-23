@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,19 +10,44 @@ import 'package:mail_app/features/onboarding/app_gate.dart';
 import 'package:mail_app/features/onboarding/app_password_screen.dart';
 import 'package:mail_app/features/onboarding/provider_picker.dart';
 import 'package:mail_app/features/onboarding/welcome_screen.dart';
+import 'package:mail_app/platform.dart';
 import 'package:mail_app/state/providers.dart';
 import 'package:mail_app/theme/tokens.dart';
+
+/// A sign-in page that stays open until [done] completes.
+class _HeldRepo extends MockRepository {
+  _HeldRepo() : super(empty: true);
+  final done = Completer<void>();
+
+  @override
+  Future<Account> signIn(
+    String provider, {
+    String? loginHint,
+    void Function()? onReturned,
+  }) async {
+    await done.future;
+    return super.signIn(provider, loginHint: loginHint, onReturned: onReturned);
+  }
+}
 
 void main() {
   late ProviderContainer c;
   late MockRepository repo;
   setUp(rootBundle.clear);
+  tearDown(() => debugTouchOverride = null);
 
-  Future<void> start(WidgetTester tester, {List<String>? providers}) async {
+  /// The start screen on a phone, unless [touch] is false (a computer).
+  Future<void> start(
+    WidgetTester tester, {
+    List<String>? providers,
+    bool touch = true,
+    MockRepository? using,
+  }) async {
+    debugTouchOverride = touch;
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
-    repo = MockRepository(empty: true);
+    repo = using ?? MockRepository(empty: true);
     if (providers != null) repo.providers = providers;
     c = ProviderContainer(
       overrides: [repositoryProvider.overrideWithValue(repo)],
@@ -129,5 +156,49 @@ void main() {
       expect(box.height, greaterThanOrEqualTo(48), reason: label);
     }
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'while Google\'s page is open: a phone waits, a computer can cancel',
+    (tester) async {
+      for (final touch in [true, false]) {
+        final held = _HeldRepo();
+        await start(tester, using: held, touch: touch);
+        await tester.tap(find.text('Continue with Google'));
+        await tester.pump();
+        if (touch) {
+          expect(find.text('Opening Google…'), findsOneWidget);
+          expect(find.text('Cancel'), findsNothing);
+        } else {
+          expect(
+            find.text('Finish signing in in your browser…'),
+            findsOneWidget,
+          );
+          expect(find.text('Cancel'), findsOneWidget);
+        }
+        held.done.complete();
+        await tester.pumpAndSettle();
+        expect(find.text('MAIL'), findsOneWidget);
+        await tester.pump(const Duration(seconds: 3));
+      }
+    },
+  );
+
+  testWidgets('Proton Mail Bridge is offered on a computer, not on a phone', (
+    tester,
+  ) async {
+    for (final touch in [true, false]) {
+      await start(tester, touch: touch);
+      await tester.tap(find.text('Other email account'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.text('Proton Mail'), 100);
+      await tester.tap(find.text('Proton Mail'));
+      await tester.pumpAndSettle();
+      expect(
+        find.byType(ProviderPicker),
+        touch ? findsOneWidget : findsNothing,
+        reason: 'touch: $touch',
+      );
+    }
   });
 }

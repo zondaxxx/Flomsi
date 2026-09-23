@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/models.dart';
+import '../../data/repository.dart';
 import '../../platform.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
@@ -91,6 +92,48 @@ String middleEllipsis(String name, {int max = 34}) {
 
 String _reason(Object e) =>
     e.toString().replaceFirst(RegExp(r'^[\w ]*(Exception|Error): '), '');
+
+/// Files that can run code are never opened from Flomsi. On a computer they can be saved
+/// after a clear question; on a phone, handed to another app the same way. True when the
+/// person chose to go on.
+Future<bool> allowRiskyAttachment(
+  BuildContext context,
+  MailRepository repo,
+  Attachment a,
+  String ext,
+) {
+  final name = repo.displayFileName(a.name);
+  return confirmDialog(
+    context,
+    title: 'This is a .$ext file',
+    body: kTouch
+        ? '“$name” can run code or open a web page when it is opened. Share it only if you expected it from this sender.'
+        : '“$name” can run code or open a web page when it is opened, so Flomsi does not open it. Save it to Downloads if you expected it from this sender.',
+    action: kTouch ? 'Share anyway' : 'Save to Downloads',
+    danger: true,
+  );
+}
+
+/// A phone: fetch the file if needed and hand it to another app through the share sheet,
+/// which points at [origin] on an iPad. Failures become a notice.
+Future<void> shareAttachment(
+  MailRepository repo,
+  NoticeController notice,
+  Attachment a, {
+  Rect? origin,
+}) async {
+  try {
+    final path = await repo.openAttachment(a);
+    await SharePlus.instance.share(
+      ShareParams(
+        files: [XFile(path, mimeType: a.mime)],
+        sharePositionOrigin: origin,
+      ),
+    );
+  } catch (e) {
+    notice.show(_reason(e));
+  }
+}
 
 /// The bordered 30 px row both chip kinds share: glyph, mono name, size, trailing slot.
 class _ChipFrame extends StatelessWidget {
@@ -241,21 +284,12 @@ class _AttachmentChipState extends ConsumerState<AttachmentChip> {
     }
   }
 
-  /// Files that can run code are never opened from here. On a computer they can be saved
-  /// after a clear question; on a phone, handed to another app the same way.
-  Future<bool> _allowRisky(String ext) {
-    final repo = ref.read(repositoryProvider);
-    final name = repo.displayFileName(widget.attachment.name);
-    return confirmDialog(
-      context,
-      title: 'This is a .$ext file',
-      body: kTouch
-          ? '“$name” can run code or open a web page when it is opened. Share it only if you expected it from this sender.'
-          : '“$name” can run code or open a web page when it is opened, so Flomsi does not open it. Save it to Downloads if you expected it from this sender.',
-      action: kTouch ? 'Share anyway' : 'Save to Downloads',
-      danger: true,
-    );
-  }
+  Future<bool> _allowRisky(String ext) => allowRiskyAttachment(
+    context,
+    ref.read(repositoryProvider),
+    widget.attachment,
+    ext,
+  );
 
   Future<void> _open() async {
     final a = widget.attachment;
@@ -269,17 +303,15 @@ class _AttachmentChipState extends ConsumerState<AttachmentChip> {
     final origin = box == null
         ? null
         : box.localToGlobal(Offset.zero) & box.size;
+    final repo = ref.read(repositoryProvider);
+    final notice = ref.read(noticeProvider.notifier);
     return _run(() async {
-      final path = await ref.read(repositoryProvider).openAttachment(a);
       if (kTouch) {
-        await SharePlus.instance.share(
-          ShareParams(
-            files: [XFile(path, mimeType: a.mime)],
-            sharePositionOrigin: origin,
-          ),
-        );
-      } else if (!await launchUrl(Uri.file(path))) {
-        ref.read(noticeProvider.notifier).show('No app opens ${a.name}');
+        return shareAttachment(repo, notice, a, origin: origin);
+      }
+      final path = await repo.openAttachment(a);
+      if (!await launchUrl(Uri.file(path))) {
+        notice.show('No app opens ${a.name}');
       }
     });
   }

@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../data/models.dart';
 import '../attachments/attachment_chip.dart';
 import '../../state/providers.dart';
+import '../../theme/app_icons.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
@@ -145,7 +146,7 @@ class ThreadBody extends ConsumerWidget {
             ),
             child: thread == null
                 ? const EmptyNote('No message selected')
-                : _ThreadContent(
+                : ThreadContent(
                     key: ValueKey(thread.id),
                     thread: thread,
                     pad: pad,
@@ -166,16 +167,40 @@ class ThreadBody extends ConsumerWidget {
   }
 }
 
-class _ThreadContent extends ConsumerStatefulWidget {
-  const _ThreadContent({super.key, required this.thread, required this.pad});
-  final Thread thread;
-  final double pad;
+/// Which messages of a conversation on a phone may fetch their remote images. Held
+/// while the conversation is on screen, so it opens with images blocked again next time.
+final remoteImagesProvider = NotifierProvider.autoDispose
+    .family<RemoteImages, Set<int>, int>((_) => RemoteImages());
 
+class RemoteImages extends Notifier<Set<int>> {
   @override
-  ConsumerState<_ThreadContent> createState() => _ThreadContentState();
+  Set<int> build() => const {};
+
+  /// Let [messageIds] load their images; each message fetches them itself.
+  void allow(Iterable<int> messageIds) => state = {...state, ...messageIds};
 }
 
-class _ThreadContentState extends ConsumerState<_ThreadContent> {
+/// A conversation's subject and messages, in one scrolling selection. On a phone
+/// ([phone]) the type is larger, every message has its own header, and a last row
+/// starts a reply ([onReply]).
+class ThreadContent extends ConsumerStatefulWidget {
+  const ThreadContent({
+    super.key,
+    required this.thread,
+    this.pad = Touch.gutter,
+    this.phone = false,
+    this.onReply,
+  });
+  final Thread thread;
+  final double pad;
+  final bool phone;
+  final VoidCallback? onReply;
+
+  @override
+  ConsumerState<ThreadContent> createState() => _ThreadContentState();
+}
+
+class _ThreadContentState extends ConsumerState<ThreadContent> {
   Timer? _readTimer;
 
   @override
@@ -185,7 +210,7 @@ class _ThreadContentState extends ConsumerState<_ThreadContent> {
   }
 
   @override
-  void didUpdateWidget(covariant _ThreadContent old) {
+  void didUpdateWidget(covariant ThreadContent old) {
     super.didUpdateWidget(old);
     if (old.thread.id != widget.thread.id) _scheduleMarkRead();
   }
@@ -197,6 +222,9 @@ class _ThreadContentState extends ConsumerState<_ThreadContent> {
     final id = widget.thread.id;
     _readTimer = Timer(const Duration(milliseconds: 900), () {
       if (!mounted) return;
+      // A phone page on its way out (Back, Mark as unread, Archive) leaves the
+      // conversation as it was.
+      if (widget.phone && !(ModalRoute.of(context)?.isActive ?? true)) return;
       ref.read(repositoryProvider).markRead(id, true);
     });
   }
@@ -213,6 +241,7 @@ class _ThreadContentState extends ConsumerState<_ThreadContent> {
     final pad = widget.pad;
     final messages =
         ref.watch(messagesProvider(thread.id)).value ?? const <Message>[];
+    if (widget.phone) return _phone(context, thread, messages);
     final first = messages.firstOrNull;
     // One selection across the whole thread: text in HTML mail and plain mail alike.
     return SelectionArea(
@@ -253,12 +282,74 @@ class _ThreadContentState extends ConsumerState<_ThreadContent> {
           for (final (i, m) in messages.indexed)
             Appear(
               delay: Duration(milliseconds: 40 * i),
-              child: _MessageBlock(
+              child: MessageBlock(
                 message: m,
                 first: i == 0,
                 last: i == messages.length - 1,
               ),
             ),
+        ],
+      ),
+    );
+  }
+
+  /// A phone: the subject large, its labels and how many messages, the account when
+  /// there are several; each message under its own header; a reply row to end on.
+  Widget _phone(BuildContext context, Thread thread, List<Message> messages) {
+    final s = context.s;
+    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
+    final account = accounts.where((a) => a.id == thread.accountId).firstOrNull;
+    final count = messages.isEmpty ? thread.msgCount : messages.length;
+    return SelectionArea(
+      child: ListView(
+        padding: EdgeInsets.fromLTRB(widget.pad, 12, widget.pad, 24),
+        children: [
+          Text(
+            thread.subject,
+            style: ui(context, size: 21, weight: FontWeight.w600, height: 1.3),
+          ),
+          if (thread.labels.isNotEmpty || count > 1) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                // A chip fills the width it is offered; here it takes its own.
+                for (final l in thread.labels)
+                  IntrinsicWidth(child: TagChip(l.name)),
+                if (count > 1)
+                  Text(
+                    '$count messages',
+                    style: mono(context, size: 12.5, color: s.fg2),
+                  ),
+              ],
+            ),
+          ],
+          if (accounts.length > 1 && account != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              'in ${account.email}',
+              style: ui(context, size: 13, color: s.fg2),
+            ),
+          ],
+          const SizedBox(height: 20),
+          for (final (i, m) in messages.indexed)
+            Appear(
+              key: ValueKey(m.id),
+              delay: Duration(milliseconds: 40 * i),
+              child: MessageBlock(
+                message: m,
+                first: i == 0,
+                last: i == messages.length - 1,
+                phone: true,
+                account: account,
+              ),
+            ),
+          if (widget.onReply case final reply? when messages.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            _ReplyRow(thread: thread, last: messages.last, onTap: reply),
+          ],
         ],
       ),
     );
@@ -322,25 +413,60 @@ class _Meta extends StatelessWidget {
   }
 }
 
-class _MessageBlock extends ConsumerStatefulWidget {
-  const _MessageBlock({
+/// One message of a conversation: who sent it (on a computer from the second message
+/// on, the first being in the header block; on a phone always), blocked images, the
+/// body and its files.
+class MessageBlock extends ConsumerStatefulWidget {
+  const MessageBlock({
+    super.key,
     required this.message,
     required this.first,
     required this.last,
+    this.phone = false,
+    this.account,
   });
   final Message message;
   final bool first;
   final bool last;
+  final bool phone;
+
+  /// The account the conversation is in: its address reads as "me" among recipients.
+  final Account? account;
 
   @override
-  ConsumerState<_MessageBlock> createState() => _MessageBlockState();
+  ConsumerState<MessageBlock> createState() => _MessageBlockState();
 }
 
-class _MessageBlockState extends ConsumerState<_MessageBlock> {
+class _MessageBlockState extends ConsumerState<MessageBlock> {
   String? _htmlWithImages;
   bool _loadingImages = false;
 
+  /// The phone's header shows the whole To list and the date.
+  bool _details = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // A phone's menu can allow images before this block is built (Load images, then
+    // scrolling down to it).
+    final m = widget.message;
+    if (widget.phone &&
+        ref.read(remoteImagesProvider(m.threadId)).contains(m.id)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadImages();
+      });
+    }
+  }
+
+  /// A phone keeps what was allowed in [remoteImagesProvider], where its menu sees it.
+  void _allowImages() {
+    final m = widget.message;
+    ref.read(remoteImagesProvider(m.threadId).notifier).allow([m.id]);
+    _loadImages();
+  }
+
   Future<void> _loadImages() async {
+    if (_loadingImages || _htmlWithImages != null) return;
     setState(() => _loadingImages = true);
     final html = await ref
         .read(repositoryProvider)
@@ -372,7 +498,7 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
     final width = (680 * MediaQuery.devicePixelRatioOf(context)).round();
     final body = HtmlWidget(
       html,
-      textStyle: ui(context, size: 14, height: 1.6, color: ink),
+      textStyle: _reading(context, ink),
       onTapUrl: _openLink,
       factoryBuilder: () => _MailWidgets(width),
       customStylesBuilder: (e) {
@@ -393,7 +519,7 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
         return styles.isEmpty ? null : styles;
       },
       onErrorBuilder: (context, element, error) =>
-          Text(m.text, style: ui(context, size: 14, height: 1.6, color: ink)),
+          Text(m.text, style: _reading(context, ink)),
     );
     if (!m.styled) return body;
     final theme = Theme.of(context);
@@ -417,12 +543,33 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
     );
   }
 
+  /// Reading text: 16 at 1.55 on a phone, 14 at 1.6 on a computer.
+  TextStyle _reading(BuildContext context, [Color? ink]) => widget.phone
+      ? ui(context, size: 16, height: 1.55, color: ink)
+      : ui(context, size: 14, height: 1.6, color: ink);
+
+  Widget _body(BuildContext context, Message m, String? html) => ConstrainedBox(
+    constraints: const BoxConstraints(maxWidth: 680),
+    child: Material(
+      type: MaterialType.transparency,
+      child: html != null
+          ? _htmlBody(context, html, m)
+          : Text(m.text, style: _reading(context)),
+    ),
+  );
+
   @override
   Widget build(BuildContext context) {
     final s = context.s;
     final m = widget.message;
+    if (widget.phone) {
+      ref.listen(remoteImagesProvider(m.threadId), (_, allowed) {
+        if (allowed.contains(m.id)) _loadImages();
+      });
+    }
     final html = _htmlWithImages ?? m.html;
     final imagesBlocked = _htmlWithImages == null && m.blockedImages > 0;
+    if (widget.phone) return _phone(context, m, html, imagesBlocked);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -499,15 +646,7 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
               ],
             ),
           ),
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 680),
-          child: Material(
-            type: MaterialType.transparency,
-            child: html != null
-                ? _htmlBody(context, html, m)
-                : Text(m.text, style: ui(context, size: 14, height: 1.6)),
-          ),
-        ),
+        _body(context, m, html),
         if (m.attachments.isNotEmpty) ...[
           const SizedBox(height: 14),
           Wrap(
@@ -518,6 +657,408 @@ class _MessageBlockState extends ConsumerState<_MessageBlock> {
         ],
         SizedBox(height: widget.last ? 0 : 20),
       ],
+    );
+  }
+
+  /// A phone: the header, the images line with a full-size button, the body, and the
+  /// files as rows.
+  Widget _phone(BuildContext context, Message m, String? html, bool blocked) {
+    final s = context.s;
+    final n = m.blockedImages;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (!widget.first) ...[
+          Divider(height: 1, color: s.border),
+          const SizedBox(height: 16),
+        ],
+        _header(context, m),
+        const SizedBox(height: 12),
+        if (blocked)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              children: [
+                Icon(AppIcons.images, size: 18, color: s.fg2),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '$n ${n == 1 ? 'image' : 'images'} blocked',
+                    style: ui(context, size: 14, color: s.fg2),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _loadingImages ? null : _allowImages,
+                  child: Text(_loadingImages ? 'Loading…' : 'Load images'),
+                ),
+              ],
+            ),
+          ),
+        _body(context, m, html),
+        if (m.attachments.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(Touch.radius),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(color: s.border),
+                borderRadius: BorderRadius.circular(Touch.radius),
+              ),
+              child: Column(
+                children: [
+                  for (final (i, a) in m.attachments.indexed) ...[
+                    if (i > 0) Divider(height: 1, color: s.border),
+                    _AttachmentRow(a),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+        SizedBox(height: widget.last ? 0 : 24),
+      ],
+    );
+  }
+
+  /// Name, the address it really came from (never hidden), the time, and "to me, Boris":
+  /// a tap anywhere on it shows the whole To list and the date.
+  Widget _header(BuildContext context, Message m) {
+    final s = context.s;
+    final name = m.isMine
+        ? 'Me'
+        : m.fromName.isEmpty
+        ? m.fromAddr
+        : m.fromName;
+    final duration = Motion.of(context, Motion.fast);
+    return Semantics(
+      button: true,
+      expanded: _details,
+      onTapHint: _details ? 'Hide details' : 'Show details',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => setState(() => _details = !_details),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Expanded(
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: ui(
+                      context,
+                      size: 16,
+                      weight: FontWeight.w600,
+                      height: 1.3,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  formatWhen(m.date),
+                  style: mono(context, size: 12.5, color: s.fg2),
+                ),
+              ],
+            ),
+            if (m.fromAddr.isNotEmpty && m.fromAddr != name)
+              Text(
+                m.fromAddr,
+                style: mono(context, size: 13, color: s.fg2, height: 1.4),
+              ),
+            const SizedBox(height: 2),
+            Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    _toLine(m),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: ui(context, size: 13, color: s.fg2),
+                  ),
+                ),
+                const SizedBox(width: 2),
+                AnimatedRotation(
+                  turns: _details ? 0.5 : 0,
+                  duration: duration,
+                  child: Icon(AppIcons.expand, size: 16, color: s.fg2),
+                ),
+              ],
+            ),
+            AnimatedSize(
+              duration: duration,
+              curve: Motion.curve,
+              alignment: Alignment.topLeft,
+              child: !_details
+                  ? const SizedBox(width: double.infinity)
+                  : Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: _PhoneMeta(
+                        rows: [
+                          (
+                            'to',
+                            m.to.isEmpty
+                                ? 'undisclosed recipients'
+                                : m.to.join(', '),
+                          ),
+                          ('date', _ThreadContentState._longDate(m.date)),
+                        ],
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// "to me, Boris": first names, whole addresses, and "me" for the account's own.
+  String _toLine(Message m) {
+    if (m.to.isEmpty) return 'to undisclosed recipients';
+    final a = widget.account;
+    bool mine(String r) {
+      final x = r.trim().toLowerCase();
+      return x == 'me' ||
+          (a != null &&
+              (x == a.email.toLowerCase() ||
+                  (a.displayName.isNotEmpty &&
+                      x == a.displayName.toLowerCase())));
+    }
+
+    final names = [
+      for (final r in m.to)
+        mine(r)
+            ? 'me'
+            : r.contains('@')
+            ? r.trim()
+            : r.trim().split(RegExp(r'\s+')).first,
+    ];
+    return 'to ${names.join(', ')}';
+  }
+}
+
+/// The phone header's details: a quiet label, then the value as data.
+class _PhoneMeta extends StatelessWidget {
+  const _PhoneMeta({required this.rows});
+  final List<(String, String)> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final (k, v) in rows)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 44,
+                  child: Text(k, style: ui(context, size: 13, color: s.fg2)),
+                ),
+                Expanded(
+                  child: Text(
+                    v,
+                    style: mono(context, size: 13, color: s.fg, height: 1.45),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// A received file on a phone: a 56 row with its kind, name and size. A tap hands it to
+/// another app through the share sheet; a file that can run code asks first.
+class _AttachmentRow extends ConsumerStatefulWidget {
+  const _AttachmentRow(this.attachment);
+  final Attachment attachment;
+
+  @override
+  ConsumerState<_AttachmentRow> createState() => _AttachmentRowState();
+}
+
+class _AttachmentRowState extends ConsumerState<_AttachmentRow> {
+  bool _busy = false;
+
+  // The same steps as AttachmentChip's on a touch screen.
+  Future<void> _open() async {
+    if (_busy) return;
+    final a = widget.attachment;
+    final repo = ref.read(repositoryProvider);
+    final notice = ref.read(noticeProvider.notifier);
+    final risky = repo.riskyExtension(a.name);
+    if (risky != null) {
+      if (!await allowRiskyAttachment(context, repo, a, risky) || !mounted) {
+        return;
+      }
+    }
+    final box = context.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
+    setState(() => _busy = true);
+    try {
+      await shareAttachment(repo, notice, a, origin: origin);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    final a = widget.attachment;
+    final repo = ref.read(repositoryProvider);
+    final name = repo.displayFileName(a.name);
+    final risky = repo.riskyExtension(a.name);
+    // The extension is laid out on its own and never cut: a disguised `.pdf.exe` shows.
+    final shown = middleEllipsis(name);
+    final ext = fileExtension(shown);
+    final style = ui(context, size: 15);
+    return Semantics(
+      button: true,
+      label: '$name, ${a.sizeLabel}',
+      onTap: _open,
+      excludeSemantics: true,
+      child: HoverRegion(
+        onTap: _open,
+        builder: (context, pressed) => Container(
+          constraints: const BoxConstraints(minHeight: 56),
+          color: pressed ? s.hover : null,
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 22,
+                child: _busy
+                    ? const CircularProgressIndicator.adaptive(strokeWidth: 2)
+                    : Icon(
+                        risky == null
+                            ? iconForFile(a.mime, name)
+                            : CupertinoIcons.exclamationmark_shield,
+                        size: 20,
+                        color: risky == null ? s.fg2 : s.red,
+                      ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        shown.substring(0, shown.length - ext.length),
+                        maxLines: 1,
+                        softWrap: false,
+                        overflow: TextOverflow.ellipsis,
+                        style: style,
+                      ),
+                    ),
+                    if (ext.isNotEmpty)
+                      Text(ext, maxLines: 1, softWrap: false, style: style),
+                    if (risky != null) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: s.red.withValues(alpha: 0.6),
+                          ),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                        child: Text(
+                          '.$risky',
+                          style: mono(context, size: 12, color: s.red),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(a.sizeLabel, style: mono(context, size: 12.5, color: s.fg2)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The last row on a phone: who a reply goes to, address included, so a look-alike
+/// sender shows before anything is written. Like the core: the last message's sender, or
+/// its recipients when the last message is ours.
+class _ReplyRow extends StatelessWidget {
+  const _ReplyRow({
+    required this.thread,
+    required this.last,
+    required this.onTap,
+  });
+  final Thread thread;
+  final Message last;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    final (String name, String? address) = last.isMine
+        ? (last.to.isEmpty ? thread.sender : last.to.join(', '), null)
+        : last.fromName.isEmpty || last.fromName == last.fromAddr
+        ? (last.fromAddr, null)
+        : (last.fromName, last.fromAddr);
+    return Semantics(
+      button: true,
+      label: 'Reply to $name${address == null ? '' : ' <$address>'}',
+      onTap: onTap,
+      excludeSemantics: true,
+      child: HoverRegion(
+        onTap: onTap,
+        builder: (context, pressed) => Container(
+          constraints: const BoxConstraints(minHeight: 52),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: pressed ? s.hover : null,
+            border: Border.all(color: s.border),
+            borderRadius: BorderRadius.circular(Touch.radius),
+          ),
+          child: Row(
+            children: [
+              Icon(AppIcons.reply, size: 20, color: s.fg2),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text.rich(
+                  TextSpan(
+                    children: [
+                      TextSpan(
+                        text: 'Reply to ',
+                        style: ui(context, size: 16, color: s.fg2),
+                      ),
+                      TextSpan(text: name, style: ui(context, size: 16)),
+                      if (address != null)
+                        TextSpan(
+                          text: ' <$address>',
+                          style: mono(context, size: 13, color: s.fg2),
+                        ),
+                    ],
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

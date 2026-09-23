@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/models.dart';
 import '../../keymap/key_scope.dart';
 import '../../keymap/keymap.dart';
+import '../../platform.dart';
 import '../../state/appearance.dart';
 import '../../state/providers.dart';
 import '../../theme/motion.dart';
@@ -33,6 +34,22 @@ class EditorShell extends ConsumerStatefulWidget {
 
 class _EditorShellState extends ConsumerState<EditorShell> {
   final _listKey = GlobalKey<ThreadListBodyState>();
+
+  @override
+  void initState() {
+    super.initState();
+    // A conversation asked for from outside (a tapped notification), also one asked
+    // for before this screen was there (the app started from it).
+    ref.listenManual<int?>(openThreadProvider, (_, id) {
+      if (id == null) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || ref.read(openThreadProvider) != id) return;
+        ref.read(openThreadProvider.notifier).done();
+        ref.read(selectedThreadIdProvider.notifier).select(id);
+        _openOnPhone(context);
+      });
+    }, fireImmediately: true);
+  }
 
   void _openOnPhone(BuildContext context) {
     if (MediaQuery.sizeOf(context).width >= 700) return;
@@ -87,13 +104,6 @@ class _EditorShellState extends ConsumerState<EditorShell> {
     final s = context.s;
     ref.listen<Draft?>(composeProvider, (prev, next) {
       if (prev == null && next != null) _openComposeOnPhone(context);
-    });
-    // A conversation asked for from outside (a tapped notification).
-    ref.listen<int?>(openThreadProvider, (_, id) {
-      if (id == null) return;
-      ref.read(openThreadProvider.notifier).done();
-      ref.read(selectedThreadIdProvider.notifier).select(id);
-      _openOnPhone(context);
     });
     final actions = ShellActions(
       ref: ref,
@@ -274,7 +284,8 @@ class _TopBar extends ConsumerWidget {
     );
 
     return Container(
-      height: 40,
+      // Fingers on a tablet: room for a 48 search field.
+      height: kTouch ? Touch.target + 8 : 40,
       color: s.bg2,
       padding: EdgeInsets.only(left: mac && !compact ? 80 : 12, right: 12),
       child: Row(

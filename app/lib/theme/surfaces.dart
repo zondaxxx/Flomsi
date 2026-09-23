@@ -5,14 +5,22 @@ import 'app_icons.dart';
 import 'motion.dart';
 import 'tokens.dart';
 
-/// 1px separator.
+/// 1px separator, across the whole width (or height) it is given.
 class Hairline extends StatelessWidget {
   const Hairline({super.key, this.vertical = false});
   final bool vertical;
   @override
   Widget build(BuildContext context) => vertical
-      ? SizedBox(width: 1, child: ColoredBox(color: context.s.border))
-      : SizedBox(height: 1, child: ColoredBox(color: context.s.border));
+      ? SizedBox(
+          width: 1,
+          height: double.infinity,
+          child: ColoredBox(color: context.s.border),
+        )
+      : SizedBox(
+          height: 1,
+          width: double.infinity,
+          child: ColoredBox(color: context.s.border),
+        );
 }
 
 /// Hover + tap without Material ink. Works under MacosApp and MaterialApp alike.
@@ -194,7 +202,6 @@ class SmallButton extends StatelessWidget {
       builder: (context, hovered) => AnimatedContainer(
         duration: const Duration(milliseconds: 120),
         height: kTouch && height < 44 ? 44 : height,
-        alignment: Alignment.center,
         padding: const EdgeInsets.symmetric(horizontal: 12),
         decoration: BoxDecoration(
           color: primary || danger
@@ -209,6 +216,7 @@ class SmallButton extends StatelessWidget {
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
               label,
@@ -427,10 +435,13 @@ class Segmented<T> extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = context.s;
+    // Fingers: 40 to see, 48 to press, and the words in reading type.
+    final touch = kTouch;
+    final h = touch && height < 40 ? 40.0 : height;
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
-        padding: const EdgeInsets.all(2),
+        padding: EdgeInsets.all(touch ? 4 : 2),
         decoration: BoxDecoration(
           border: Border.all(color: s.border),
           borderRadius: BorderRadius.circular(6),
@@ -444,8 +455,8 @@ class Segmented<T> extends StatelessWidget {
                 builder: (context, hovered) => AnimatedContainer(
                   duration: Motion.of(context, Motion.fast),
                   curve: Motion.curve,
-                  height: height,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  height: h,
+                  padding: EdgeInsets.symmetric(horizontal: touch ? 16 : 12),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: v == value
@@ -453,12 +464,25 @@ class Segmented<T> extends StatelessWidget {
                         : (hovered ? s.hover : Colors.transparent),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: Text(
-                    label,
-                    style: mono(
-                      context,
-                      size: 12,
-                      color: v == value ? s.fg : s.fg2,
+                  child: Semantics(
+                    selected: v == value,
+                    button: true,
+                    child: Text(
+                      label,
+                      style: touch
+                          ? ui(
+                              context,
+                              size: 15,
+                              weight: v == value
+                                  ? FontWeight.w500
+                                  : FontWeight.w400,
+                              color: v == value ? s.fg : s.fg2,
+                            )
+                          : mono(
+                              context,
+                              size: 12,
+                              color: v == value ? s.fg : s.fg2,
+                            ),
                     ),
                   ),
                 ),
@@ -524,13 +548,15 @@ Future<bool> confirmDialog(
   required String action,
   bool danger = false,
   bool cancel = true,
+  String cancelLabel = 'Cancel',
 }) async {
+  final touch = kTouch;
   final chosen = await showGeneralDialog<bool>(
     context: context,
     barrierDismissible: true,
-    barrierLabel: 'Cancel',
+    barrierLabel: cancelLabel,
     barrierColor: Colors.black.withValues(alpha: 0.25),
-    transitionDuration: const Duration(milliseconds: 120),
+    transitionDuration: Motion.of(context, Motion.fast),
     transitionBuilder: (context, a, _, child) => FadeTransition(
       opacity: CurvedAnimation(parent: a, curve: Motion.curve),
       child: ScaleTransition(
@@ -549,7 +575,9 @@ Future<bool> confirmDialog(
           type: MaterialType.transparency,
           child: Container(
             width: (width - 32).clamp(260.0, 420.0),
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+            padding: touch
+                ? const EdgeInsets.fromLTRB(20, 20, 12, 8)
+                : const EdgeInsets.fromLTRB(18, 16, 18, 14),
             decoration: BoxDecoration(
               color: s.bg,
               borderRadius: BorderRadius.circular(8),
@@ -566,34 +594,69 @@ Future<bool> confirmDialog(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Text(
-                  title,
-                  style: ui(context, size: 14, weight: FontWeight.w600),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  body,
-                  style: ui(context, size: 12.5, color: s.fg2, height: 1.45),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    const Spacer(),
-                    if (cancel) ...[
-                      SmallButton(
-                        label: 'Cancel',
-                        onPressed: () => Navigator.of(context).pop(false),
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    SmallButton(
-                      label: action,
-                      primary: !danger,
-                      danger: danger,
-                      onPressed: () => Navigator.of(context).pop(true),
+                Padding(
+                  padding: EdgeInsets.only(right: touch ? 8 : 0),
+                  child: Text(
+                    title,
+                    style: ui(
+                      context,
+                      size: touch ? 17 : 14,
+                      weight: FontWeight.w600,
                     ),
-                  ],
+                  ),
                 ),
+                SizedBox(height: touch ? 8 : 6),
+                Padding(
+                  padding: EdgeInsets.only(right: touch ? 8 : 0),
+                  child: Text(
+                    body,
+                    style: ui(
+                      context,
+                      size: touch ? 15 : 12.5,
+                      color: s.fg2,
+                      height: 1.45,
+                    ),
+                  ),
+                ),
+                SizedBox(height: touch ? 12 : 16),
+                // Fingers get the phone's own buttons, 48 tall.
+                if (touch)
+                  Wrap(
+                    alignment: WrapAlignment.end,
+                    children: [
+                      if (cancel)
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(false),
+                          child: Text(cancelLabel),
+                        ),
+                      TextButton(
+                        style: danger
+                            ? TextButton.styleFrom(foregroundColor: s.red)
+                            : null,
+                        onPressed: () => Navigator.of(context).pop(true),
+                        child: Text(action),
+                      ),
+                    ],
+                  )
+                else
+                  Row(
+                    children: [
+                      const Spacer(),
+                      if (cancel) ...[
+                        SmallButton(
+                          label: cancelLabel,
+                          onPressed: () => Navigator.of(context).pop(false),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      SmallButton(
+                        label: action,
+                        primary: !danger,
+                        danger: danger,
+                        onPressed: () => Navigator.of(context).pop(true),
+                      ),
+                    ],
+                  ),
               ],
             ),
           ),

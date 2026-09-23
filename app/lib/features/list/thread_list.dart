@@ -1,5 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
@@ -9,6 +10,7 @@ import '../../state/providers.dart';
 import '../accounts/add_account_sheet.dart';
 import '../settings/settings_sheet.dart';
 import '../shell/file_away.dart';
+import '../sidebar/sidebar_model.dart';
 import '../phone/phone_list_parts.dart';
 import '../phone/phone_thread_row.dart';
 import '../../theme/app_icons.dart';
@@ -28,6 +30,7 @@ class ThreadListBody extends ConsumerStatefulWidget {
     this.pressedId,
     this.onRowMenu,
     this.rowWrapper,
+    this.rowActions,
   });
   final void Function(int threadId)? onOpen;
 
@@ -52,6 +55,10 @@ class ThreadListBody extends ConsumerStatefulWidget {
 
   /// Phones: what a row is wrapped in (swipe actions).
   final Widget Function(Thread thread, Widget row)? rowWrapper;
+
+  /// Phones: the row's actions for a screen reader.
+  final Map<CustomSemanticsAction, VoidCallback> Function(Thread thread)?
+  rowActions;
 
   @override
   ConsumerState<ThreadListBody> createState() => ThreadListBodyState();
@@ -83,7 +90,12 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   @override
   void initState() {
     super.initState();
-    _base = ref.read(queryProvider);
+    // The filter outlives a list (a phone turned into a tablet): what it added to the
+    // query is not part of the mailbox.
+    _base = withoutFilter(
+      ref.read(queryProvider),
+      ref.read(listFilterProvider),
+    );
     searchFocus.addListener(
       () => ref
           .read(scopeProvider.notifier)
@@ -127,7 +139,8 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   /// A selection far from the rows on screen (k with nothing selected, a thread opened
   /// from elsewhere) has no row built for RevealOnSelect: jump near it first.
   void _revealFar(int? id) {
-    if (id == null) return;
+    // Phones open a conversation on its own page: the list stays where it was.
+    if (id == null || widget.phone) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !_scroll.hasClients) return;
       if (_selectedRowKey.currentContext != null) return;
@@ -470,7 +483,7 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
         ),
       );
     } else if (draftsView) {
-      slivers.add(const SliverFillRemaining(child: _DraftList()));
+      slivers.add(const _PhoneDrafts());
     } else {
       slivers.add(
         threads.when(
@@ -501,6 +514,14 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                     SliverAnimatedList(
                       key: _listKey,
                       initialItemCount: _items.length,
+                      // Rows keep their state (a swipe under way) when rows above
+                      // them come or go.
+                      findChildIndexCallback: (key) {
+                        final i = _items.indexWhere(
+                          (t) => ValueKey('row-${t.id}') == key,
+                        );
+                        return i < 0 ? null : i;
+                      },
                       itemBuilder: (context, i, anim) {
                         if (i >= _items.length) return const SizedBox.shrink();
                         final t = _items[i];
@@ -517,8 +538,10 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                           onLongPress: widget.onRowMenu == null
                               ? null
                               : (at) => widget.onRowMenu!(t, at),
+                          actions: widget.rowActions?.call(t) ?? const {},
                         );
                         return _Transition(
+                          key: ValueKey('row-${t.id}'),
                           anim: anim,
                           child: Column(
                             children: [
@@ -737,7 +760,7 @@ class _SwipeBackground extends StatelessWidget {
 }
 
 class _Transition extends StatelessWidget {
-  const _Transition({required this.anim, required this.child});
+  const _Transition({super.key, required this.anim, required this.child});
   final Animation<double> anim;
   final Widget child;
   @override
@@ -974,6 +997,63 @@ class _DraftList extends ConsumerWidget {
                       },
                     ),
                   ),
+                ),
+        );
+  }
+}
+
+/// Drafts kept on this phone, in the phone list's scroll view.
+class _PhoneDrafts extends ConsumerWidget {
+  const _PhoneDrafts();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final s = context.s;
+    Widget fill(Widget child) =>
+        SliverFillRemaining(hasScrollBody: false, child: child);
+    return ref
+        .watch(draftsProvider)
+        .when(
+          skipLoadingOnReload: true,
+          loading: () => fill(const DelayedSpinner()),
+          error: (e, _) => fill(
+            PhoneEmpty(
+              title: 'Couldn’t open the drafts on this phone',
+              detail: '$e',
+              action: 'Try again',
+              onAction: () => ref.invalidate(draftsProvider),
+            ),
+          ),
+          data: (drafts) => drafts.isEmpty
+              ? fill(const PhoneEmpty(title: 'No drafts on this phone'))
+              : SliverList.builder(
+                  itemCount: drafts.length,
+                  itemBuilder: (context, i) {
+                    final d = drafts[i];
+                    return Column(
+                      key: ValueKey('draft-${d.localId}'),
+                      children: [
+                        PhoneDraftRow(
+                          draft: d,
+                          onTap: () =>
+                              ref.read(composeProvider.notifier).open(d),
+                          onDelete: () async {
+                            await ref
+                                .read(repositoryProvider)
+                                .deleteDraft(d.localId!);
+                            ref.invalidate(draftsProvider);
+                            ref
+                                .read(noticeProvider.notifier)
+                                .show('Draft deleted');
+                          },
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.only(left: 28),
+                          child: Divider(height: 1, color: s.border),
+                        ),
+                      ],
+                    );
+                  },
                 ),
         );
   }

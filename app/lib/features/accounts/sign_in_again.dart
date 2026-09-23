@@ -2,7 +2,10 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models.dart';
+import '../../platform.dart';
 import '../../state/providers.dart';
+import '../phone/phone_route.dart';
+import '../settings/phone_settings.dart';
 import '../settings/settings_sheet.dart';
 
 /// Sign an account in again on its provider's page (Google, Microsoft), keeping its mail;
@@ -21,6 +24,13 @@ Future<void> signInAgain(BuildContext context, WidgetRef ref, Account a) async {
   }
 }
 
-/// Where a password account gets its new password typed in.
-Future<void> openPasswordEntry(BuildContext context, Account a) =>
-    showSettingsSheet(context);
+/// Where a password account gets its new password typed in: on a phone its own screen,
+/// with the password field open and the keyboard up; elsewhere the settings sheet.
+Future<void> openPasswordEntry(BuildContext context, Account a) async {
+  if (!isPhone(context)) return showSettingsSheet(context);
+  await Navigator.of(context).push(
+    phonePage<void>(
+      (_) => AccountDetailScreen(accountId: a.id, focusPassword: true),
+    ),
+  );
+}

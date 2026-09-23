@@ -497,6 +497,21 @@ class MockRepository implements MailRepository {
       signInFails = null;
       throw fail;
     }
+    signInHints.add(loginHint);
+    // Signing an account in again keeps it and lets it sync.
+    final again = _accountRows.where((a) => a.$2 == loginHint).firstOrNull;
+    if (again != null) {
+      problems.remove(again.$1);
+      signedIn.add(again.$2);
+      _events.add(const ThreadsChanged());
+      return Account(
+        id: again.$1,
+        email: again.$2,
+        kind: again.$3,
+        color: again.$4,
+        auth: 'xoauth2',
+      );
+    }
     final email = provider == 'google' ? 'you@gmail.com' : 'you@outlook.com';
     final kind = provider == 'google' ? 'gmail' : 'outlook';
     final id = _accountRows.fold(0, (m, a) => a.$1 > m ? a.$1 : m) + 1;
@@ -514,8 +529,9 @@ class MockRepository implements MailRepository {
     );
   }
 
-  /// Addresses signed in through [signIn], for tests.
+  /// Addresses signed in through [signIn], and the login hints it was given, for tests.
   final List<String> signedIn = [];
+  final List<String?> signInHints = [];
 
   /// How many older messages each "Load older" call brings (a test can change it).
   int olderOnServer = 0;
@@ -598,9 +614,7 @@ class MockRepository implements MailRepository {
   ];
 
   @override
-  Future<void> moveThread(int threadId, int folderId) async {
-    await archive(threadId);
-  }
+  Future<int> moveThread(int threadId, int folderId) => archive(threadId);
 
   @override
   Future<void> markRead(int threadId, bool read) async =>

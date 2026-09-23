@@ -71,15 +71,21 @@ class PendingFilings extends Notifier<PendingFiling?> {
   }
 
   HiddenThreads get _hidden => ref.read(hiddenThreadsProvider.notifier);
+  NoticeController get _notices => ref.read(noticeProvider.notifier);
+
+  /// The notice with this filing's Undo, while it is the one on screen.
+  Notice? _shown;
 
   /// Take [threadId] off the list now and file it in [window], with Undo on the notice.
+  /// A filing still waiting runs first; the slot changes hands at once, so a third one
+  /// started meanwhile is never lost.
   Future<void> start(
     int threadId,
     FilingKind kind, {
     int? folderId,
     String? folderName,
   }) async {
-    await commit();
+    final previous = _take();
     final p = PendingFiling(
       threadId,
       kind,
@@ -89,9 +95,9 @@ class PendingFilings extends Notifier<PendingFiling?> {
     state = p;
     _hidden.hide(threadId);
     _timer = Timer(window, () => unawaited(commit()));
-    ref
-        .read(noticeProvider.notifier)
-        .show(p.done, action: 'Undo', onAction: () => undo(p), ttl: window);
+    _notices.show(p.done, action: 'Undo', onAction: () => undo(p), ttl: window);
+    _shown = _notices.current;
+    if (previous != null) await _run(previous);
   }
 
   /// Put [p] back where it was, if it has not run yet.
@@ -99,24 +105,43 @@ class PendingFilings extends Notifier<PendingFiling?> {
     if (!identical(state, p)) return;
     _timer?.cancel();
     state = null;
+    _endUndo();
     _hidden.show(p.threadId);
   }
 
   /// Run the waiting filing now.
   Future<void> commit() async {
+    final p = _take();
+    if (p != null) await _run(p);
+  }
+
+  /// The waiting filing, no longer waiting: its Undo goes, its row stays hidden until the
+  /// list has caught up.
+  PendingFiling? _take() {
     final p = state;
-    if (p == null) return;
+    if (p == null) return null;
     _timer?.cancel();
     state = null;
+    _endUndo();
     _settling[p.threadId]?.cancel();
     _settling[p.threadId] = Timer(settleAtMost, () => _settled(p.threadId));
+    return p;
+  }
+
+  /// Undo is offered only while it can still work.
+  void _endUndo() {
+    if (_shown != null && identical(_notices.current, _shown)) _notices.hide();
+    _shown = null;
+  }
+
+  Future<void> _run(PendingFiling p) async {
     final repo = ref.read(repositoryProvider);
-    final notice = ref.read(noticeProvider.notifier);
+    final notice = _notices;
     int? n;
     if (p.kind == FilingKind.move) {
       try {
-        await repo.moveThread(p.threadId, p.folderId!);
-        n = 1;
+        n = await repo.moveThread(p.threadId, p.folderId!);
+        if (n == 0) notice.show('Already in ${p.folderName}');
       } catch (e) {
         notice.show('Couldn’t move it: $e', error: true);
       }

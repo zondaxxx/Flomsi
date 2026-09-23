@@ -55,6 +55,9 @@ class _SignInPanelState extends ConsumerState<SignInPanel> {
   bool _returned = false;
   Problem? _problem;
 
+  /// The provider [_problem] came from.
+  String? _failed;
+
   /// The last Google sign-in was closed: offer the app-password way instead.
   bool _googleClosed = false;
 
@@ -83,6 +86,7 @@ class _SignInPanelState extends ConsumerState<SignInPanel> {
           _googleClosed = provider == 'google';
         } else {
           _problem = p;
+          _failed = provider;
         }
       });
     } finally {
@@ -138,7 +142,9 @@ class _SignInPanelState extends ConsumerState<SignInPanel> {
                   child: _SignInProblem(
                     problem: problem,
                     onRetry: () => setState(() => _problem = null),
-                    onAppPassword: problem.kind == 'admin'
+                    // Only Google accounts have the app-password way round.
+                    onAppPassword:
+                        problem.kind == 'admin' && _failed == 'google'
                         ? _openGmailGuide
                         : null,
                   ),
@@ -271,7 +277,10 @@ class _BrandButton extends StatelessWidget {
       opacity: enabled || busy ? 1 : 0.4,
       child: Semantics(
         button: true,
+        enabled: enabled,
         label: label,
+        onTap: enabled ? onTap : null,
+        excludeSemantics: true,
         child: Material(
           color: fill,
           shape: RoundedRectangleBorder(

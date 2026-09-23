@@ -2,6 +2,8 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import '../../data/models.dart';
+import '../../platform.dart';
+import '../../theme/app_icons.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
@@ -23,6 +25,9 @@ class _ProblemNoteState extends State<ProblemNote> {
   Widget build(BuildContext context) {
     final s = context.s;
     final p = widget.problem;
+    // Phones read it at arm's length: larger type, a larger icon, a 48 place to tap.
+    final touch = kTouch;
+    final indent = touch ? 26.0 : 19.0;
     final stage = switch (p.stage) {
       'imap' => 'Incoming server: ',
       'smtp' => 'Outgoing server: ',
@@ -44,19 +49,21 @@ class _ProblemNoteState extends State<ProblemNote> {
               Padding(
                 padding: const EdgeInsets.only(top: 2),
                 child: Icon(
-                  CupertinoIcons.exclamationmark_circle,
-                  size: 13,
+                  touch
+                      ? AppIcons.error
+                      : CupertinoIcons.exclamationmark_circle,
+                  size: touch ? 18 : 13,
                   color: s.red,
                 ),
               ),
-              const SizedBox(width: 6),
+              SizedBox(width: touch ? 8 : 6),
               Expanded(
                 child: Text(
                   '$stage${p.title}',
                   style: ui(
                     context,
-                    size: 12.5,
-                    weight: FontWeight.w500,
+                    size: touch ? 15 : 12.5,
+                    weight: touch ? FontWeight.w600 : FontWeight.w500,
                     color: s.red,
                   ),
                 ),
@@ -65,23 +72,36 @@ class _ProblemNoteState extends State<ProblemNote> {
           ),
           if (p.hint != null)
             Padding(
-              padding: const EdgeInsets.only(left: 19, top: 3),
+              padding: EdgeInsets.only(left: indent, top: 3),
               child: SelectableText(
                 p.hint!,
-                style: ui(context, size: 12, color: s.fg2, height: 1.4),
+                style: ui(
+                  context,
+                  size: touch ? 14 : 12,
+                  color: s.fg2,
+                  height: 1.4,
+                ),
               ),
             ),
           if (p.detail.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(left: 19, top: 4),
+              padding: EdgeInsets.only(left: indent, top: touch ? 0 : 4),
               child: HoverRegion(
                 onTap: () => setState(() => _details = !_details),
-                builder: (context, hovered) => Text(
-                  _details ? 'Hide server reply' : 'Server reply',
-                  style: mono(
-                    context,
-                    size: 11,
-                    color: hovered ? s.fg2 : s.fg3,
+                builder: (context, hovered) => Container(
+                  constraints: BoxConstraints(
+                    minHeight: touch ? Touch.target : 0,
+                  ),
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _details ? 'Hide server reply' : 'Server reply',
+                    style: touch
+                        ? ui(context, size: 14, color: s.fg2)
+                        : mono(
+                            context,
+                            size: 11,
+                            color: hovered ? s.fg2 : s.fg3,
+                          ),
                   ),
                 ),
               ),
@@ -92,10 +112,15 @@ class _ProblemNoteState extends State<ProblemNote> {
             alignment: Alignment.topLeft,
             child: _details
                 ? Padding(
-                    padding: const EdgeInsets.only(left: 19, top: 4),
+                    padding: EdgeInsets.only(left: indent, top: 4),
                     child: SelectableText(
                       p.detail,
-                      style: mono(context, size: 11, color: s.fg3),
+                      // Read at arm's length on a phone: readable contrast.
+                      style: mono(
+                        context,
+                        size: touch ? 13 : 11,
+                        color: touch ? s.fg2 : s.fg3,
+                      ),
                     ),
                   )
                 : const SizedBox(width: double.infinity),

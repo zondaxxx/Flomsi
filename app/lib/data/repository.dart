@@ -33,7 +33,8 @@ abstract class MailRepository {
   Future<List<Folder>> accountFolders(int accountId);
 
   /// Move the thread to any folder of its account (local first, replayed on sync).
-  Future<void> moveThread(int threadId, int folderId);
+  /// Returns how many messages moved: 0 when it is all there already.
+  Future<int> moveThread(int threadId, int folderId);
 
   /// Hide the thread from the inbox until [until] (kept on this device).
   Future<void> snooze(int threadId, DateTime until);
