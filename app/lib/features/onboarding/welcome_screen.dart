@@ -31,12 +31,25 @@ class WelcomeScreen extends StatelessWidget {
                         const Spacer(flex: 2),
                         Align(
                           alignment: Alignment.centerLeft,
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(12),
-                            child: Image.asset(
-                              'assets/brand/flomsi_mark.png',
-                              width: 56,
-                              height: 56,
+                          // The mark is a dark tile: on the dark page a hairline
+                          // keeps its edge.
+                          child: DecoratedBox(
+                            position: DecorationPosition.foreground,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: s.isDark
+                                    ? s.fg3.withValues(alpha: 0.5)
+                                    : Colors.transparent,
+                              ),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              child: Image.asset(
+                                'assets/brand/flomsi_mark.png',
+                                width: 56,
+                                height: 56,
+                              ),
                             ),
                           ),
                         ),

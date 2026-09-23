@@ -284,6 +284,7 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       title: 'Discard this draft?',
       body: 'It won’t be kept in Drafts.',
       action: 'Discard',
+      cancelLabel: 'Keep editing',
       danger: true,
     );
     if (!yes || !mounted) return;

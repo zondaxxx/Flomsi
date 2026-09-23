@@ -379,7 +379,7 @@ void main() {
     await tester.tap(find.byTooltip('Discard draft'));
     await tester.pumpAndSettle();
     expect(find.text('Discard this draft?'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    await tester.tap(find.text('Keep editing'));
     await tester.pumpAndSettle();
     expect(find.byType(PhoneComposeScreen), findsOneWidget);
     expect((await stored()).length, before + 1);
