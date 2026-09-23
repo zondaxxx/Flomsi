@@ -629,7 +629,7 @@ class MockRepository implements MailRepository {
   }
 
   @override
-  Future<void> send(Draft draft) async {
+  Future<String?> send(Draft draft) async {
     await Future<void>.delayed(const Duration(milliseconds: 400));
     if (draft.inReplyTo != null) {
       final id = int.tryParse(draft.inReplyTo!.replaceAll(RegExp(r'\D'), ''));
@@ -673,6 +673,7 @@ class MockRepository implements MailRepository {
       }
     }
     _events.add(const ThreadsChanged());
+    return null;
   }
 
   /// Sign-in problems per account, for design work and tests.

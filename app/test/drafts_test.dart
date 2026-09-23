@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mail_app/data/mock_repository.dart';
 import 'package:mail_app/data/models.dart';
 import 'package:mail_app/features/compose/compose_body.dart';
 import 'package:mail_app/features/list/thread_list.dart';
@@ -85,6 +86,28 @@ void main() {
     await settleNotices(tester);
   });
 
+  testWidgets('trouble after the send never reads as a failed send', (
+    tester,
+  ) async {
+    c.dispose();
+    c = ProviderContainer(
+      overrides: [repositoryProvider.overrideWithValue(_SentButNoCopy())],
+    );
+    await tester.pumpWidget(_app(c, _composer(_fresh)));
+    await tester.pumpAndSettle();
+    await typeRecipient(tester, 'bob@x.dev');
+    await tester.tap(find.text('Send'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    // No error in the composer (it would invite a second send); the warning is shown.
+    expect(find.textContaining('database is locked'), findsNothing);
+    expect(
+      c.read(noticeProvider),
+      'Sent, but the copy for Sent was not saved: NO [OVERQUOTA]',
+    );
+    await tester.pump(const Duration(seconds: 9));
+  });
+
   testWidgets('sending removes the stored draft', (tester) async {
     final before = (await stored()).length;
     await tester.pumpWidget(_app(c, _composer(_fresh)));
@@ -132,4 +155,17 @@ void main() {
         .toList();
     expect(subject, contains('Sidebar contrast numbers'));
   });
+}
+
+/// SMTP took the mail, then the Sent copy failed and the local draft could not be deleted.
+class _SentButNoCopy extends MockRepository {
+  @override
+  Future<String?> send(Draft draft) async {
+    await super.send(draft);
+    return 'Sent, but the copy for Sent was not saved: NO [OVERQUOTA]';
+  }
+
+  @override
+  Future<void> deleteDraft(int localId) async =>
+      throw StateError('database is locked');
 }

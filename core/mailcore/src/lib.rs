@@ -382,7 +382,9 @@ impl Core {
 
     /// Send over SMTP, keep a copy in the Sent folder (unless the server does it itself),
     /// and flag the replied-to message as answered.
-    pub async fn send(&self, account_id: i64, draft: &Draft) -> Result<()> {
+    /// Send over SMTP, then file a copy in Sent. An error means the mail did not go;
+    /// trouble after that comes back as [SendReport::warning].
+    pub async fn send(&self, account_id: i64, draft: &Draft) -> Result<SendReport> {
         let account = self.store.account(account_id)?;
         let secret = match account.auth {
             AuthKind::Password => SmtpCredential::Password(
@@ -420,7 +422,14 @@ impl Core {
             });
         }
         let message = draft.to_mime(&files)?;
+        let message_id = message.headers().get_raw("Message-ID").map(|v| {
+            v.trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string()
+        });
         let raw = message.formatted();
+        let smtp_host = host.clone();
         let mut cfg = SmtpConfig::new(host, port, account.email.clone(), secret);
         if let Some(sec) = account.smtp_security {
             cfg.implicit_tls = sec == Security::Tls;
@@ -428,20 +437,43 @@ impl Core {
         cfg.local_bridge = account.local_bridge;
         smtp::send(&cfg, message).await?;
 
-        // Gmail files sent mail on its own; everyone else gets an APPEND into Sent.
-        if !account.imap_host.contains("gmail") {
-            if let Some(sent) = self.store.folder_by_role(account_id, FolderRole::Sent)? {
-                let mut p = self.connect(&account).await?;
-                let r = p.append(&sent.remote_name, &raw, Flags::SEEN).await;
-                let _ = p.logout().await;
-                r?;
+        // The mail is gone. Nothing below may turn that into "not sent": the person would
+        // send it again. Later steps only add a warning.
+        let mut report = SendReport::default();
+        if let Err(e) = self
+            .file_in_sent(&account, &smtp_host, &raw, message_id.as_deref())
+            .await
+        {
+            report.warning = Some(format!("Sent, but the copy for Sent was not saved: {e}"));
+        }
+        if let Some(irt) = &draft.in_reply_to {
+            if let Err(e) = self.actions().mark_answered(account_id, irt) {
+                log::warn!("marking {irt} answered: {e}");
             }
         }
+        Ok(report)
+    }
 
-        if let Some(irt) = &draft.in_reply_to {
-            self.actions().mark_answered(account_id, irt)?;
+    /// Put the sent message into Sent, once. Gmail and Microsoft file sent mail
+    /// themselves; elsewhere a copy the server already filed (some do) is found by
+    /// Message-ID first, so there are never two.
+    async fn file_in_sent(
+        &self,
+        account: &Account,
+        smtp_host: &str,
+        raw: &[u8],
+        message_id: Option<&str>,
+    ) -> Result<()> {
+        if files_sent_mail_itself(smtp_host) {
+            return Ok(());
         }
-        Ok(())
+        let Some(sent) = self.store.folder_by_role(account.id, FolderRole::Sent)? else {
+            return Ok(());
+        };
+        let mut p = self.connect(account).await?;
+        let r = append_once(&mut p, &sent.remote_name, raw, message_id).await;
+        let _ = p.logout().await;
+        r
     }
 
     pub fn actions(&self) -> Actions<'_> {
@@ -631,6 +663,44 @@ fn missed_mail(known: Option<&Folder>, state: &provider::FolderState) -> bool {
         Some((validity, next)) => state.uidvalidity != validity || state.uidnext > next,
         None => true,
     }
+}
+
+/// Google and Microsoft 365 put mail sent through their own SMTP into Sent; a copy from
+/// us would be the second. Decided by the SMTP server that carried it, by whole domain
+/// (an on-premises Exchange at outlook.example.com does not file anything).
+fn files_sent_mail_itself(smtp_host: &str) -> bool {
+    let h = smtp_host.trim().trim_end_matches('.').to_ascii_lowercase();
+    [
+        "gmail.com",
+        "googlemail.com",
+        "office365.com",
+        "outlook.com",
+    ]
+    .iter()
+    .any(|d| h == *d || h.ends_with(&format!(".{d}")))
+}
+
+/// APPEND [raw] to [folder] unless a message with [message_id] is already there.
+async fn append_once(
+    p: &mut ImapProvider,
+    folder: &str,
+    raw: &[u8],
+    message_id: Option<&str>,
+) -> Result<()> {
+    if let Some(id) = message_id {
+        p.select(folder).await?;
+        if !p.find_message_id(id).await?.is_empty() {
+            return Ok(());
+        }
+    }
+    p.append(folder, raw, Flags::SEEN).await
+}
+
+/// What happened after SMTP accepted a message.
+#[derive(Debug, Default, Clone)]
+pub struct SendReport {
+    /// Something after the send went wrong (the copy in Sent); the mail itself went out.
+    pub warning: Option<String>,
 }
 
 struct InlineHtml {
@@ -840,5 +910,66 @@ mod tests {
         assert!(missed_mail(Some(&folder(Some(7), Some(10))), &state(8, 10)));
         assert!(missed_mail(Some(&folder(None, None)), &state(7, 10)));
         assert!(missed_mail(None, &state(7, 10)));
+    }
+
+    #[tokio::test]
+    async fn a_sent_copy_is_filed_once() {
+        use crate::provider::fake_imap::FakeImap;
+        let fake = FakeImap::start("z@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.add_box("Sent", Some("\\Sent"));
+        });
+        let mut p = ImapProvider::connect_trusting(
+            "localhost",
+            fake.port,
+            "z@x.dev",
+            Credential::Password("secret".into()),
+            std::slice::from_ref(&fake.cert),
+        )
+        .await
+        .unwrap();
+        let from = Address {
+            name: None,
+            addr: "z@x.dev".into(),
+        };
+        let mut d = Draft::new(from.clone());
+        d.to = vec![Address {
+            name: None,
+            addr: "anna@studio.dev".into(),
+        }];
+        d.subject = "Once".into();
+        let message = d.to_mime(&[]).unwrap();
+        let id = message
+            .headers()
+            .get_raw("Message-ID")
+            .unwrap()
+            .trim()
+            .trim_matches(['<', '>'])
+            .to_string();
+        assert!(id.ends_with("@x.dev"), "{id}");
+        let raw = message.formatted();
+        append_once(&mut p, "Sent", &raw, Some(&id)).await.unwrap();
+        // A retry, or a server that filed it already: still one copy.
+        append_once(&mut p, "Sent", &raw, Some(&id)).await.unwrap();
+        p.logout().await.unwrap();
+        assert_eq!(fake.with(|s| s.msgs("Sent").len()), 1);
+        // Each message gets its own id.
+        let other = d.to_mime(&[]).unwrap();
+        assert_ne!(
+            other.headers().get_raw("Message-ID").unwrap().trim(),
+            format!("<{id}>")
+        );
+    }
+
+    #[test]
+    fn only_the_big_two_file_sent_mail_themselves() {
+        assert!(files_sent_mail_itself("smtp.gmail.com"));
+        assert!(files_sent_mail_itself("smtp.office365.com"));
+        assert!(files_sent_mail_itself("smtp-mail.outlook.com"));
+        assert!(!files_sent_mail_itself("outlook.example.com"));
+        assert!(!files_sent_mail_itself("smtp.gmail.com.evil.dev"));
+        assert!(!files_sent_mail_itself("smtp.mail.me.com"));
+        assert!(!files_sent_mail_itself("mail.isp.net"));
     }
 }

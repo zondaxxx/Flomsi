@@ -412,7 +412,9 @@ async fn main() -> Result<()> {
             let (account, mut draft) = core.reply_draft(thread, all)?;
             draft.text = format!("{text}{}", draft.text);
             draft.attachments = attachments(&attach)?;
-            core.send(account.id, &draft).await?;
+            if let Some(w) = core.send(account.id, &draft).await?.warning {
+                eprintln!("{w}");
+            }
             println!(
                 "sent reply to {} via {}",
                 draft
@@ -450,7 +452,9 @@ async fn main() -> Result<()> {
             draft.subject = subject;
             draft.text = text;
             draft.attachments = attachments(&attach)?;
-            core.send(a.id, &draft).await?;
+            if let Some(w) = core.send(a.id, &draft).await?.warning {
+                eprintln!("{w}");
+            }
             println!("sent to {} via {}", to.join(", "), a.email);
         }
         Cmd::Idle {

@@ -65,6 +65,14 @@ pub trait Provider {
     ) -> Result<Vec<FlagChange>>;
     async fn store_flags(&mut self, uid: u32, add: Flags, remove: Flags) -> Result<()>;
     async fn move_to(&mut self, uid: u32, dest: &str) -> Result<()>;
+    /// True when the server has no MOVE: a move is then [copy_to](Self::copy_to) followed
+    /// by [delete](Self::delete), two steps the outbox keeps apart so a COPY never repeats.
+    fn moves_by_copy(&self) -> bool {
+        false
+    }
+    async fn copy_to(&mut self, uid: u32, dest: &str) -> Result<()>;
+    /// Mark the message deleted and expunge it, and only it.
+    async fn delete(&mut self, uid: u32) -> Result<()>;
     /// Store a raw RFC 822 message in `folder` (used to keep a copy of sent mail).
     async fn append(&mut self, folder: &str, raw: &[u8], flags: Flags) -> Result<()>;
     /// Block until the selected folder changes or the timeout passes.

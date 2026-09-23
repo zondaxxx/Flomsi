@@ -167,7 +167,7 @@ abstract class RustLibApi extends BaseApi {
     required DraftDto draft,
   });
 
-  Future<void> crateApiMailSendDraft({required DraftDto draft});
+  Future<String?> crateApiMailSendDraft({required DraftDto draft});
 
   Future<void> crateApiMailSetSetting({
     required String key,
@@ -991,7 +991,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   );
 
   @override
-  Future<void> crateApiMailSendDraft({required DraftDto draft}) {
+  Future<String?> crateApiMailSendDraft({required DraftDto draft}) {
     return handler.executeNormal(
       NormalTask(
         callFfi: (port_) {
@@ -1005,7 +1005,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
         },
         codec: SseCodec(
-          decodeSuccessData: sse_decode_unit,
+          decodeSuccessData: sse_decode_opt_String,
           decodeErrorData: sse_decode_AnyhowException,
         ),
         constMeta: kCrateApiMailSendDraftConstMeta,

@@ -30,6 +30,11 @@ impl From<async_imap::error::Error> for Error {
             // The connection itself failed (reset, stalled): keep it an I/O error so a sync
             // stops using the dead session instead of failing folder after folder.
             async_imap::error::Error::Io(io) => Error::Io(io),
+            // A clean close (BYE, then close_notify) is still a dead connection.
+            async_imap::error::Error::ConnectionLost => Error::Io(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "the server closed the connection",
+            )),
             // Parse errors quote what the server sent, message text included: keep the
             // start, enough to tell what failed.
             other => {

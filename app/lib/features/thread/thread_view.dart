@@ -528,21 +528,31 @@ class _QuickReplyState extends ConsumerState<_QuickReply> {
     if (text.isEmpty || _busy) return;
     setState(() => _busy = true);
     final repo = ref.read(repositoryProvider);
+    // Taken now: the thread may close before the server answers.
+    final notice = ref.read(noticeProvider.notifier);
+    final Draft d;
+    final String? warning;
     try {
-      final d = await repo.replyDraft(widget.thread.id);
-      await repo.send(d.copyWith(text: '$text${d.text}'));
-      _ctl.clear();
-      ref.read(noticeProvider.notifier).show('Sent to ${d.to.first}');
+      d = await repo.replyDraft(widget.thread.id);
+      warning = await repo.send(d.copyWith(text: '$text${d.text}'));
     } catch (e) {
-      ref
-          .read(noticeProvider.notifier)
-          .show(
-            'Send failed: ${e.toString().replaceFirst(RegExp(r'^\w+: '), '')}',
-            ttl: const Duration(seconds: 6),
-          );
-    } finally {
+      notice.show(
+        'Send failed: ${e is Problem ? '$e' : e.toString().replaceFirst(RegExp(r'^\w+: '), '')}',
+        ttl: const Duration(seconds: 6),
+      );
       if (mounted) setState(() => _busy = false);
+      return;
     }
+    // Sent: nothing after this may read as a failure.
+    notice.show(
+      warning ?? 'Sent to ${d.to.firstOrNull ?? 'the sender'}',
+      ttl: warning == null
+          ? const Duration(milliseconds: 2500)
+          : const Duration(seconds: 8),
+    );
+    if (!mounted) return;
+    _ctl.clear();
+    setState(() => _busy = false);
   }
 
   @override

@@ -600,12 +600,14 @@ pub fn delete_local_draft(id: i64) -> Result<()> {
 }
 
 /// SMTP send; copies to Sent where the server does not; flags the original as answered.
-pub async fn send_draft(draft: DraftDto) -> Result<()> {
+/// Send over SMTP. An error means nothing went out; `Some(text)` means it went out but a
+/// later step (the copy in Sent) failed.
+pub async fn send_draft(draft: DraftDto) -> Result<Option<String>> {
     let d = dto_to_draft(&draft)?;
     if d.to.is_empty() {
         return Err(anyhow!("no recipients"));
     }
-    Ok(core()?.send(draft.account_id, &d).await?)
+    Ok(core()?.send(draft.account_id, &d).await?.warning)
 }
 
 // ---------- sync ----------

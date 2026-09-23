@@ -659,14 +659,18 @@ class RustRepository implements MailRepository {
   );
 
   @override
-  Future<void> send(Draft d) async {
+  Future<String?> send(Draft d) async {
+    final String? warning;
     try {
-      await rust.sendDraft(draft: _dto(d));
+      warning = await rust.sendDraft(draft: _dto(d));
     } catch (e) {
       final a = await _account(d.accountId);
       throw problemFrom(e, a?.smtpHost ?? '', stage: 'smtp');
     }
     _events.add(const ThreadsChanged());
+    // Bring the Sent copy (and the answered flag) in now rather than at the next timer.
+    unawaited(_syncAccounts([d.accountId]).catchError((Object _) {}));
+    return warning;
   }
 
   @override

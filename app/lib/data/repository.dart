@@ -38,8 +38,9 @@ abstract class MailRepository {
   Future<Draft> replyDraft(int threadId, {bool all = false});
   Future<Draft> forwardDraft(int threadId);
 
-  /// SMTP send. Throws with the server's reason.
-  Future<void> send(Draft draft);
+  /// SMTP send. Throws when nothing went out. Returns a warning when the mail went out but
+  /// a later step (the copy in Sent) failed, else null.
+  Future<String?> send(Draft draft);
 
   /// Keep [draft] on this device: inserted, or updated in place when it has a
   /// [Draft.localId]. Returns the local id.

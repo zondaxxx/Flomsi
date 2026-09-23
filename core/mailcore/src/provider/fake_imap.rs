@@ -43,6 +43,10 @@ pub struct FakeState {
     next_gm: u64,
     /// Hang in the middle of the next body FETCH, like a server that stopped answering.
     pub stall_fetch: bool,
+    /// An older server: no MOVE and no UIDPLUS, so moves are COPY + \Deleted + EXPUNGE.
+    pub old_server: bool,
+    /// Answer every UID STORE with a NO that may pass (a flaky server).
+    pub refuse_store: bool,
 }
 
 /// Marks a reply the server sends only in part before going silent.
@@ -202,6 +206,23 @@ impl FakeImap {
     pub fn with<T>(&self, f: impl FnOnce(&mut FakeState) -> T) -> T {
         f(&mut self.state.lock().unwrap())
     }
+}
+
+/// Remove the \Deleted messages [which] allows; the untagged EXPUNGE lines, highest
+/// sequence number first so each stays valid.
+fn expunge(b: &mut FakeBox, which: impl Fn(&FakeMsg) -> bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut seqs = Vec::new();
+    for (i, m) in b.msgs.iter().enumerate() {
+        if m.flags.iter().any(|f| f == "\\Deleted") && which(m) {
+            seqs.push(i + 1);
+        }
+    }
+    for seq in seqs.iter().rev() {
+        b.msgs.remove(seq - 1);
+        out.extend_from_slice(format!("* {seq} EXPUNGE\r\n").as_bytes());
+    }
+    out
 }
 
 /// Gmail's MOVE: the message already left `src` (All Mail keeps it, except into Trash or
@@ -401,10 +422,15 @@ where
     let (r, w) = tokio::io::split(stream);
     let mut r = BufReader::new(r);
     let w: Writer<S> = Arc::new(tokio::sync::Mutex::new(w));
-    let caps = if state.lock().unwrap().gmail {
-        "IMAP4rev1 IDLE MOVE UIDPLUS X-GM-EXT-1"
-    } else {
-        "IMAP4rev1 IDLE MOVE UIDPLUS"
+    let caps = {
+        let st = state.lock().unwrap();
+        if st.old_server {
+            "IMAP4rev1 IDLE"
+        } else if st.gmail {
+            "IMAP4rev1 IDLE MOVE UIDPLUS X-GM-EXT-1"
+        } else {
+            "IMAP4rev1 IDLE MOVE UIDPLUS"
+        }
     };
     if greet {
         send(
@@ -452,6 +478,18 @@ where
                 send(&w, reply.as_bytes()).await?;
             }
             "NOOP" => send(&w, ok("NOOP").as_bytes()).await?,
+            "EXPUNGE" => {
+                let reply = {
+                    let mut st = state.lock().unwrap();
+                    let out = match selected.as_ref().and_then(|n| st.boxes.get_mut(n)) {
+                        Some(b) => expunge(b, |_| true),
+                        None => Vec::new(),
+                    };
+                    st.version += 1;
+                    [out, ok("EXPUNGE").into_bytes()].concat()
+                };
+                send(&w, &reply).await?;
+            }
             "LIST" => {
                 let mut reply = String::new();
                 for (name, b) in &state.lock().unwrap().boxes {
@@ -492,12 +530,40 @@ where
                 let set = args.get(2).cloned().unwrap_or_default();
                 let reply: Vec<u8> = {
                     let mut st = state.lock().unwrap();
+                    let old_server = st.old_server;
+                    let refuse_store = st.refuse_store;
                     let b = st.boxes.get_mut(&name).expect("selected box");
                     let max = b.msgs.iter().map(|m| m.uid).max().unwrap_or(0);
                     match sub.as_str() {
                         "SEARCH" => {
-                            let uids: Vec<String> =
-                                b.msgs.iter().map(|m| m.uid.to_string()).collect();
+                            // `HEADER Message-ID "<id>"` narrows to that message; anything
+                            // else is ALL.
+                            let wanted = args
+                                .iter()
+                                .position(|a| a.eq_ignore_ascii_case("Message-ID"))
+                                .and_then(|i| args.get(i + 1))
+                                .map(|v| unquote(v).to_ascii_lowercase());
+                            let deleted_only =
+                                args.iter().any(|a| a.eq_ignore_ascii_case("DELETED"));
+                            let uids: Vec<String> = b
+                                .msgs
+                                .iter()
+                                .filter(|m| {
+                                    !deleted_only || m.flags.iter().any(|f| f == "\\Deleted")
+                                })
+                                .filter(|m| {
+                                    wanted.as_ref().is_none_or(|w| {
+                                        String::from_utf8_lossy(&m.raw)
+                                            .to_ascii_lowercase()
+                                            .lines()
+                                            .any(|l| {
+                                                l.starts_with("message-id:")
+                                                    && l.contains(w.as_str())
+                                            })
+                                    })
+                                })
+                                .map(|m| m.uid.to_string())
+                                .collect();
                             let mut out = format!("* SEARCH {}", uids.join(" "))
                                 .trim_end()
                                 .to_string();
@@ -525,6 +591,9 @@ where
                                 out.extend_from_slice(ok("FETCH").as_bytes());
                                 out
                             }
+                        }
+                        "STORE" if refuse_store => {
+                            format!("{tag} NO [UNAVAILABLE] try again later\r\n").into_bytes()
                         }
                         "STORE" => {
                             let op = args
@@ -573,6 +642,40 @@ where
                             st.version += 1;
                             out.extend_from_slice(ok("STORE").as_bytes());
                             out
+                        }
+                        "MOVE" if old_server => {
+                            format!("{tag} BAD unknown command MOVE\r\n").into_bytes()
+                        }
+                        "COPY" => {
+                            let dest = unquote(args.get(3).map(String::as_str).unwrap_or(""));
+                            let copies: Vec<FakeMsg> = b
+                                .msgs
+                                .iter()
+                                .filter(|m| in_set(&set, m.uid, max))
+                                .cloned()
+                                .collect();
+                            match st.boxes.get_mut(&dest) {
+                                None => {
+                                    format!("{tag} NO [TRYCREATE] no such mailbox\r\n").into_bytes()
+                                }
+                                Some(d) => {
+                                    for mut m in copies {
+                                        m.uid = d.next_uid;
+                                        d.next_uid += 1;
+                                        d.msgs.push(m);
+                                    }
+                                    st.version += 1;
+                                    ok("COPY").into_bytes()
+                                }
+                            }
+                        }
+                        "EXPUNGE" if old_server => {
+                            format!("{tag} BAD unknown command UID EXPUNGE\r\n").into_bytes()
+                        }
+                        "EXPUNGE" => {
+                            let out = expunge(b, |m| in_set(&set, m.uid, max));
+                            st.version += 1;
+                            [out, ok("EXPUNGE").into_bytes()].concat()
                         }
                         "MOVE" => {
                             let dest = unquote(args.get(3).map(String::as_str).unwrap_or(""));
@@ -845,6 +948,311 @@ mod tests {
             .unwrap()[0];
         assert_eq!(moved.folder_id, archive.id);
         assert!(moved.flags.contains(Flags::SEEN));
+    }
+
+    /// Sync, then return the INBOX copy of PLAIN ("Design review").
+    async fn synced(
+        fake: &FakeImap,
+    ) -> (
+        Arc<Store>,
+        SyncEngine,
+        crate::model::Account,
+        ImapProvider,
+        crate::model::Message,
+    ) {
+        let (store, engine, account) = setup(fake);
+        let mut p = connect(fake, "secret").await.unwrap();
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        let review = store
+            .messages_by_message_id(account.id, "review@studio.dev")
+            .unwrap()
+            .into_iter()
+            .find(|m| m.uid > 0 && m.flags.contains(Flags::SEEN))
+            .unwrap();
+        (store, engine, account, p, review)
+    }
+
+    #[tokio::test]
+    async fn an_old_server_without_move_moves_without_touching_other_deleted_mail() {
+        let fake = server().await;
+        fake.with(|s| {
+            s.old_server = true;
+            // Another client's "mark as deleted" message, still undeletable there.
+            s.deliver("INBOX", LATER, &["\\Deleted"]);
+        });
+        let (store, engine, account, mut p, review) = synced(&fake).await;
+        assert_eq!(
+            Actions { store: &store }.archive(review.thread_id).unwrap(),
+            1
+        );
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(report.ops_replayed, 1, "{:?}", report.errors);
+        fake.with(|s| {
+            assert_eq!(
+                s.msgs("Archive").iter().filter(|m| m.raw == PLAIN).count(),
+                1
+            );
+            // No plain EXPUNGE while someone else's \Deleted mail is there: ours stays
+            // marked instead, and theirs survives.
+            assert!(s.msgs("INBOX").iter().any(|m| m.raw == LATER));
+            let ours = s.msgs("INBOX").iter().find(|m| m.raw == PLAIN).unwrap();
+            assert!(ours.flags.iter().any(|f| f == "\\Deleted"));
+        });
+        // Marked deleted counts as gone here.
+        let inbox: Vec<String> = store
+            .threads(&crate::search::Query::parse(""), 10)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.subject)
+            .collect();
+        assert!(!inbox.contains(&"Design review".to_string()), "{inbox:?}");
+        assert!(!inbox.contains(&"CI passed".to_string()), "{inbox:?}");
+    }
+
+    #[tokio::test]
+    async fn an_old_server_move_expunges_when_ours_is_the_only_deleted_one() {
+        let fake = server().await;
+        fake.with(|s| s.old_server = true);
+        let (store, engine, account, mut p, review) = synced(&fake).await;
+        Actions { store: &store }.archive(review.thread_id).unwrap();
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        fake.with(|s| {
+            assert!(s.msgs("INBOX").iter().all(|m| m.raw != PLAIN));
+            assert_eq!(
+                s.msgs("Archive").iter().filter(|m| m.raw == PLAIN).count(),
+                1
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn a_move_by_copy_never_copies_twice() {
+        let fake = server().await;
+        fake.with(|s| {
+            s.old_server = true;
+            s.refuse_store = true; // the COPY works, marking the original fails
+        });
+        let (store, engine, account, mut p, review) = synced(&fake).await;
+        Actions { store: &store }.archive(review.thread_id).unwrap();
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        fake.with(|s| s.refuse_store = false);
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        fake.with(|s| {
+            assert_eq!(
+                s.msgs("Archive").iter().filter(|m| m.raw == PLAIN).count(),
+                1
+            );
+            assert_eq!(
+                s.log.iter().filter(|l| l.starts_with("UID COPY")).count(),
+                1
+            );
+            assert!(s.msgs("INBOX").iter().all(|m| m.raw != PLAIN));
+        });
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_change_never_lands_on_another_message_after_a_rebuild() {
+        let fake = server().await;
+        let (store, engine, account, mut p, review) = synced(&fake).await;
+        Actions { store: &store }
+            .star(review.thread_id, true)
+            .unwrap();
+        // The server renumbers INBOX before the change goes out: UID 1 now names nothing
+        // we meant (or something else entirely).
+        fake.with(|s| s.renumber("INBOX"));
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("rebuilt on the server")),
+            "{:?}",
+            report.errors
+        );
+        fake.with(|s| {
+            assert!(s
+                .msgs("INBOX")
+                .iter()
+                .all(|m| !m.flags.iter().any(|f| f == "\\Flagged")));
+        });
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_waiting_change_survives_the_sync_and_gives_way_when_given_up() {
+        let fake = server().await;
+        fake.with(|s| s.refuse_store = true);
+        let (store, engine, account, mut p, review) = synced(&fake).await;
+        Actions { store: &store }
+            .star(review.thread_id, true)
+            .unwrap();
+        let starred = |store: &Store| {
+            store
+                .messages_by_message_id(account.id, "review@studio.dev")
+                .unwrap()
+                .iter()
+                .any(|m| m.flags.contains(Flags::FLAGGED))
+        };
+        assert!(starred(&store));
+        // The server says "later": the star stays here instead of flickering off.
+        for _ in 0..3 {
+            engine
+                .sync_account(&account, &mut p, &SyncOptions::default())
+                .await
+                .unwrap();
+            assert!(starred(&store));
+        }
+        // After the last attempt the server's state wins, and the user is told.
+        let mut last = None;
+        for _ in 3..crate::storage::MAX_ATTEMPTS {
+            last = Some(
+                engine
+                    .sync_account(&account, &mut p, &SyncOptions::default())
+                    .await
+                    .unwrap(),
+            );
+        }
+        let report = last.unwrap();
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("changing a message's flags")),
+            "{:?}",
+            report.errors
+        );
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(!starred(&store));
+    }
+
+    #[tokio::test]
+    async fn a_move_the_server_refuses_puts_the_message_back() {
+        let fake = server().await;
+        fake.with(|s| s.add_box("Gone", None));
+        let (store, engine, account, mut p, review) = synced(&fake).await;
+        let gone = store
+            .folders(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Gone")
+            .unwrap();
+        let moved = Actions { store: &store }
+            .move_to_folder(review.thread_id, gone.id)
+            .unwrap();
+        assert_eq!(moved, 1);
+        fake.with(|s| {
+            s.boxes.remove("Gone");
+        });
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("moving a message to Gone")),
+            "{:?}",
+            report.errors
+        );
+        // Back in the inbox in the same sync, not ten syncs later.
+        let inbox = store
+            .folder_by_role(account.id, FolderRole::Inbox)
+            .unwrap()
+            .unwrap();
+        let copies = store
+            .messages_by_message_id(account.id, "review@studio.dev")
+            .unwrap();
+        assert!(
+            copies.iter().any(|m| m.folder_id == inbox.id),
+            "the message came back to the inbox: {copies:?}"
+        );
+        assert!(store
+            .threads(&crate::search::Query::parse(""), 10)
+            .unwrap()
+            .iter()
+            .any(|t| t.subject == "Design review"));
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_inbox_only_sync_still_takes_back_a_refused_move_elsewhere() {
+        let fake = server().await;
+        fake.with(|s| {
+            s.add_box("Gone", None);
+            s.deliver("Trash", LATER, &["\\Seen"]);
+        });
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let ci = store
+            .messages_by_message_id(account.id, "ci@github.com")
+            .unwrap()[0]
+            .clone();
+        let gone = store
+            .folders(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Gone")
+            .unwrap();
+        // Out of the trash into a folder that is deleted on the web meanwhile.
+        assert_eq!(
+            Actions { store: &store }
+                .move_to_folder(ci.thread_id, gone.id)
+                .unwrap(),
+            1
+        );
+        fake.with(|s| {
+            s.boxes.remove("Gone");
+        });
+        // The push after an action syncs only the inbox; Trash is synced anyway, because
+        // it has something to take back.
+        let inbox_only = SyncOptions {
+            roles: vec![FolderRole::Inbox],
+            ..SyncOptions::default()
+        };
+        let report = engine
+            .sync_account(&account, &mut p, &inbox_only)
+            .await
+            .unwrap();
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("moving a message to Gone")),
+            "{:?}",
+            report.errors
+        );
+        let trash = store
+            .folder_by_role(account.id, FolderRole::Trash)
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .messages_by_message_id(account.id, "ci@github.com")
+            .unwrap()
+            .iter()
+            .any(|m| m.folder_id == trash.id));
+        assert!(store.given_up_ops(account.id).unwrap().is_empty());
     }
 
     #[tokio::test]

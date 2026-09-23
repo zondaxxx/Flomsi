@@ -30,6 +30,10 @@ pub struct ImapProvider {
     gmail: bool,
     /// Off only while IDLE, when silence is the point.
     armed: Armed,
+    /// RFC 6851 MOVE; without it a move is COPY, \Deleted and EXPUNGE.
+    can_move: bool,
+    /// UID EXPUNGE (RFC 4315): expunge one message, not every \Deleted one.
+    uidplus: bool,
 }
 
 struct XOAuth2 {
@@ -373,12 +377,17 @@ impl ImapProvider {
             .map_err(|(e, _)| login_error(e))?,
         };
         let mut session = session;
-        let gmail = match session.capabilities().await {
-            Ok(c) => c.has_str("X-GM-EXT-1"),
+        let (gmail, can_move, uidplus) = match session.capabilities().await {
+            Ok(c) => (
+                c.has_str("X-GM-EXT-1"),
+                c.has_str("MOVE"),
+                c.has_str("UIDPLUS"),
+            ),
             // The connection died right after LOGIN: say so rather than hand back a
             // session that answers everything with nothing.
             Err(async_imap::error::Error::Io(e)) => return Err(Error::Io(e)),
-            Err(_) => false,
+            // Unknown: assume the modern commands; a server without them says NO.
+            Err(_) => (false, true, true),
         };
         Ok(ImapProvider {
             session: Some(session),
@@ -386,6 +395,8 @@ impl ImapProvider {
             host: host.to_string(),
             gmail,
             armed,
+            can_move,
+            uidplus,
         })
     }
 
@@ -412,6 +423,22 @@ impl ImapProvider {
 
     pub fn is_gmail(&self) -> bool {
         self.gmail
+    }
+
+    /// UIDs in the selected folder whose Message-ID header is [message_id] (no brackets).
+    pub async fn find_message_id(&mut self, message_id: &str) -> Result<Vec<u32>> {
+        let query = format!(
+            "HEADER Message-ID \"<{}>\"",
+            message_id.replace(['"', '\\'], "")
+        );
+        let r: Result<Vec<u32>> = async {
+            let s = self.s()?;
+            let mut v: Vec<u32> = s.uid_search(&query).await?.into_iter().collect();
+            v.sort_unstable();
+            Ok(v)
+        }
+        .await;
+        self.after(r)
     }
 }
 
@@ -443,9 +470,18 @@ impl Provider for ImapProvider {
         let r: Result<FolderState> = async {
             let s = self.s()?;
             let mb = s.select(folder).await?;
+            // Every SELECT answer carries UIDVALIDITY. Without it the stream ended (async-imap
+            // then returns an empty mailbox as if all went well): a dead connection, not a
+            // folder whose UIDs changed.
+            let Some(uidvalidity) = mb.uid_validity else {
+                return Err(Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!("no answer to SELECT {folder}"),
+                )));
+            };
             self.selected = Some(folder.to_string());
             Ok(FolderState {
-                uidvalidity: mb.uid_validity.unwrap_or(0),
+                uidvalidity,
                 uidnext: mb.uid_next.unwrap_or(1),
                 exists: mb.exists,
                 highest_modseq: mb.highest_modseq,
@@ -532,27 +568,24 @@ impl Provider for ImapProvider {
     }
 
     async fn store_flags(&mut self, uid: u32, add: Flags, remove: Flags) -> Result<()> {
+        // A checked command, not uid_store(): async-imap ends that stream at the tagged
+        // reply without looking at it, so a NO would pass for success and the op would be
+        // dropped as done.
         let r: Result<()> = async {
             let s = self.s()?;
             if add.0 != 0 {
-                let _: Vec<_> = s
-                    .uid_store(
-                        uid.to_string(),
-                        format!("+FLAGS.SILENT {}", add.imap_atoms()),
-                    )
-                    .await?
-                    .try_collect()
-                    .await?;
+                s.run_command_and_check_ok(format!(
+                    "UID STORE {uid} +FLAGS.SILENT {}",
+                    add.imap_atoms()
+                ))
+                .await?;
             }
             if remove.0 != 0 {
-                let _: Vec<_> = s
-                    .uid_store(
-                        uid.to_string(),
-                        format!("-FLAGS.SILENT {}", remove.imap_atoms()),
-                    )
-                    .await?
-                    .try_collect()
-                    .await?;
+                s.run_command_and_check_ok(format!(
+                    "UID STORE {uid} -FLAGS.SILENT {}",
+                    remove.imap_atoms()
+                ))
+                .await?;
             }
             Ok(())
         }
@@ -561,9 +594,50 @@ impl Provider for ImapProvider {
     }
 
     async fn move_to(&mut self, uid: u32, dest: &str) -> Result<()> {
+        if !self.can_move {
+            self.copy_to(uid, dest).await?;
+            return self.delete(uid).await;
+        }
+        let r: Result<()> = async {
+            self.s()?.uid_mv(uid.to_string(), dest).await?;
+            Ok(())
+        }
+        .await;
+        self.after(r)
+    }
+
+    fn moves_by_copy(&self) -> bool {
+        !self.can_move
+    }
+
+    async fn copy_to(&mut self, uid: u32, dest: &str) -> Result<()> {
+        let r: Result<()> = async {
+            self.s()?.uid_copy(uid.to_string(), dest).await?;
+            Ok(())
+        }
+        .await;
+        self.after(r)
+    }
+
+    async fn delete(&mut self, uid: u32) -> Result<()> {
+        let uidplus = self.uidplus;
         let r: Result<()> = async {
             let s = self.s()?;
-            s.uid_mv(uid.to_string(), dest).await?;
+            s.run_command_and_check_ok(format!("UID STORE {uid} +FLAGS.SILENT (\\Deleted)"))
+                .await?;
+            if uidplus {
+                s.run_command_and_check_ok(format!("UID EXPUNGE {uid}"))
+                    .await?;
+                return Ok(());
+            }
+            // Without UIDPLUS, EXPUNGE takes every \Deleted message in the folder, and other
+            // clients (mutt, Thunderbird's "mark as deleted") leave some there on purpose.
+            // Expunge only when ours is the only one; otherwise it stays marked, which every
+            // client (this one too) treats as gone.
+            let marked = s.uid_search("DELETED").await?;
+            if marked.iter().all(|u| *u == uid) {
+                s.run_command_and_check_ok("EXPUNGE").await?;
+            }
             Ok(())
         }
         .await;

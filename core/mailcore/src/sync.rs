@@ -1,10 +1,10 @@
 //! Sync engine: provider → store, outbox → provider, events out.
 
 use crate::error::Result;
-use crate::model::{Account, Flags, Folder, FolderRole, Message, Op};
+use crate::model::{Account, Flags, Folder, FolderRole, LocalCopy, Message, Op};
 use crate::provider::parse::parse_rfc822;
 use crate::provider::Provider;
-use crate::storage::Store;
+use crate::storage::{Failure, Store};
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -107,20 +107,48 @@ impl SyncEngine {
 
         report.ops_replayed = self.replay_outbox(account, provider).await?;
 
+        // Ops given up (now or in a sync that was cut short): take their local change back
+        // by reading their folders from the server again. Kept in the database until done.
+        let given_up = self.store.given_up_ops(account.id)?;
+        let mut undo: HashMap<String, Undo> = HashMap::new();
+        for item in &given_up {
+            let removes = item.op.removes();
+            for copy in item.op.touched() {
+                let u = undo.entry(copy.folder).or_default();
+                if removes {
+                    u.restore.insert(copy.uid);
+                } else {
+                    u.refresh.insert(copy.uid);
+                }
+            }
+        }
+
         let remote = provider.list_folders().await?;
         let mut targets = Vec::new();
         for rf in &remote {
             let folder =
                 self.store
                     .upsert_remote_folder(account.id, &rf.name, rf.role, rf.selectable)?;
-            if rf.selectable && (opts.roles.is_empty() || opts.roles.contains(&rf.role)) {
+            // A folder with something to take back is synced even when this run would skip
+            // it (an inbox-only sync after a failed "not spam").
+            let wanted = opts.roles.is_empty()
+                || opts.roles.contains(&rf.role)
+                || undo.contains_key(&rf.name);
+            if rf.selectable && wanted {
                 targets.push(folder);
             }
         }
+        let on_server: HashSet<&str> = remote.iter().map(|f| f.name.as_str()).collect();
+        let mut synced: HashSet<String> = HashSet::new();
 
         for folder in targets {
-            match self.sync_folder(account, provider, &folder, opts).await {
+            let undo = undo.get(&folder.remote_name).cloned().unwrap_or_default();
+            match self
+                .sync_folder(account, provider, &folder, opts, &undo)
+                .await
+            {
                 Ok((fetched, removed)) => {
+                    synced.insert(folder.remote_name.clone());
                     report.folders += 1;
                     report.fetched += fetched;
                     report.removed += removed;
@@ -152,6 +180,25 @@ impl SyncEngine {
                 }
             }
         }
+        // A given-up op is done with once every folder it touched came back from the
+        // server (or no longer exists there); only then is it reported, once.
+        for item in given_up {
+            let settled = item
+                .op
+                .touched()
+                .iter()
+                .all(|c| synced.contains(&c.folder) || !on_server.contains(c.folder.as_str()));
+            if settled {
+                self.store.mark_undone(item.id)?;
+                report.errors.push(format!(
+                    "Could not finish {}: {}",
+                    describe(&item.op),
+                    item.last_error
+                        .as_deref()
+                        .unwrap_or("the server refused it")
+                ));
+            }
+        }
         self.store.rebind_snoozes()?;
         self.emit(SyncEvent::Finished {
             account_id: account.id,
@@ -165,7 +212,9 @@ impl SyncEngine {
         provider: &mut P,
         folder: &crate::model::Folder,
         opts: &SyncOptions,
+        undo: &Undo,
     ) -> Result<(usize, usize)> {
+        let restore = &undo.restore;
         let state = provider.select(&folder.remote_name).await?;
 
         let mut first_sync = folder.uidvalidity.is_none();
@@ -176,6 +225,11 @@ impl SyncEngine {
                 first_sync = true;
             }
         }
+
+        // Local actions still waiting for the server (a replay that failed this time)
+        // must not be undone by the server's older state: flags stay, moved mail stays out.
+        let (flags_waiting, moves_waiting) =
+            self.store.pending_uids(account.id, &folder.remote_name)?;
 
         // Reconcile UID set: what's gone remotely goes locally too.
         let remote_uids = provider.uids().await?;
@@ -188,6 +242,7 @@ impl SyncEngine {
             }
         }
 
+        let mut held_back = false;
         // Flags: nothing to reconcile on an empty cache. With CONDSTORE only what changed;
         // otherwise only the UID range we hold (never `1:*` over a 100k-message All Mail).
         let local_uids = self.store.uids(folder.id)?;
@@ -202,8 +257,40 @@ impl SyncEngine {
             };
             let local: HashSet<u32> = local_uids.iter().copied().collect();
             for fc in provider.fetch_flags(&set, since).await? {
-                if local.contains(&fc.uid) {
+                if !local.contains(&fc.uid) {
+                    continue;
+                }
+                if flags_waiting.contains(&fc.uid) {
+                    // Skipped for now; with CHANGEDSINCE it must be offered again.
+                    held_back = true;
+                } else if fc.flags.contains(Flags::DELETED) {
+                    // Marked for deletion (another client, or our own move on a server
+                    // without UIDPLUS): as good as gone.
+                    self.store.delete_by_uid(folder.id, fc.uid)?;
+                    removed += 1;
+                } else {
                     self.store.set_flags_by_uid(folder.id, fc.uid, fc.flags)?;
+                }
+            }
+            // Given-up flag changes: the server did not change, so CHANGEDSINCE will not
+            // mention them. Ask for exactly those.
+            let mut again: Vec<u32> = undo
+                .refresh
+                .iter()
+                .copied()
+                .filter(|u| local.contains(u) && !flags_waiting.contains(u))
+                .collect();
+            if !again.is_empty() {
+                again.sort_unstable();
+                let set = again
+                    .iter()
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                for fc in provider.fetch_flags(&set, None).await? {
+                    if again.contains(&fc.uid) {
+                        self.store.set_flags_by_uid(folder.id, fc.uid, fc.flags)?;
+                    }
                 }
             }
         }
@@ -221,7 +308,11 @@ impl SyncEngine {
         };
         let mut new_uids: Vec<u32> = remote_uids
             .into_iter()
-            .filter(|u| !local.contains(u) && floor.is_none_or(|f| *u >= f))
+            .filter(|u| {
+                !local.contains(u)
+                    && !moves_waiting.contains(u)
+                    && (floor.is_none_or(|f| *u >= f) || restore.contains(u))
+            })
             .collect();
         let window = if matches!(folder.role, FolderRole::Junk | FolderRole::Trash) {
             opts.minor_window.min(opts.initial_window)
@@ -236,6 +327,9 @@ impl SyncEngine {
         for chunk in new_uids.chunks(50) {
             let mut batch = 0;
             for fm in provider.fetch(chunk).await? {
+                if fm.flags.contains(Flags::DELETED) {
+                    continue;
+                }
                 let parsed = parse_rfc822(&fm.raw, now);
                 let id = self.store.upsert_fetched(
                     account.id,
@@ -267,16 +361,21 @@ impl SyncEngine {
             }
         }
 
-        self.store.update_folder_state(
-            folder.id,
-            state.uidvalidity,
-            state.uidnext,
-            state.highest_modseq,
-        )?;
+        // A change held back for a waiting op must come again next time: keep the old
+        // HIGHESTMODSEQ so CHANGEDSINCE still covers it.
+        let modseq = if held_back {
+            folder.highest_modseq
+        } else {
+            state.highest_modseq
+        };
+        self.store
+            .update_folder_state(folder.id, state.uidvalidity, state.uidnext, modseq)?;
         Ok((fetched, removed))
     }
 
     /// Push pending local operations to the server. Failed ops stay queued with an attempt count.
+    /// Push queued local actions to the server; returns how many went through. Ops that
+    /// fail for good are marked given up in the database (see [Store::given_up_ops]).
     pub async fn replay_outbox<P: Provider>(
         &self,
         account: &Account,
@@ -284,21 +383,49 @@ impl SyncEngine {
     ) -> Result<usize> {
         let ops = self.store.pending_ops(account.id)?;
         let mut done = 0;
-        let mut selected: Option<String> = None;
+        let mut selected: Option<(String, u32)> = None;
         for item in ops {
-            let folder = match &item.op {
-                Op::SetFlags { folder, .. } | Op::Move { folder, .. } => folder.clone(),
-            };
+            let folder = item.op.folder().to_string();
             let result: Result<()> = async {
-                if selected.as_deref() != Some(folder.as_str()) {
-                    provider.select(&folder).await?;
-                    selected = Some(folder.clone());
+                let validity = match &selected {
+                    Some((name, v)) if *name == folder => *v,
+                    _ => {
+                        let state = provider.select(&folder).await?;
+                        selected = Some((folder.clone(), state.uidvalidity));
+                        state.uidvalidity
+                    }
+                };
+                // Under another UIDVALIDITY the same UID is another message: never touch it.
+                if item.op.uidvalidity().is_some_and(|v| v != validity) {
+                    return Err(crate::Error::Other(REBUILT.into()));
                 }
                 match &item.op {
                     Op::SetFlags {
                         uid, add, remove, ..
                     } => provider.store_flags(*uid, *add, *remove).await,
+                    Op::Move {
+                        folder,
+                        uid,
+                        dest,
+                        uidvalidity,
+                        also,
+                    } if provider.moves_by_copy() => {
+                        provider.copy_to(*uid, dest).await?;
+                        // The copy exists now; from here on the op only removes the original,
+                        // so a retry never copies twice.
+                        self.store.rewrite_op(
+                            item.id,
+                            &Op::Delete {
+                                folder: folder.clone(),
+                                uid: *uid,
+                                uidvalidity: *uidvalidity,
+                                also: also.clone(),
+                            },
+                        )?;
+                        provider.delete(*uid).await
+                    }
                     Op::Move { uid, dest, .. } => provider.move_to(*uid, dest).await,
+                    Op::Delete { uid, .. } => provider.delete(*uid).await,
                 }
             }
             .await;
@@ -307,13 +434,22 @@ impl SyncEngine {
                     self.store.mark_done(item.id)?;
                     done += 1;
                 }
-                // The connection died: the rest of the queue stays for the next sync
-                // instead of running against a session that can no longer answer.
+                // The connection died: the rest of the queue waits for the next sync. The op
+                // in flight still counts an attempt, so one that always kills the connection
+                // cannot block the account forever.
                 Err(e @ crate::Error::Io(_)) => {
-                    self.store.mark_failed(item.id, &e.to_string())?;
+                    self.store
+                        .mark_failed(item.id, &e.to_string(), Failure::Retry)?;
                     return Err(e);
                 }
-                Err(e) => self.store.mark_failed(item.id, &e.to_string())?,
+                Err(e) => {
+                    let failure = if refused(&e) {
+                        Failure::Refused
+                    } else {
+                        Failure::Retry
+                    };
+                    self.store.mark_failed(item.id, &e.to_string(), failure)?;
+                }
             }
         }
         if done > 0 {
@@ -410,6 +546,13 @@ impl<'a> Actions<'a> {
                 } else {
                     (Flags::default(), flag)
                 };
+                // On Gmail one STORE on the anchor changes every copy: list them, so a sync
+                // leaves them alone while it waits and restores them if it is given up.
+                let also = if anchor.is_some() {
+                    Self::other_copies(&group, m, &folders)
+                } else {
+                    Vec::new()
+                };
                 self.store.enqueue(
                     m.account_id,
                     &Op::SetFlags {
@@ -417,6 +560,8 @@ impl<'a> Actions<'a> {
                         uid: m.uid,
                         add,
                         remove,
+                        uidvalidity: folder.uidvalidity,
+                        also,
                     },
                 )?;
             }
@@ -440,16 +585,38 @@ impl<'a> Actions<'a> {
         self.set_flag(vec![copies], Flags::ANSWERED, true)
     }
 
-    fn enqueue_move(&self, m: &Message, src: &Folder, dest: &Folder) -> Result<()> {
+    fn enqueue_move(
+        &self,
+        m: &Message,
+        src: &Folder,
+        dest: &Folder,
+        also: Vec<LocalCopy>,
+    ) -> Result<()> {
         self.store.enqueue(
             m.account_id,
             &Op::Move {
                 folder: src.remote_name.clone(),
                 uid: m.uid,
                 dest: dest.remote_name.clone(),
+                uidvalidity: src.uidvalidity,
+                also,
             },
         )?;
         Ok(())
+    }
+
+    /// The copies of a message other than [m], as (folder, UID).
+    fn other_copies(group: &[Message], m: &Message, folders: &[Folder]) -> Vec<LocalCopy> {
+        group
+            .iter()
+            .filter(|c| c.id != m.id)
+            .filter_map(|c| {
+                Some(LocalCopy {
+                    folder: Self::folder_of(folders, c)?.remote_name.clone(),
+                    uid: c.uid,
+                })
+            })
+            .collect()
     }
 
     /// Out of the inbox: to Archive, or on Gmail (no Archive folder) to All Mail, which just
@@ -472,7 +639,7 @@ impl<'a> Actions<'a> {
                     .find_map(|r| folders.iter().find(|f| f.role == *r && f.selectable))
                     .ok_or_else(|| crate::error::Error::NotFound("archive folder".into()))?;
                 self.store.delete_by_uid(m.folder_id, m.uid)?;
-                self.enqueue_move(m, src, dest)?;
+                self.enqueue_move(m, src, dest, Vec::new())?;
                 moved += 1;
             }
         }
@@ -507,7 +674,7 @@ impl<'a> Actions<'a> {
                     continue;
                 }
                 self.store.delete_by_uid(m.folder_id, m.uid)?;
-                self.enqueue_move(m, src, trash)?;
+                self.enqueue_move(m, src, trash, Vec::new())?;
                 moved += 1;
             }
         }
@@ -531,7 +698,7 @@ impl<'a> Actions<'a> {
         let Some(src) = Self::folder_of(folders, m) else {
             return Ok(0);
         };
-        self.enqueue_move(m, src, dest)?;
+        self.enqueue_move(m, src, dest, Self::other_copies(group, m, folders))?;
         for c in group {
             self.store.delete_by_uid(c.folder_id, c.uid)?;
         }
@@ -574,7 +741,7 @@ impl<'a> Actions<'a> {
                     usable.then_some((m, f))
                 });
                 let Some((m, src)) = source else { continue };
-                self.enqueue_move(m, src, &dest)?;
+                self.enqueue_move(m, src, &dest, Vec::new())?;
                 if src.role != FolderRole::All {
                     self.store.delete_by_uid(m.folder_id, m.uid)?;
                 }
@@ -593,7 +760,7 @@ impl<'a> Actions<'a> {
                     continue;
                 }
                 self.store.delete_by_uid(m.folder_id, m.uid)?;
-                self.enqueue_move(m, src, &dest)?;
+                self.enqueue_move(m, src, &dest, Vec::new())?;
                 moved += 1;
             }
         }
@@ -624,5 +791,38 @@ impl<'a> Actions<'a> {
             self.store.mark_woken(*thread_id, now)?;
         }
         Ok(due.len())
+    }
+}
+
+/// Given-up local changes of one folder to take back during its sync.
+#[derive(Default, Clone)]
+struct Undo {
+    restore: HashSet<u32>,
+    refresh: HashSet<u32>,
+}
+
+const REBUILT: &str = "the folder was rebuilt on the server, so this change no longer applies";
+
+/// A refusal that will not change on a retry: the folder was rebuilt, or the server says
+/// the target does not exist. (async-imap prints known response codes as `Some(TryCreate)`
+/// and keeps unknown ones in the text as `[NONEXISTENT]`.)
+fn refused(e: &crate::Error) -> bool {
+    let m = e.to_string().to_ascii_lowercase();
+    m.contains(REBUILT) || m.contains("trycreate") || m.contains("[nonexistent]")
+}
+
+fn describe(op: &Op) -> String {
+    match op {
+        Op::Move { dest, .. } => {
+            format!(
+                "moving a message to {}",
+                crate::provider::imap::decode_folder_name(dest)
+            )
+        }
+        Op::SetFlags { .. } => "changing a message's flags".into(),
+        Op::Delete { folder, .. } => format!(
+            "moving a message out of {}",
+            crate::provider::imap::decode_folder_name(folder)
+        ),
     }
 }

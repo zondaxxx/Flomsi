@@ -312,12 +312,79 @@ pub enum Op {
         uid: u32,
         add: Flags,
         remove: Flags,
+        /// The folder's UIDVALIDITY when the action was taken; the UID means nothing
+        /// under another one. None for ops queued before this was recorded.
+        #[serde(default)]
+        uidvalidity: Option<u32>,
+        /// Other local copies the action changed (Gmail: the same message under other
+        /// labels), to protect while the op waits and to restore if it is given up.
+        #[serde(default)]
+        also: Vec<LocalCopy>,
     },
     Move {
         folder: String,
         uid: u32,
         dest: String,
+        #[serde(default)]
+        uidvalidity: Option<u32>,
+        #[serde(default)]
+        also: Vec<LocalCopy>,
     },
+    /// What is left of a move on a server without MOVE once its COPY went through: mark
+    /// the original deleted and expunge it. (A COPY is never repeated.)
+    Delete {
+        folder: String,
+        uid: u32,
+        #[serde(default)]
+        uidvalidity: Option<u32>,
+        #[serde(default)]
+        also: Vec<LocalCopy>,
+    },
+}
+
+/// A message copy in the local cache: folder (remote name) and UID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalCopy {
+    pub folder: String,
+    pub uid: u32,
+}
+
+impl Op {
+    pub fn folder(&self) -> &str {
+        match self {
+            Op::SetFlags { folder, .. } | Op::Move { folder, .. } | Op::Delete { folder, .. } => {
+                folder
+            }
+        }
+    }
+    pub fn uid(&self) -> u32 {
+        match self {
+            Op::SetFlags { uid, .. } | Op::Move { uid, .. } | Op::Delete { uid, .. } => *uid,
+        }
+    }
+    pub fn uidvalidity(&self) -> Option<u32> {
+        match self {
+            Op::SetFlags { uidvalidity, .. }
+            | Op::Move { uidvalidity, .. }
+            | Op::Delete { uidvalidity, .. } => *uidvalidity,
+        }
+    }
+    /// Every local copy the op changed: its own, then the others.
+    pub fn touched(&self) -> Vec<LocalCopy> {
+        let also = match self {
+            Op::SetFlags { also, .. } | Op::Move { also, .. } | Op::Delete { also, .. } => also,
+        };
+        let mut v = vec![LocalCopy {
+            folder: self.folder().to_string(),
+            uid: self.uid(),
+        }];
+        v.extend(also.iter().cloned());
+        v
+    }
+    /// True for ops that took a message out of its folder locally.
+    pub fn removes(&self) -> bool {
+        !matches!(self, Op::SetFlags { .. })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

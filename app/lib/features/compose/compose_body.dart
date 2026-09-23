@@ -250,15 +250,12 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
       _error = null;
     });
     _saveTimer?.cancel();
+    final notice = ref.read(noticeProvider.notifier);
+    final String? warning;
     try {
-      await _repo.send(d);
-      _done = true;
-      await _saving;
-      if (_localId != null) await _repo.deleteDraft(_localId!);
-      if (!mounted) return;
-      ref.read(noticeProvider.notifier).show('Sent to ${d.to.first}');
-      _leave();
+      warning = await _repo.send(d);
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _sending = false;
         // An unrecognised failure keeps the server's own words.
@@ -269,7 +266,23 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
           _ => _reason(e),
         };
       });
+      return;
     }
+    // Sent. Nothing from here on may read as a failed send: that invites a second one.
+    _done = true;
+    try {
+      await _saving;
+      if (_localId != null) await _repo.deleteDraft(_localId!);
+    } catch (_) {
+      // The draft stays in Drafts; the mail went out regardless.
+    }
+    notice.show(
+      warning ?? 'Sent to ${d.to.first}',
+      ttl: warning == null
+          ? const Duration(milliseconds: 2500)
+          : const Duration(seconds: 8),
+    );
+    if (mounted) _leave();
   }
 
   @override

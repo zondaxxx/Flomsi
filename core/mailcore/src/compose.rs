@@ -82,6 +82,42 @@ pub struct OutgoingFile {
     pub bytes: Vec<u8>,
 }
 
+/// A fresh Message-ID on the sender's own domain: `<32 hex>@example.com`. lettre adds
+/// none by itself, and its generator would put this computer's name in every message.
+pub fn new_message_id(from: &Address) -> String {
+    use sha2::{Digest, Sha256};
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut seed = RandomState::new().build_hasher();
+    seed.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    let mut h = Sha256::new();
+    h.update(seed.finish().to_le_bytes());
+    h.update(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .to_le_bytes(),
+    );
+    h.update(std::process::id().to_le_bytes());
+    h.update(from.addr.as_bytes());
+    let digest = h.finalize();
+    let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+    // An internationalised domain goes in its ASCII (punycode) form: a Message-ID header
+    // cannot carry UTF-8, and an encoded one is invalid.
+    let domain = from
+        .addr
+        .rsplit_once('@')
+        .map(|(_, d)| d.trim())
+        .filter(|d| !d.is_empty())
+        .and_then(|d| idna::domain_to_ascii(d).ok())
+        .filter(|d| !d.is_empty() && d.is_ascii())
+        .unwrap_or_else(|| "flomsi.invalid".to_string());
+    format!("{hex}@{domain}")
+}
+
 impl Draft {
     pub fn new(from: Address) -> Draft {
         Draft {
@@ -151,6 +187,7 @@ impl Draft {
         }
         let mut b = lettre::Message::builder()
             .from(mailbox(&self.from)?)
+            .message_id(Some(format!("<{}>", new_message_id(&self.from))))
             .subject(self.subject.clone());
         for a in &self.to {
             b = b.to(mailbox(a)?);
@@ -364,5 +401,29 @@ mod tests {
         assert!(a.name.ends_with(".pdf"));
         std::fs::remove_file(&p).unwrap();
         assert!(DraftAttachment::from_path(&std::env::temp_dir()).is_err());
+    }
+
+    #[test]
+    fn message_ids_are_ascii_and_on_the_senders_domain() {
+        let id = super::new_message_id(&Address {
+            name: None,
+            addr: "user@почта.рф".into(),
+        });
+        assert!(id.is_ascii(), "{id}");
+        assert!(id.ends_with("@xn--80a1acny.xn--p1ai"), "{id}");
+        let a = super::new_message_id(&Address {
+            name: None,
+            addr: "z@x.dev".into(),
+        });
+        let b = super::new_message_id(&Address {
+            name: None,
+            addr: "z@x.dev".into(),
+        });
+        assert_ne!(a, b);
+        assert!(super::new_message_id(&Address {
+            name: None,
+            addr: "nobody".into(),
+        })
+        .ends_with("@flomsi.invalid"));
     }
 }

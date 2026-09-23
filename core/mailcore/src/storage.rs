@@ -1403,10 +1403,38 @@ impl Store {
         })
     }
 
-    pub fn pending_ops(&self, account_id: i64) -> Result<Vec<OutboxItem>> {
+    /// Ops that waited in vain and whose local change is still to be taken back: kept in
+    /// the database so an interrupted sync cannot forget them.
+    pub fn given_up_ops(&self, account_id: i64) -> Result<Vec<OutboxItem>> {
+        self.ops_in_state(account_id, OUTBOX_GIVEN_UP)
+    }
+
+    /// The given-up op is undone (its folders synced from the server again).
+    pub fn mark_undone(&self, id: i64) -> Result<()> {
         self.with(|c| {
-            let mut st = c.prepare("SELECT id, account_id, op_json, attempts, last_error FROM outbox WHERE account_id=?1 AND done=0 AND attempts<10 ORDER BY id")?;
-            let rows = st.query_map([account_id], |r| {
+            c.execute(
+                "UPDATE outbox SET done=?2 WHERE id=?1",
+                params![id, OUTBOX_UNDONE],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Replace what is left of an op (a move whose COPY went through becomes a delete).
+    pub fn rewrite_op(&self, id: i64, op: &Op) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE outbox SET op_json=?2 WHERE id=?1",
+                params![id, serde_json::to_string(op)?],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn ops_in_state(&self, account_id: i64, state: i64) -> Result<Vec<OutboxItem>> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT id, account_id, op_json, attempts, last_error FROM outbox WHERE account_id=?1 AND done=?2 ORDER BY id")?;
+            let rows = st.query_map(params![account_id, state], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?))
             })?;
             let mut out = Vec::new();
@@ -1418,23 +1446,83 @@ impl Store {
         })
     }
 
-    pub fn mark_done(&self, id: i64) -> Result<()> {
-        self.with(|c| {
-            c.execute("UPDATE outbox SET done=1 WHERE id=?1", [id])?;
-            Ok(())
-        })
+    pub fn pending_ops(&self, account_id: i64) -> Result<Vec<OutboxItem>> {
+        self.ops_in_state(account_id, OUTBOX_PENDING)
     }
 
-    pub fn mark_failed(&self, id: i64, err: &str) -> Result<()> {
+    pub fn mark_done(&self, id: i64) -> Result<()> {
         self.with(|c| {
             c.execute(
-                "UPDATE outbox SET attempts=attempts+1, last_error=?2 WHERE id=?1",
-                params![id, err],
+                "UPDATE outbox SET done=?2 WHERE id=?1",
+                params![id, OUTBOX_DONE],
             )?;
             Ok(())
         })
     }
+
+    /// Record a failed replay: [Failure::Retry] counts an attempt, [Failure::Refused]
+    /// gives up at once. An op out of attempts is given up: the next sync takes its local
+    /// change back and says so. Returns true when that happened.
+    pub fn mark_failed(&self, id: i64, err: &str, failure: Failure) -> Result<bool> {
+        let add = match failure {
+            Failure::Retry => 1,
+            Failure::Refused => MAX_ATTEMPTS,
+        };
+        self.with(|c| {
+            c.execute(
+                "UPDATE outbox SET attempts=MIN(?4, attempts + ?3), last_error=?2,
+                   done = CASE WHEN attempts + ?3 >= ?4 THEN ?5 ELSE done END
+                 WHERE id=?1",
+                params![id, err, add, MAX_ATTEMPTS, OUTBOX_GIVEN_UP],
+            )?;
+            let done: i64 =
+                c.query_row("SELECT done FROM outbox WHERE id=?1", [id], |r| r.get(0))?;
+            Ok(done == OUTBOX_GIVEN_UP)
+        })
+    }
+
+    /// UIDs in [folder] with an op still waiting: (flag changes, moves out). A sync must not
+    /// undo them with the server's older state while they wait.
+    pub fn pending_uids(
+        &self,
+        account_id: i64,
+        folder: &str,
+    ) -> Result<(HashSet<u32>, HashSet<u32>)> {
+        let mut flags = HashSet::new();
+        let mut moves = HashSet::new();
+        for item in self.pending_ops(account_id)? {
+            let removes = item.op.removes();
+            for copy in item.op.touched() {
+                if copy.folder != folder {
+                    continue;
+                }
+                if removes {
+                    moves.insert(copy.uid);
+                } else {
+                    flags.insert(copy.uid);
+                }
+            }
+        }
+        Ok((flags, moves))
+    }
 }
+
+/// Replays after which an op is given up and the server's state wins.
+pub const MAX_ATTEMPTS: i64 = 10;
+
+/// Why an op could not be replayed; see [Store::mark_failed].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Failure {
+    Retry,
+    Refused,
+}
+
+/// `outbox.done`: waiting, went through, given up with its local change still to take
+/// back, given up and taken back.
+pub const OUTBOX_PENDING: i64 = 0;
+pub const OUTBOX_DONE: i64 = 1;
+pub const OUTBOX_GIVEN_UP: i64 = 2;
+pub const OUTBOX_UNDONE: i64 = 3;
 
 #[cfg(test)]
 mod tests {
@@ -1603,6 +1691,8 @@ mod tests {
                 uid: 1,
                 add: Flags::SEEN,
                 remove: Flags::default(),
+                uidvalidity: None,
+                also: Vec::new(),
             },
         )
         .unwrap();
@@ -2016,5 +2106,49 @@ mod tests {
                 .msg_count,
             1
         );
+    }
+
+    #[test]
+    fn ops_queued_by_an_older_version_still_load() {
+        let old: Op =
+            serde_json::from_str(r#"{"op":"move","folder":"INBOX","uid":7,"dest":"Archive"}"#)
+                .unwrap();
+        assert_eq!(old.uidvalidity(), None);
+        assert_eq!(old.touched().len(), 1);
+        assert!(old.removes());
+    }
+
+    #[test]
+    fn a_given_up_op_waits_for_its_undo_in_the_database() {
+        let s = Store::open_in_memory().unwrap();
+        let a = acct(&s);
+        let op = Op::Move {
+            folder: "INBOX".into(),
+            uid: 3,
+            dest: "Gone".into(),
+            uidvalidity: Some(1),
+            also: vec![LocalCopy {
+                folder: "[Gmail]/All Mail".into(),
+                uid: 9,
+            }],
+        };
+        let id = s.enqueue(a.id, &op).unwrap();
+        assert_eq!(
+            s.pending_uids(a.id, "[Gmail]/All Mail").unwrap().1,
+            HashSet::from([9])
+        );
+        for _ in 0..MAX_ATTEMPTS - 1 {
+            assert!(!s.mark_failed(id, "NO later", Failure::Retry).unwrap());
+        }
+        assert!(s.mark_failed(id, "NO later", Failure::Retry).unwrap());
+        assert!(s.pending_ops(a.id).unwrap().is_empty());
+        assert_eq!(s.given_up_ops(a.id).unwrap().len(), 1);
+        s.mark_undone(id).unwrap();
+        assert!(s.given_up_ops(a.id).unwrap().is_empty());
+
+        let refused = s.enqueue(a.id, &op).unwrap();
+        assert!(s
+            .mark_failed(refused, "NO [TRYCREATE]", Failure::Refused)
+            .unwrap());
     }
 }

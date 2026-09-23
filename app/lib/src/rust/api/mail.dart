@@ -231,7 +231,9 @@ Future<void> deleteLocalDraft({required PlatformInt64 id}) =>
     RustLib.instance.api.crateApiMailDeleteLocalDraft(id: id);
 
 /// SMTP send; copies to Sent where the server does not; flags the original as answered.
-Future<void> sendDraft({required DraftDto draft}) =>
+/// Send over SMTP. An error means nothing went out; `Some(text)` means it went out but a
+/// later step (the copy in Sent) failed.
+Future<String?> sendDraft({required DraftDto draft}) =>
     RustLib.instance.api.crateApiMailSendDraft(draft: draft);
 
 Future<SyncSummaryDto> syncAll({required bool inboxOnly}) =>
