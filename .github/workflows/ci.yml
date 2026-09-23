@@ -204,6 +204,13 @@ jobs:
         working-directory: app
         env:
           FLOMSI_KEYSTORE_PASSWORD: ${{ secrets.FLOMSI_KEYSTORE_PASSWORD }}
+      # The sign-in page returns through AppAuth's RedirectUriReceiverActivity: it must carry an
+      # AppCompat theme (without one the app stops on return) and the Google scheme.
+      - name: check the sign-in return in the APK manifest
+        run: |
+          AAPT2=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)aapt2
+          "$AAPT2" dump xmltree --file AndroidManifest.xml app/build/app/outputs/flutter-apk/app-release.apk > manifest.txt
+          python3 scripts/check_apk_manifest.py manifest.txt ${FLOMSI_GOOGLE_ANDROID_CLIENT_ID:+--google}
       - uses: actions/upload-artifact@v4
         with:
           name: Flomsi-android

@@ -34,17 +34,15 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- The sign-in sheet (AppAuth) comes back here: Google's scheme, then Microsoft's. -->
+        <!-- The sign-in sheet (AppAuth) comes back here. Merged with AppAuth's own entry,
+             which brings Google's scheme; this adds Microsoft's, and the theme: the activity is
+             an AppCompatActivity, and without an AppCompat theme (the application has none)
+             the app stops the moment the sign-in page returns. The style is AppAuth's own. -->
         <activity
             android:name="net.openid.appauth.RedirectUriReceiverActivity"
             android:exported="true"
-            tools:node="replace">
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="${appAuthRedirectScheme}" />
-            </intent-filter>
+            android:theme="@style/Theme.AppCompat.Translucent.NoTitleBar"
+            tools:node="merge">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
