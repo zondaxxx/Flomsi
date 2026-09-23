@@ -14,6 +14,11 @@ anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 chrono = "0.4"
 
+# MainActivity hands the app's context to the Rust side (Keystore access for passwords).
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
 [workspace]
 
 # flutter_rust_bridge's #[frb] expands to cfg(frb_expand) checks.

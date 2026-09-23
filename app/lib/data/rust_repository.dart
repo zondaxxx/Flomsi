@@ -63,10 +63,17 @@ class RustRepository implements MailRepository {
   }
 
   /// macOS: the Xcode run-script phase drops libmail_bridge.dylib into Contents/Frameworks.
-  /// Elsewhere flutter_rust_bridge's default lookup applies (rust/target/release for dev).
+  /// Windows: CMake puts mail_bridge.dll next to the executable. Elsewhere
+  /// flutter_rust_bridge's default lookup applies (rust/target/release for dev).
   static ExternalLibrary? _bundledLibrary() {
     // iOS: the bridge is a static library linked into the executable (scripts/build_bridge_ios.sh).
     if (Platform.isIOS) return ExternalLibrary.process(iKnowHowToUseIt: true);
+    if (Platform.isWindows) {
+      final dll = File(
+        '${File(Platform.resolvedExecutable).parent.path}\\mail_bridge.dll',
+      );
+      return dll.existsSync() ? ExternalLibrary.open(dll.path) : null;
+    }
     if (!Platform.isMacOS) return null;
     final exe = File(Platform.resolvedExecutable);
     final path = '${exe.parent.parent.path}/Frameworks/libmail_bridge.dylib';

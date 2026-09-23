@@ -2,6 +2,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -141,6 +142,16 @@ jobs:
         working-directory: app
       - run: flutter build ios --release --no-codesign
         working-directory: app
+      # Unsigned: for sideloading (AltStore, Sideloadly), which signs it on the way in.
+      - name: package
+        run: |
+          mkdir -p Payload
+          cp -R app/build/ios/iphoneos/Runner.app Payload/Flomsi.app
+          zip -qry Flomsi-iOS-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Flomsi-iOS-unsigned
+          path: Flomsi-iOS-unsigned.ipa
 
   android:
     name: build Android
@@ -201,3 +212,30 @@ jobs:
         with:
           name: Flomsi-windows
           path: Flomsi-windows.zip
+
+  release:
+    name: publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [core, live, app-check, macos, ios, android, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir out
+          cp dist/Flomsi-macOS/Flomsi-macOS.zip out/
+          cp dist/Flomsi-windows/Flomsi-windows.zip out/
+          cp dist/Flomsi-android/app-release.apk out/Flomsi-android.apk
+          cp dist/Flomsi-iOS-unsigned/Flomsi-iOS-unsigned.ipa out/
+          cp dist/mailctl-linux-x86_64/mailctl out/mailctl-linux-x86_64
+          (cd out && sha256sum * > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" out/* \
+            --title "Flomsi ${GITHUB_REF_NAME#v}" \
+            --notes-file docs/RELEASE_NOTES.md

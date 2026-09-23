@@ -68,17 +68,67 @@ fn in_memory() -> bool {
     IN_MEMORY.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// The platform's credential store, chosen once: Keychain on macOS, the data-protection
+/// keychain on iOS, Credential Manager on Windows, Keystore-encrypted preferences on
+/// Android, Secret Service elsewhere.
 mod keychain {
     use crate::error::{Error, Result};
+    use keyring_core::Entry;
+    use std::sync::OnceLock;
 
-    fn entry(service: &str, user: &str) -> Result<keyring::Entry> {
-        keyring::Entry::new(service, user).map_err(|e| Error::Secrets(e.to_string()))
+    fn platform_store() -> std::result::Result<std::sync::Arc<keyring_core::CredentialStore>, String>
+    {
+        #[cfg(target_os = "macos")]
+        return apple_native_keyring_store::keychain::Store::new()
+            .map(|s| s as _)
+            .map_err(|e| e.to_string());
+        #[cfg(target_os = "ios")]
+        return apple_native_keyring_store::protected::Store::new()
+            .map(|s| s as _)
+            .map_err(|e| e.to_string());
+        #[cfg(target_os = "windows")]
+        return windows_native_keyring_store::Store::new()
+            .map(|s| s as _)
+            .map_err(|e| e.to_string());
+        // The store reads the app's context, which MainActivity hands over at start; a
+        // missing one panics in the crate, so it is caught here.
+        #[cfg(target_os = "android")]
+        return match std::panic::catch_unwind(android_native_keyring_store::Store::new) {
+            Ok(r) => r.map(|s| s as _).map_err(|e| e.to_string()),
+            Err(_) => Err("the Android context was not set up".into()),
+        };
+        #[cfg(all(
+            unix,
+            not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+        ))]
+        return zbus_secret_service_keyring_store::Store::new()
+            .map(|s| s as _)
+            .map_err(|e| e.to_string());
+        #[allow(unreachable_code)]
+        Err("no credential store on this platform".into())
+    }
+
+    fn ready() -> Result<()> {
+        static STORE: OnceLock<std::result::Result<(), String>> = OnceLock::new();
+        STORE
+            .get_or_init(|| {
+                let store = platform_store()?;
+                keyring_core::set_default_store(store);
+                Ok(())
+            })
+            .clone()
+            .map_err(Error::Secrets)
+    }
+
+    fn entry(service: &str, user: &str) -> Result<Entry> {
+        ready()?;
+        Entry::new(service, user).map_err(|e| Error::Secrets(e.to_string()))
     }
 
     pub fn read(service: &str, user: &str) -> Result<Option<String>> {
         match entry(service, user)?.get_password() {
             Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(e) => Err(Error::Secrets(e.to_string())),
         }
     }
@@ -91,9 +141,21 @@ mod keychain {
 
     pub fn remove(service: &str, user: &str) -> Result<()> {
         match entry(service, user)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
             Err(e) => Err(Error::Secrets(e.to_string())),
         }
+    }
+
+    #[cfg(test)]
+    pub fn roundtrip() {
+        let (service, user) = (
+            "dev.zonda.mail.roundtrip",
+            "password:roundtrip@test.invalid",
+        );
+        write(service, user, "s3cret").unwrap();
+        assert_eq!(read(service, user).unwrap().as_deref(), Some("s3cret"));
+        remove(service, user).unwrap();
+        assert_eq!(read(service, user).unwrap(), None);
     }
 }
 
@@ -206,12 +268,6 @@ mod tests {
     #[test]
     #[ignore]
     fn keychain_roundtrip() {
-        let service = "dev.zonda.mail.roundtrip";
-        let user = "password:roundtrip@test.invalid";
-        let entry = keyring::Entry::new(service, user).unwrap();
-        entry.set_password("s3cret").unwrap();
-        assert_eq!(entry.get_password().unwrap(), "s3cret");
-        entry.delete_credential().unwrap();
-        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+        super::keychain::roundtrip();
     }
 }

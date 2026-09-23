@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "dev.zonda" "\0"
-            VALUE "FileDescription", "mail_app" "\0"
+            VALUE "FileDescription", "Flomsi" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "mail_app" "\0"
+            VALUE "InternalName", "Flomsi" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 dev.zonda. All rights reserved." "\0"
-            VALUE "OriginalFilename", "mail_app.exe" "\0"
-            VALUE "ProductName", "mail_app" "\0"
+            VALUE "OriginalFilename", "Flomsi.exe" "\0"
+            VALUE "ProductName", "Flomsi" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

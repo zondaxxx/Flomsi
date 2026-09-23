@@ -301,12 +301,22 @@ async fn send_files_one_copy_in_sent_and_keeps_bcc_off_the_message() {
         m["ID"].as_str().unwrap()
     ))
     .await;
-    let headers = raw.split("\r\n\r\n").next().unwrap_or("");
+    // mailpit puts Bcc, Return-Path and Received above what it was sent (to show the
+    // envelope); what the client sent starts at its From line.
+    let head = raw.split("\r\n\r\n").next().unwrap_or("");
+    let sent = &head[head.find("\r\nFrom: ").unwrap_or(0)..];
+    let headers = sent.to_string();
     assert!(!headers.contains("hidden@studio.test"), "{headers}");
     assert!(
         !headers.to_ascii_lowercase().contains("\nbcc:"),
         "{headers}"
     );
+    // The hidden copy still went out, by the envelope alone.
+    let bcc: Vec<&str> = m["Bcc"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|a| a["Address"].as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(bcc, vec!["hidden@studio.test"], "{m}");
     assert!(headers.contains("Message-ID: <"), "{headers}");
     std::fs::remove_dir_all(&dir).unwrap();
 }

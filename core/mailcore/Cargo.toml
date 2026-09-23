@@ -16,7 +16,7 @@ base64 = "0.23.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 flate2 = "1.1.10"
 futures = "0.3.34"
-keyring = { version = "4.2.0", features = ["android-native-keyring-store"] }
+keyring-core = "1"
 lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "pool", "hostname", "tokio1-rustls-tls"] }
 log = "0.4"
 mail-parser = "0.11.9"
@@ -36,12 +36,24 @@ tracing = "0.1.44"
 url = "2.5.8"
 webpki-roots = "1.0.9"
 
-# iOS keeps secrets in the data-protection keychain; the crate needs its `protected` store there.
+# Each platform's own credential store (secrets.rs picks it at first use).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+# iOS keeps secrets in the data-protection keychain.
 [target.'cfg(target_os = "ios")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["protected"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-libc = "0.2.186"
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+
+# SharedPreferences encrypted with a Keystore key; needs the app's context (MainActivity).
+[target.'cfg(target_os = "android")'.dependencies]
+android-native-keyring-store = "1"
+
+[target.'cfg(all(unix, not(any(target_os = "macos", target_os = "ios", target_os = "android"))))'.dependencies]
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
 
 [dev-dependencies]
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }

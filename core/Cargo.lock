@@ -1332,19 +1332,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keyring"
-version = "4.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2270074a3d26bcac93c1dc5d2845eb4c089e8d761ccf6e0ea266a16004640627"
-dependencies = [
- "android-native-keyring-store",
- "apple-native-keyring-store",
- "keyring-core",
- "windows-native-keyring-store",
- "zbus-secret-service-keyring-store",
-]
-
-[[package]]
 name = "keyring-core"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1445,6 +1432,7 @@ name = "mailcore"
 version = "0.1.0"
 dependencies = [
  "ammonia",
+ "android-native-keyring-store",
  "anyhow",
  "apple-native-keyring-store",
  "async-imap",
@@ -1453,7 +1441,7 @@ dependencies = [
  "flate2",
  "futures",
  "idna",
- "keyring",
+ "keyring-core",
  "lettre",
  "libc",
  "log",
@@ -1473,6 +1461,8 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+ "windows-native-keyring-store",
+ "zbus-secret-service-keyring-store",
 ]
 
 [[package]]
