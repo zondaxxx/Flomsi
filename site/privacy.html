@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Holds the privacy page to its word: nothing loads from other sites, and the page runs and sends nothing. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Privacy · Flomsi</title>
+<meta name="description" content="How Flomsi handles your mail, passwords and Google or Microsoft sign-in: everything stays on your device, and nothing is sent to the Flomsi project.">
+<link rel="canonical" href="https://flomsi.nz/privacy.html">
+<meta name="theme-color" content="#101216" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f5f6" media="(prefers-color-scheme: light)">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Flomsi">
+<meta property="og:title" content="Privacy · Flomsi">
+<meta property="og:description" content="Your mail stays on your device. No Flomsi server, no analytics.">
+<meta property="og:url" content="https://flomsi.nz/privacy.html">
+<meta property="og:image" content="https://flomsi.nz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preload" href="fonts/IBMPlexSans-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="logo" href="./" aria-label="Flomsi home">
+      <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><rect x="1.75" y="3.25" width="16.5" height="13.5" rx="3.25"/><path d="M8 8.25h6.5M8 11.75h6.5"/><circle cx="5.1" cy="8.25" r="1.35" fill="var(--accent)" stroke="none"/></svg>
+      Flomsi
+    </a>
+    <div class="nav-end">
+      <a class="gh" href="https://github.com/zondaxxx/Flomsi">GitHub</a>
+      <a class="btn btn-p btn-sm" href="./#get">Get Flomsi</a>
+    </div>
+  </div>
+</header>
+
+<main class="doc" id="main">
+  <div class="wrap">
+    <div class="doc-head">
+      <p class="eyebrow mono">Effective 23 September 2026</p>
+      <h1>Privacy<i class="dot" aria-hidden="true"></i></h1>
+      <p class="lede">Flomsi is a mail app that runs on your own device and talks straight to your mail provider. There is no Flomsi server in between: the project never receives your mail, your passwords or anything about how you use the app.</p>
+    </div>
+
+    <div class="prose">
+      <div class="short">
+        <ul>
+          <li>No account with us, no analytics, no crash reports, no ads.</li>
+          <li>Your mail is stored on your device. Passwords and sign-in tokens are kept in the system's credential store.</li>
+          <li>The app connects to your mail provider, and to Google or Microsoft if you sign in with them. Nothing else, unless you load a message's remote images or open a link.</li>
+        </ul>
+      </div>
+
+      <h2>What this covers</h2>
+      <p>This policy covers the Flomsi apps for macOS, Windows, iOS and Android, the <code>mailctl</code> terminal tool, and this website, flomsi.nz. Flomsi is open-source software, published at <a href="https://github.com/zondaxxx/Flomsi">github.com/zondaxxx/Flomsi</a> by its maintainers (“we” below). Everything this page says about the apps can be checked against that source code.</p>
+
+      <h2>What the app keeps on your device</h2>
+      <div class="table">
+        <table>
+          <thead><tr><th scope="col">What</th><th scope="col">Where</th></tr></thead>
+          <tbody>
+            <tr><td>Mail</td><td>Messages, folders, the search index and cached attachments, in a SQLite database in Flomsi's data folder: <code>~/.mail_</code> on macOS, <code>%USERPROFILE%\.mail_</code> on Windows, the app's own storage on iOS and Android.</td></tr>
+            <tr><td>Your settings</td><td>Drafts, snoozed conversations, account names, signatures, key preset and theme, in the same database.</td></tr>
+            <tr><td>Passwords and tokens</td><td>Keychain on macOS and iOS, Windows Credential Manager, on Android the app's private storage encrypted with a key held in the Android Keystore, and the Secret Service keyring for <code>mailctl</code> on Linux. Never in the database.</td></tr>
+            <tr><td>Opened files</td><td>Attachments you open are written to a folder inside Flomsi's data folder. On a computer, attachments you save go to your Downloads folder; on a phone you share them to another app.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The first sync keeps the newest 200 messages of Inbox, Sent and Archive (All Mail on Gmail), and 50 of Junk and Trash. Older mail is downloaded only when you ask for it.</p>
+      <p>Flomsi writes no log file of its own. Warnings, such as a folder that failed to sync, go to the system's console log without passwords or message text; <code>mailctl</code> writes an IMAP transcript only when you ask for one with <code>--wire</code>.</p>
+      <p>On Android, Flomsi opts out of system backup and of moving data to a new phone, so its data stays on that phone. On other systems your own backups, such as Time Machine, iCloud Backup or File History, may include Flomsi's data like any other files on the device.</p>
+
+      <h3>How long it is kept</h3>
+      <p>Flomsi keeps cached mail, drafts and settings until you remove the account or uninstall the app. Passwords and tokens stay in the credential store until you remove the account; access tokens from Google and Microsoft expire after about an hour and are replaced as needed.</p>
+
+      <h3>How it is protected</h3>
+      <p>Connections to your provider use TLS. Passwords and tokens are held by the system's credential store. The mail database is not encrypted by Flomsi: it is protected by your device's own encryption, such as FileVault, BitLocker or the phone's storage encryption, and by your account on the device.</p>
+
+      <h2>What the app sends, and where</h2>
+      <ul>
+        <li><strong>Your mail provider.</strong> Flomsi connects to each account's IMAP and SMTP servers over TLS or STARTTLS, to fetch mail and to carry out what you do: send, archive, delete, move, star, mark as read. The servers are the ones you enter, or the ones Flomsi fills in from your address.</li>
+        <li><strong>Google or Microsoft, if you sign in with them.</strong> Their sign-in page opens in your browser or in the system's sign-in window. Flomsi receives tokens from them and later asks their token service for fresh ones. From the ID token it reads only your email address.</li>
+        <li><strong>Remote images, only when you ask.</strong> Images from the web are blocked in every message. If you click Load images, that message's images are fetched from the servers they point to, which can then see your IP address and that the message was opened.</li>
+        <li><strong>Links</strong> you click open in your default browser.</li>
+      </ul>
+      <p>Nothing goes to us. Flomsi contains no analytics, crash reporting, advertising or tracking code, and it makes no requests to a Flomsi server, because there is none.</p>
+
+      <h2>Signing in with Google</h2>
+      <p>When you choose Continue with Google, Flomsi asks for these permissions:</p>
+      <div class="table">
+        <table>
+          <thead><tr><th scope="col">Scope</th><th scope="col">Why</th></tr></thead>
+          <tbody>
+            <tr><td>https://mail.google.com/</td><td>Read, send, delete and organise your Gmail over IMAP and SMTP, the protocols Flomsi uses. Google offers no narrower scope for IMAP.</td></tr>
+            <tr><td>openid, email</td><td>Learn which address you signed in with, so the account is added under the right name.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Flomsi uses this access only to show your mail on your device and to do what you ask of it in the app. Data from your Google account is stored only on your device, and in your own backups of it. It is not sent to us or to anyone else, not used for advertising, not sold, and not used to train AI models. No one at the project can read it.</p>
+      <blockquote><p>Flomsi's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p></blockquote>
+
+      <h2>Signing in with Microsoft</h2>
+      <p>When you choose Sign in with Microsoft, for Outlook, Hotmail or Microsoft 365, Flomsi asks for these permissions:</p>
+      <div class="table">
+        <table>
+          <thead><tr><th scope="col">Scope</th><th scope="col">Why</th></tr></thead>
+          <tbody>
+            <tr><td>https://outlook.office.com/<wbr>IMAP.AccessAsUser.All</td><td>Read and manage your mail over IMAP.</td></tr>
+            <tr><td>https://outlook.office.com/<wbr>SMTP.Send</td><td>Send mail as you over SMTP.</td></tr>
+            <tr><td>offline_access</td><td>Stay signed in without asking you again, through a refresh token kept in the credential store.</td></tr>
+            <tr><td>openid, email, profile</td><td>Learn which address you signed in with.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The same rules apply as for Google: the access is used on your device, only for what you do in the app, and the data goes nowhere else.</p>
+      <p>Google and Microsoft sign-in is available in builds made with Flomsi's app registrations. The 0.2.0 downloads were built before those were added and use app passwords only.</p>
+
+      <h2>Notifications</h2>
+      <p>New-mail notifications are made on your device by Flomsi itself, from mail it has already fetched, and show the sender and the subject, or the first line of the message when it has none. No push service is involved, so a phone gets no notifications while Flomsi is closed. Your system's notification settings decide where they appear, including on the lock screen.</p>
+
+      <h2>Attachments</h2>
+      <p>Attachments are downloaded from your mail server when you open or save them, unless they came with the message during sync. Files that can run code or open a web page are never opened from Flomsi: after a warning you can save them on a computer, or share them on a phone.</p>
+
+      <h2>Deleting your data</h2>
+      <ul>
+        <li><strong>Remove an account</strong> in Settings. Flomsi deletes that account's mail and folders from the database, its cached files, and its password or tokens from the credential store. Mail on the server is not touched.</li>
+        <li><strong>Uninstall the app.</strong> On Android and iOS this removes Flomsi's storage. On iOS, Keychain entries can outlive the app, so remove your accounts first. On macOS and Windows, removing the app leaves the <code>.mail_</code> folder in your home folder: delete it yourself, after removing your accounts in Settings so the credential store is cleared too.</li>
+      </ul>
+
+      <h2>Revoking access</h2>
+      <p>Removing an account in Flomsi does not withdraw the permission you gave Google or Microsoft. To do that, remove Flomsi at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> for Google, at <a href="https://account.live.com/consent/Manage">account.live.com/consent/Manage</a> for a personal Microsoft account, or at <a href="https://myapps.microsoft.com">myapps.microsoft.com</a> for a work or school account. An app password is revoked on the provider's page where you created it.</p>
+
+      <h2>This website</h2>
+      <p>flomsi.nz is a set of static pages. It sets no cookies, runs no analytics, and loads nothing from other sites: fonts, images and scripts are all served from flomsi.nz, and each page's Content Security Policy tells your browser to refuse anything from elsewhere. The live demo on the home page runs in your browser and stores nothing.</p>
+      <p>The site is hosted on GitHub Pages. GitHub may log your IP address and request details when it serves a page; its <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">privacy statement</a> applies to that. Downloads and links to github.com take you to GitHub itself.</p>
+
+      <h2>Changes</h2>
+      <p>If this policy changes, the new version will be published on this page with a new effective date. Earlier versions stay in the <a href="https://github.com/zondaxxx/Flomsi/commits/main/site/privacy.html">repository's history</a>.</p>
+
+      <h2>Contact</h2>
+      <p>Questions about privacy go to <a href="https://github.com/zondaxxx/Flomsi/issues">GitHub issues</a>. Please do not post passwords, tokens or the contents of your mail there.</p>
+    </div>
+  </div>
+</main>
+
+<div class="wrap">
+  <footer class="foot mono">
+    <span>Flomsi · GPL-3.0</span>
+    <nav aria-label="Legal"><a href="privacy.html" aria-current="page">Privacy</a><a href="terms.html">Terms</a></nav>
+    <a href="https://github.com/zondaxxx/Flomsi">github.com/zondaxxx/Flomsi</a>
+  </footer>
+</div>
+
+</body>
+</html>

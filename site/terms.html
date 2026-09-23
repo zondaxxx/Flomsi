@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Holds the privacy page to its word: nothing loads from other sites, and the page runs and sends nothing. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'none'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Terms · Flomsi</title>
+<meta name="description" content="The terms for using Flomsi: free software under the GNU GPL, version 3, provided as is, with your mail provider's terms still in force.">
+<link rel="canonical" href="https://flomsi.nz/terms.html">
+<meta name="theme-color" content="#101216" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f5f5f6" media="(prefers-color-scheme: light)">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Flomsi">
+<meta property="og:title" content="Terms · Flomsi">
+<meta property="og:description" content="Free software under the GNU GPL, version 3, provided as is.">
+<meta property="og:url" content="https://flomsi.nz/terms.html">
+<meta property="og:image" content="https://flomsi.nz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preload" href="fonts/IBMPlexSans-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="logo" href="./" aria-label="Flomsi home">
+      <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><rect x="1.75" y="3.25" width="16.5" height="13.5" rx="3.25"/><path d="M8 8.25h6.5M8 11.75h6.5"/><circle cx="5.1" cy="8.25" r="1.35" fill="var(--accent)" stroke="none"/></svg>
+      Flomsi
+    </a>
+    <div class="nav-end">
+      <a class="gh" href="https://github.com/zondaxxx/Flomsi">GitHub</a>
+      <a class="btn btn-p btn-sm" href="./#get">Get Flomsi</a>
+    </div>
+  </div>
+</header>
+
+<main class="doc" id="main">
+  <div class="wrap">
+    <div class="doc-head">
+      <p class="eyebrow mono">Effective 23 September 2026</p>
+      <h1>Terms<i class="dot" aria-hidden="true"></i></h1>
+      <p class="lede">Flomsi is free software made in the open. These terms are short because the licence already says most of it.</p>
+    </div>
+
+    <div class="prose">
+      <h2>The licence</h2>
+      <p>Flomsi, including its apps, its Rust core and the <code>mailctl</code> tool, is licensed under the <a href="https://github.com/zondaxxx/Flomsi/blob/main/LICENSE">GNU General Public License, version 3</a>. You may use it for any purpose, read and change its source, and share it, changed or not, under that licence. If you pass on a copy, you pass on the same freedoms with it. Where these terms and the licence disagree, the licence wins.</p>
+
+      <h2>Provided as is</h2>
+      <p>Flomsi is an early build, provided as is, without warranty of any kind, as sections 15 and 16 of the licence set out. It may have bugs, including ones that affect your mail. Keep your mail on the server, which is how IMAP works anyway, and keep your own backups of anything you cannot lose. To the extent the law allows, the people who make Flomsi are not liable for any loss that comes from using it.</p>
+
+      <h2>Your accounts</h2>
+      <ul>
+        <li>You are responsible for the accounts you add to Flomsi, for what you send from them, and for keeping your devices and passwords safe.</li>
+        <li>Your mail provider's own terms still apply to your account: Google's, Microsoft's, Apple's, Yandex's or any other. Flomsi connects to your provider on your behalf and does not change what that provider allows.</li>
+        <li>Use Flomsi only with accounts you are allowed to use.</li>
+      </ul>
+
+      <h2>Downloads</h2>
+      <p>Builds are published on <a href="https://github.com/zondaxxx/Flomsi/releases">GitHub Releases</a> with SHA-256 checksums. They are not signed by Apple, Microsoft or Google, so check the checksum if you want to be sure a file is the one we published, and install Flomsi only from there or from your own build of the source.</p>
+
+      <h2>Names</h2>
+      <p>Google, Gmail, Microsoft, Outlook, Apple, iCloud and the other product names on this site belong to their owners. They are named only to say which services Flomsi works with; Flomsi is not made or endorsed by any of them.</p>
+
+      <h2>Privacy</h2>
+      <p>How Flomsi handles your data is described in the <a href="privacy.html">privacy policy</a>.</p>
+
+      <h2>Changes and contact</h2>
+      <p>If these terms change, the new version will be published on this page with a new effective date. Questions go to <a href="https://github.com/zondaxxx/Flomsi/issues">GitHub issues</a>.</p>
+    </div>
+  </div>
+</main>
+
+<div class="wrap">
+  <footer class="foot mono">
+    <span>Flomsi · GPL-3.0</span>
+    <nav aria-label="Legal"><a href="privacy.html">Privacy</a><a href="terms.html" aria-current="page">Terms</a></nav>
+    <a href="https://github.com/zondaxxx/Flomsi">github.com/zondaxxx/Flomsi</a>
+  </footer>
+</div>
+
+</body>
+</html>

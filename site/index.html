@@ -1,0 +1,1476 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Holds the privacy page to its word: nothing loads from other sites, and the page sends nothing anywhere. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Flomsi · Mail, keyboard first</title>
+<script>document.documentElement.classList.add('js')</script>
+<meta name="description" content="Flomsi is an open-source, keyboard-first mail client for macOS, Windows, iOS and Android. A Rust core keeps your recent mail on the device.">
+<link rel="canonical" href="https://flomsi.nz/">
+<!-- The page opens on the dark hero in either scheme; the script follows the section tone from there. -->
+<meta name="theme-color" content="#101216" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#101216" media="(prefers-color-scheme: light)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Flomsi">
+<meta property="og:title" content="Flomsi · Mail, keyboard first">
+<meta property="og:description" content="An open-source, keyboard-first mail client for macOS, Windows, iOS and Android.">
+<meta property="og:url" content="https://flomsi.nz/">
+<meta property="og:image" content="https://flomsi.nz/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Flomsi, mail keyboard first, next to its inbox on a phone.">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preload" href="fonts/IBMPlexSans-Variable.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+/* IBM Plex, served from this site (SIL OFL 1.1, fonts/OFL.txt): no third-party requests.
+   Plex has no ⌘ ⇧ ↵, so both stacks keep system fonts behind it. */
+@font-face{font-family:"IBM Plex Sans";src:url(fonts/IBMPlexSans-Variable.woff2) format("woff2");font-weight:400 700;font-style:normal;font-display:swap}
+@font-face{font-family:"IBM Plex Mono";src:url(fonts/IBMPlexMono-Regular.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"IBM Plex Mono";src:url(fonts/IBMPlexMono-Medium.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap}
+:root{--sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+
+/* Tokens. Page: One Dark / One Light grounds. App: the exact Scheme from app/lib/theme/tokens.dart.
+   Registered so the whole page can ease between the two palettes as sections change tone. */
+@property --page{syntax:'<color>';inherits:true;initial-value:#101216}
+@property --page2{syntax:'<color>';inherits:true;initial-value:#16181d}
+@property --surface{syntax:'<color>';inherits:true;initial-value:#1b1e24}
+@property --ink{syntax:'<color>';inherits:true;initial-value:#d7dae0}
+@property --ink-strong{syntax:'<color>';inherits:true;initial-value:#f1f2f4}
+@property --ink2{syntax:'<color>';inherits:true;initial-value:#8b93a1}
+@property --ink3{syntax:'<color>';inherits:true;initial-value:#5f6673}
+@property --line{syntax:'<color>';inherits:true;initial-value:#23262d}
+@property --accent{syntax:'<color>';inherits:true;initial-value:#74ade8}
+@property --accent2{syntax:'<color>';inherits:true;initial-value:#8fbdee}
+@property --accent-ink{syntax:'<color>';inherits:true;initial-value:#0f1216}
+@property --shade{syntax:'<color>';inherits:true;initial-value:rgba(0,0,0,.55)}
+@property --scrim{syntax:'<color>';inherits:true;initial-value:rgba(0,0,0,.35)}
+@property --bg{syntax:'<color>';inherits:true;initial-value:#16181d}
+@property --bg2{syntax:'<color>';inherits:true;initial-value:#1b1e24}
+@property --panel{syntax:'<color>';inherits:true;initial-value:#191c22}
+@property --raised{syntax:'<color>';inherits:true;initial-value:#22262e}
+@property --hover{syntax:'<color>';inherits:true;initial-value:#1c1f26}
+@property --sel{syntax:'<color>';inherits:true;initial-value:#232a3c}
+@property --border{syntax:'<color>';inherits:true;initial-value:#262a31}
+@property --fg{syntax:'<color>';inherits:true;initial-value:#d7dae0}
+@property --fg2{syntax:'<color>';inherits:true;initial-value:#8b93a1}
+@property --fg3{syntax:'<color>';inherits:true;initial-value:#5f6673}
+@property --blue{syntax:'<color>';inherits:true;initial-value:#74ade8}
+@property --green{syntax:'<color>';inherits:true;initial-value:#a1c181}
+@property --yellow{syntax:'<color>';inherits:true;initial-value:#dfc184}
+@property --red{syntax:'<color>';inherits:true;initial-value:#d07277}
+@property --purple{syntax:'<color>';inherits:true;initial-value:#b477cf}
+@property --cyan{syntax:'<color>';inherits:true;initial-value:#6fb3c9}
+
+:root{color-scheme:dark}
+body{
+  --page:#101216;--page2:#16181d;--surface:#1b1e24;--ink:#d7dae0;--ink-strong:#f1f2f4;--ink2:#8b93a1;--ink3:#5f6673;
+  --line:#23262d;--accent:#74ade8;--accent2:#8fbdee;--accent-ink:#0f1216;--shade:rgba(0,0,0,.55);--scrim:rgba(0,0,0,.35);
+  --bg:#16181d;--bg2:#1b1e24;--panel:#191c22;--raised:#22262e;--hover:#1c1f26;--sel:#232a3c;--border:#262a31;
+  --fg:#d7dae0;--fg2:#8b93a1;--fg3:#5f6673;--blue:#74ade8;--green:#a1c181;--yellow:#dfc184;--red:#d07277;--purple:#b477cf;--cyan:#6fb3c9;
+  --ease:cubic-bezier(.215,.61,.355,1);
+  margin:0;background:var(--page);color:var(--ink);
+  font:400 16px/1.6 var(--sans);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  transition-property:--page,--page2,--surface,--ink,--ink-strong,--ink2,--ink3,--line,--accent,--accent2,--accent-ink,--shade,--scrim,--bg,--bg2,--panel,--raised,--hover,--sel,--border,--fg,--fg2,--fg3,--blue,--green,--yellow,--red,--purple,--cyan;
+  transition-duration:.6s;transition-timing-function:var(--ease);
+}
+/* The page's light accent is one step darker than the app's blue (--blue stays #4078f2), so link text
+   on the page and white on a primary button both reach 4.5:1. --ink3 is for rules and markers only. */
+body[data-tone="light"]{
+  --page:#f5f5f6;--page2:#ececee;--surface:#ffffff;--ink:#383a42;--ink-strong:#1d1f25;--ink2:#61646f;--ink3:#9a9ca4;
+  --line:#e1e1e3;--accent:#2f66e0;--accent2:#2a5fd6;--accent-ink:#ffffff;--shade:rgba(40,44,56,.2);--scrim:rgba(40,44,56,.12);
+  --bg:#fafafa;--bg2:#f0f0f1;--panel:#ffffff;--raised:#e5e5e6;--hover:#f2f2f3;--sel:#dce6f7;--border:#e1e1e3;
+  --fg:#383a42;--fg2:#696c77;--fg3:#a0a1a7;--blue:#4078f2;--green:#50a14f;--yellow:#c18401;--red:#e45649;--purple:#a626a4;--cyan:#0184bc;
+}
+body[data-tone="light"]{color-scheme:light}
+/* The demo window can be pinned to one theme from its own command palette. */
+.win[data-force="dark"]{--bg:#16181d;--bg2:#1b1e24;--panel:#191c22;--raised:#22262e;--hover:#1c1f26;--sel:#232a3c;--border:#262a31;--fg:#d7dae0;--fg2:#8b93a1;--fg3:#5f6673;--blue:#74ade8;--green:#a1c181;--yellow:#dfc184;--red:#d07277;--purple:#b477cf;--cyan:#6fb3c9;--shade:rgba(0,0,0,.55);--scrim:rgba(0,0,0,.35)}
+.win[data-force="light"]{--bg:#fafafa;--bg2:#f0f0f1;--panel:#ffffff;--raised:#e5e5e6;--hover:#f2f2f3;--sel:#dce6f7;--border:#e1e1e3;--fg:#383a42;--fg2:#696c77;--fg3:#a0a1a7;--blue:#4078f2;--green:#50a14f;--yellow:#c18401;--red:#e45649;--purple:#a626a4;--cyan:#0184bc;--shade:rgba(40,44,56,.2);--scrim:rgba(40,44,56,.12)}
+
+*,*::before,*::after{box-sizing:border-box}
+/* Anchors and focus stop below the sticky nav. Smooth only once something has focus (a clicked nav link),
+   so arriving from another page at /#get jumps straight there instead of scrolling the whole page. */
+html{scroll-padding-top:64px}
+html:focus-within{scroll-behavior:smooth}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+a{color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1200px;margin-inline:auto;padding-inline:clamp(16px,4vw,40px)}
+.skip{position:absolute;left:12px;top:-60px;z-index:60;padding:8px 12px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink-strong);font-size:14.5px;text-decoration:none}
+.skip:focus{top:10px}
+/* Without scripts the demo window would stand empty and the preset toggle would do nothing. */
+html:not(.js) .stage,html:not(.js) .seg{display:none}
+kbd{font:500 12px/1 var(--mono);display:inline-block;min-width:1.7em;text-align:center;padding:4px 6px 3px;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;background:var(--surface);color:var(--ink);vertical-align:.1em}
+.ic{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.3;stroke-linecap:round;stroke-linejoin:round}
+
+/* ---------- Nav ---------- */
+.nav{position:sticky;top:env(safe-area-inset-top,0px);z-index:40;background:var(--page);border-bottom:1px solid transparent;transition:border-color .2s}
+.nav.scrolled{border-bottom-color:var(--line)}
+.nav .wrap{height:60px;display:flex;align-items:center;gap:32px}
+.logo{display:flex;align-items:center;gap:9px;font-weight:600;font-size:17px;letter-spacing:-.01em;color:var(--ink-strong);text-decoration:none}
+.logo svg{width:20px;height:20px}
+.nav-links{display:flex;gap:26px;font-size:14.5px}
+.nav-links a{color:var(--ink2);text-decoration:none;transition:color .15s}
+.nav-links a:hover{color:var(--ink-strong)}
+.nav-end{margin-left:auto;display:flex;align-items:center;gap:18px;font-size:14.5px}
+.nav-end .gh{color:var(--ink2);text-decoration:none}
+.nav-end .gh:hover{color:var(--ink-strong)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:42px;padding:0 18px;border-radius:6px;border:1px solid transparent;font:500 15px/1 var(--sans);text-decoration:none;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s;white-space:nowrap}
+.btn-p{background:var(--accent);color:var(--accent-ink)}
+.btn-p:hover{background:var(--accent2)}
+.btn-s{border-color:var(--line);color:var(--ink-strong);background:transparent}
+.btn-s:hover{background:var(--page2)}
+.btn-sm{height:34px;padding:0 13px;font-size:14px}
+@media (max-width:820px){.nav-links,.nav-end .gh{display:none}}
+
+/* ---------- Hero ---------- */
+.hero{padding-top:clamp(36px,5vw,64px);overflow-x:clip;text-align:center}
+.eyebrow{margin:0 0 18px;font-size:15px;color:var(--ink2);text-wrap:balance}
+h1{margin:0;font-weight:600;font-size:clamp(44px,7vw,96px);line-height:.95;letter-spacing:-.045em;color:var(--ink-strong);text-wrap:balance}
+h1 span{display:block}
+.dot{display:inline-block;width:.17em;height:.17em;border-radius:50%;background:var(--accent);margin-left:.05em}
+.lede{max-width:38rem;margin:22px auto 0;font-size:clamp(17px,1.5vw,19px);line-height:1.55;color:var(--ink2);text-wrap:pretty}
+.lede kbd{font-size:12.5px}
+.ctas{display:flex;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:26px}
+.rise{animation:rise .7s var(--ease) both}
+.rise.d1{animation-delay:.06s}.rise.d2{animation-delay:.12s}.rise.d3{animation-delay:.18s}.rise.d4{animation-delay:.26s}
+@keyframes rise{from{opacity:.3;transform:translateY(14px)}}
+
+.stage{max-width:1240px;margin:clamp(36px,4.5vw,56px) auto 0;padding-inline:clamp(16px,2vw,20px);perspective:1800px;perspective-origin:50% 0}
+.tilt{transform-origin:50% 100%;transform:rotateX(var(--tilt,0deg)) scale(var(--sc,1));will-change:transform}
+.frame{position:relative;height:calc(720px * var(--k,1))}
+.demo-hint{margin:22px auto 0;padding-bottom:clamp(88px,11vw,140px);font-size:14px;color:var(--ink2);display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:6px 14px}
+.demo-hint .grp{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.demo-hint b{font-weight:500;color:var(--ink)}
+.linkbtn{background:none;border:0;padding:0;font:inherit;color:var(--accent);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+
+/* ---------- The app window (F1 · Editor) ---------- */
+.win{position:absolute;left:0;top:0;width:1200px;height:720px;transform-origin:0 0;transform:scale(var(--k,1));
+  display:flex;flex-direction:column;overflow:hidden;border-radius:10px;background:var(--bg);color:var(--fg);
+  font:400 13px/1.45 var(--sans);text-align:left;
+  box-shadow:0 0 0 1px var(--border),0 60px 120px -40px var(--shade),0 30px 60px -30px var(--shade)}
+.win .mono{font-size:11px;color:var(--fg2)}
+.win button{font:inherit;color:inherit}
+.topbar{height:40px;flex:none;display:flex;align-items:center;padding:0 12px 0 14px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.lights{display:flex;gap:8px;width:66px;margin-right:14px}
+.lights i{width:12px;height:12px;border-radius:50%;background:#ff5f57;box-shadow:inset 0 0 0 .5px rgba(0,0,0,.18)}
+.lights i:nth-child(2){background:#febc2e}.lights i:nth-child(3){background:#28c840}
+.ttl{width:150px;display:flex;align-items:baseline;gap:8px;white-space:nowrap;overflow:hidden}
+.ttl b{font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.search{margin-inline:auto;width:520px;height:28px;display:flex;align-items:center;gap:8px;padding:0 9px;background:var(--panel);border:1px solid var(--border);border-radius:5px;color:var(--fg3);transition:border-color .12s}
+.search:focus-within{border-color:var(--blue)}
+.search .ic{width:13px;height:13px}
+.search input,.qr input,.pin input{flex:1;min-width:0;background:none;border:0;outline:0;padding:0;font:400 13px var(--sans);color:var(--fg)}
+.search input::placeholder,.qr input::placeholder,.pin input::placeholder{color:var(--fg3)}
+.search .mono{font-size:10.5px;color:var(--fg3)}
+.sync{display:flex;align-items:center;gap:6px}
+.sync i{width:7px;height:7px;border-radius:50%;background:var(--green)}
+.sync i.pulse{animation:pulse .7s ease-in-out 4 alternate}
+@keyframes pulse{to{opacity:.25}}
+.qbtn{margin-left:8px;width:24px;height:24px;display:grid;place-items:center;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;font:400 12px var(--mono)!important;color:var(--fg2)!important}
+.qbtn:hover{background:var(--raised)}
+.panes{flex:1;min-height:0;display:flex}
+.side{width:224px;flex:none;display:flex;flex-direction:column;background:var(--bg2);border-right:1px solid var(--border)}
+.side-list{flex:1;overflow:hidden;padding:4px 8px 8px}
+.sec{padding:14px 8px 4px;font:400 10.5px/1.45 var(--mono);letter-spacing:1px;text-transform:uppercase;color:var(--fg3)}
+.srow{height:26px;margin-bottom:2px;padding:0 8px;display:flex;align-items:center;gap:9px;border-radius:4px;cursor:pointer;transition:background-color .12s var(--ease)}
+.srow:hover{background:var(--hover)}
+.srow.on{background:var(--raised)}
+.srow .lead{width:14px;display:grid;place-items:center;color:var(--fg2)}
+.srow.on .lead{color:var(--fg)}
+.srow .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acc-dot{width:8px;height:8px;border-radius:50%}
+.side-foot{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 12px 0 16px;font-size:12.5px;color:var(--fg2)}
+.list{width:440px;flex:none;display:flex;flex-direction:column;border-right:1px solid var(--border)}
+.filters{height:36px;flex:none;display:flex;align-items:center;padding:0 10px;border-bottom:1px solid var(--border)}
+.chip{height:24px;margin-right:4px;padding:0 9px;display:flex;align-items:center;gap:5px;border:0;border-radius:4px;background:none;cursor:pointer;font-size:12px!important;color:var(--fg2)!important;transition:background-color .12s var(--ease)}
+.chip:hover{background:var(--hover)}
+.chip.on{background:var(--raised);color:var(--fg)!important}
+.chip .mono{color:var(--fg3)}
+.chip.on .mono{color:var(--fg2)}
+.rows{flex:1;overflow-y:auto;scrollbar-width:none}
+.rows::-webkit-scrollbar{display:none}
+.row{display:flex;gap:10px;padding:9px 14px 9px 12px;border-bottom:1px solid var(--border);cursor:pointer;overflow:hidden;
+  transition:background-color .12s var(--ease),height .18s var(--ease),opacity .18s var(--ease),padding .18s var(--ease)}
+.row:hover{background:var(--hover)}
+.row.sel{background:var(--sel)}
+.row.leaving{height:0!important;padding-top:0;padding-bottom:0;opacity:0;border-bottom-width:0}
+.udot{flex:none;width:7px;height:7px;margin-top:6px;border-radius:50%;background:var(--blue);transform:scale(0);transition:transform .18s cubic-bezier(.34,1.56,.64,1)}
+.unread .udot{transform:scale(1)}
+.rmain{flex:1;min-width:0}
+.r1{display:flex;align-items:center;gap:8px}
+.sender{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.unread .sender{font-weight:600}
+.r1 .ic{width:12px;height:12px;color:var(--fg3)}
+.r1 .star{color:var(--yellow);fill:var(--yellow);stroke:none;width:11px;height:11px}
+.snz{display:inline-flex;align-items:center;gap:4px;color:var(--yellow)!important}
+.snz .ic{color:var(--yellow)!important;width:11px;height:11px}
+.r2{margin-top:3px;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.unread .subj{font-weight:500}
+.snip{color:var(--fg3)}
+.empty{height:100%;display:grid;place-items:center;color:var(--fg3);font-size:12.5px}
+.read{flex:1;min-width:0;display:flex;flex-direction:column}
+.tbar{height:40px;flex:none;display:flex;align-items:center;gap:2px;padding:0 10px;border-bottom:1px solid var(--border)}
+.tb{height:28px;padding:0 8px;display:flex;align-items:center;gap:6px;border:0;border-radius:4px;background:none;cursor:pointer;font-size:12.5px!important;color:var(--fg2)!important;transition:background-color .12s var(--ease),color .12s}
+.tb:hover{background:var(--raised);color:var(--fg)!important}
+.tb .mono{font-size:10.5px;color:var(--fg3)}
+.tb-sep{width:1px;height:16px;margin:0 6px;background:var(--border)}
+.tpos{margin-left:auto}
+.rbody{flex:1;overflow-y:auto;padding:22px 28px 16px;scrollbar-width:none}
+.rbody::-webkit-scrollbar{display:none}
+.subject{margin:0 0 12px;font-size:20px;font-weight:600;line-height:1.3;letter-spacing:-.2px;color:var(--fg)}
+.meta{margin:0}
+.meta div{display:flex;margin-bottom:3px;font:400 12px/1.45 var(--mono)}
+.meta dt{width:60px;flex:none;color:var(--fg3)}
+.meta dd{margin:0;color:var(--fg)}
+.msgs{margin-top:22px}
+.msg{padding-bottom:16px}
+.msg+.msg{padding-top:16px;border-top:1px solid var(--border)}
+.mh{display:flex;align-items:baseline;gap:10px;margin-bottom:8px}
+.mh b{font-weight:500}
+.mb p{margin:0 0 10px;max-width:62ch;font-size:13.5px;line-height:1.6}
+.files{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.file{height:28px;display:inline-flex;align-items:center;gap:7px;padding:0 10px;border:1px solid var(--border);border-radius:4px;background:var(--panel);font-size:12.5px}
+.file .ic{width:12px;height:12px;color:var(--fg3)}
+.file .mono{color:var(--fg3)}
+.blocked{display:flex;align-items:center;gap:10px;margin-bottom:14px;padding:5px 6px 5px 10px;border:1px solid var(--border);border-radius:4px}
+.blocked .ic{color:var(--fg3)}
+.mini-btn{margin-left:auto;height:24px;padding:0 9px;border:1px solid var(--border);border-radius:4px;background:var(--raised);cursor:pointer;font-size:12px!important}
+.mini-btn:hover{border-color:var(--fg3)}
+.img-ph{height:56px;margin-bottom:14px;display:grid;place-items:center;border:1px dashed var(--border);border-radius:4px;background:var(--bg2)}
+.inv{margin:2px 0 12px;border-collapse:collapse;font-size:13px}
+.inv th,.inv td{padding:6px 10px;border:1px solid var(--border)}
+.inv th{text-align:left;font-weight:500}
+.inv .num{text-align:right;font-family:var(--mono);font-size:12px}
+.mb a{color:var(--blue);text-decoration:none}
+.fine{font-size:12px!important;color:var(--fg3)}
+.qr{flex:none;display:flex;gap:8px;padding:10px 12px;border-top:1px solid var(--border)}
+.qr label{flex:1;height:32px;display:flex;align-items:center;padding:0 10px;background:var(--panel);border:1px solid var(--border);border-radius:5px;transition:border-color .12s}
+.qr label:focus-within{border-color:var(--blue)}
+.qr .send{height:32px;padding:0 12px;display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:5px;background:var(--raised);cursor:pointer;font-size:12.5px!important}
+.qr .send:hover{border-color:var(--fg3)}
+.status{height:24px;flex:none;display:flex;align-items:center;gap:20px;padding:0 12px;background:var(--bg2);border-top:1px solid var(--border);white-space:nowrap}
+.status .st-t{color:var(--fg)}
+.st-hint{margin-left:auto;overflow:hidden;text-overflow:ellipsis}
+.st-hint.note{color:var(--fg)}
+.st-hint.swap{animation:swap .18s var(--ease)}
+@keyframes swap{from{opacity:0;transform:translateY(40%)}}
+.appear{animation:appear .18s var(--ease) both}
+@keyframes appear{from{opacity:0;transform:translateY(6px)}}
+.pal[hidden]{display:none}
+.pal{position:absolute;inset:0;z-index:5;display:flex;justify-content:center;align-items:flex-start;padding-top:64px;background:var(--scrim)}
+.pbox{width:560px;overflow:hidden;background:var(--panel);border:1px solid var(--border);border-radius:6px;box-shadow:0 24px 48px -12px var(--shade);animation:palIn .18s var(--ease)}
+@keyframes palIn{from{opacity:0;transform:translateY(-6px) scale(.985)}}
+.pin{height:44px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid var(--border);color:var(--fg3)}
+.pin input{font-size:14px}
+.plist{max-height:330px;overflow-y:auto;padding:6px;scrollbar-width:none}
+.pg{padding:8px 8px 4px;font:400 10.5px/1.45 var(--mono);letter-spacing:1px;text-transform:uppercase;color:var(--fg3)}
+.pi{height:30px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 8px;border-radius:4px;cursor:pointer}
+.pi.on{background:var(--sel)}
+.pi .pt{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.pi .mono{white-space:nowrap;color:var(--fg3)}
+.pi .pk{color:var(--fg2)}
+.pnone{padding:18px 8px;color:var(--fg3)}
+.pfoot{height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;border-top:1px solid var(--border)}
+.pfoot .mono{font-size:10.5px;color:var(--fg3)}
+.back{display:none;height:40px;margin-left:-6px;padding:0 10px 0 6px;align-items:center;gap:4px;border:0;background:none;cursor:pointer;font-weight:500!important}
+.back .ic{width:15px;height:15px}
+/* Below 620px the whole window would shrink to unreadable type, so the demo narrows to the app's phone
+   width instead: the thread list, and a tap opens the thread in its place. fit() sets the scale. */
+.win.narrow{width:400px;left:calc(50% - 200px * var(--k,1))}
+.win.narrow .side,.win.narrow .search,.win.narrow .read,.win.narrow .st-acc,.win.narrow .tb .mono,.win.narrow .tpos{display:none}
+.win.narrow .sync{margin-left:auto}
+.win.narrow .list{flex:1;width:auto;min-width:0;border-right:0}
+.win.narrow.open .list,.win.narrow.open .ttl{display:none}
+.win.narrow.open .read,.win.narrow.open .back{display:flex}
+.win.narrow .rbody{padding:18px 18px 14px}
+.win.narrow .pbox{width:calc(100% - 24px)}
+
+/* ---------- Shared section type ---------- */
+.band{padding-block:clamp(96px,12vw,160px)}
+/* On a phone the full gap reads as an empty screen while the tone changes inside it. */
+@media (max-width:620px){.band{padding-block:72px}}
+/* Two bands in the same tone read as one section: no second gap between them. */
+.band[data-tone="light"]+.band[data-tone="light"],.band[data-tone="dark"]+.band[data-tone="dark"]{padding-top:0}
+.head{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:24px 56px;align-items:end}
+h2{margin:0;font-weight:600;font-size:clamp(34px,4.6vw,58px);line-height:1.02;letter-spacing:-.032em;color:var(--ink-strong);text-wrap:balance}
+.head p{margin:0;max-width:34rem;font-size:17.5px;color:var(--ink2);text-wrap:pretty}
+@media (max-width:900px){.head{grid-template-columns:minmax(0,1fr)}}
+
+/* ---------- Pieces ---------- */
+.pieces{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));column-gap:clamp(24px,4vw,56px);row-gap:clamp(64px,8vw,104px);margin-top:clamp(64px,8vw,112px)}
+.piece:nth-child(3n+2){margin-top:128px}
+.piece:nth-child(3n){margin-top:52px}
+.piece-in{display:flex;flex-direction:column;gap:20px;will-change:transform}
+.frag{width:100%;max-width:380px;background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:6px;box-shadow:0 22px 44px -22px var(--shade);font:400 13px/1.45 var(--sans);overflow:hidden}
+.frag .mono{font-size:11px;color:var(--fg3)}
+.cap h3{margin:0;display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:17px;font-weight:600;color:var(--ink-strong)}
+.cap h3 .mono{font-size:12.5px;font-weight:400;color:var(--ink2)}
+.cap p{margin:6px 0 0;max-width:24rem;font-size:15px;line-height:1.55;color:var(--ink2)}
+.f-pad{padding:12px}
+.f-field{height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--blue);border-radius:5px;background:var(--bg);color:var(--fg3)}
+.f-field span{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--fg)}
+.caret{width:1px;height:15px;background:var(--fg);margin-left:-6px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.f-row{margin-top:10px;padding:9px 10px;border-radius:4px;background:var(--sel)}
+.f-row .r1 .mono{color:var(--fg2)}
+.f-chips{display:flex;flex-wrap:wrap;gap:6px}
+.f-drop{margin-top:10px;height:56px;display:grid;place-items:center;border:1px dashed var(--blue);border-radius:5px;color:var(--blue);font-size:12.5px}
+.f-side{padding:2px 8px 10px;background:var(--bg2)}
+.f-side .srow{cursor:default}
+.f-side .srow:hover{background:none}
+@media (max-width:960px){.pieces{grid-template-columns:repeat(2,minmax(0,1fr))}.piece:nth-child(n){margin-top:0}.piece:nth-child(2n){margin-top:72px}}
+@media (max-width:620px){.pieces{grid-template-columns:minmax(0,1fr)}.piece:nth-child(n){margin-top:0}}
+
+/* ---------- Keys ---------- */
+.seg{display:inline-flex;padding:3px;border:1px solid var(--line);border-radius:7px;background:var(--page)}
+.seg button{height:34px;padding:0 16px;border:0;border-radius:5px;background:none;cursor:pointer;font:500 14.5px var(--sans);color:var(--ink2);transition:background-color .15s,color .15s}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink-strong);box-shadow:0 0 0 1px var(--line),0 2px 6px -2px var(--shade)}
+.head-side{display:flex;flex-direction:column;gap:22px;align-items:flex-start}
+.keygrid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:40px clamp(24px,3vw,40px);margin-top:clamp(48px,6vw,72px)}
+.kg h3{margin:0;padding-bottom:10px;border-bottom:1px solid var(--ink3);font:400 12px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+.kr{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:15px}
+.ks{display:flex;align-items:center;gap:4px;flex:none}
+.ks .or{margin:0 3px;font-size:12px;color:var(--ink2)}
+kbd.changed{animation:flash 1.4s var(--ease)}
+@keyframes flash{0%,30%{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}}
+.note{margin:32px 0 0;max-width:44rem;font-size:15.5px;color:var(--ink2)}
+@media (max-width:1000px){.keygrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:560px){.keygrid{grid-template-columns:minmax(0,1fr)}}
+
+/* ---------- Core ---------- */
+.core{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:56px clamp(40px,6vw,96px);align-items:start}
+.core .lead-p{margin:24px 0 0;max-width:32rem;font-size:17.5px;color:var(--ink2)}
+.term{margin-top:40px;border:1px solid var(--line);border-radius:8px;background:var(--surface);overflow:hidden}
+.term-h{height:34px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid var(--line);font-size:12px;color:var(--ink2)}
+.term-b{overflow-x:auto}
+.term pre{margin:0;padding:16px 18px;font:400 13px/1.8 var(--mono);color:var(--ink)}
+.term .p,.term .c{color:var(--ink2)}
+/* A phone fits each command line; longer ones still scroll inside the block. */
+@media (max-width:520px){.term pre{padding:14px 12px;font-size:12px}}
+.specs{margin:0;border-top:1px solid var(--line)}
+.spec{display:grid;grid-template-columns:8.5rem minmax(0,1fr);gap:20px;padding:18px 0;border-bottom:1px solid var(--line)}
+.spec dt{padding-top:2px;font:400 13px/1.5 var(--mono);color:var(--ink2)}
+.spec dd{margin:0;font-size:16px;line-height:1.55;color:var(--ink)}
+@media (max-width:900px){.core{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:520px){.spec{grid-template-columns:minmax(0,1fr);gap:4px}}
+
+/* ---------- Updates ---------- */
+.log-head{display:flex;justify-content:space-between;align-items:end;gap:24px;flex-wrap:wrap}
+.log-head a{font-size:15px;color:var(--accent);text-decoration:none}
+.log-head a:hover{text-decoration:underline;text-underline-offset:3px}
+.log{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:48px clamp(24px,4vw,48px);margin-top:clamp(48px,6vw,64px)}
+.entry{padding-top:18px;border-top:1px solid var(--line)}
+.entry time{font-size:12.5px;color:var(--ink2)}
+.entry h3{margin:8px 0;font-size:19px;font-weight:600;letter-spacing:-.01em;color:var(--ink-strong)}
+.entry p{margin:0;font-size:15.5px;color:var(--ink2);text-wrap:pretty}
+.entry kbd{font-size:11.5px}
+.stand{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1fr) minmax(0,1fr);gap:32px 48px;margin-top:clamp(72px,9vw,112px);padding:clamp(24px,3vw,36px);border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+.stand h3{margin:0;font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1.2;color:var(--ink-strong)}
+.stand .sub{margin:10px 0 0;font-size:15px;color:var(--ink2)}
+.stand h4{margin:0 0 12px;font:400 12px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+.stand ul{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.stand li{display:flex;gap:12px;font-size:15.5px;line-height:1.45}
+.stand li::before{content:"";flex:none;width:7px;height:7px;margin-top:.5em;border-radius:50%;background:var(--green)}
+.stand .next li::before{background:none;box-shadow:inset 0 0 0 1.5px var(--ink3)}
+@media (max-width:960px){.log{grid-template-columns:repeat(2,minmax(0,1fr))}.stand{grid-template-columns:repeat(2,minmax(0,1fr))}.stand>div:first-child{grid-column:1/-1}}
+@media (max-width:620px){.log,.stand{grid-template-columns:minmax(0,1fr)}}
+
+/* ---------- Phones ---------- */
+.phones{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:48px clamp(24px,4vw,56px);margin:clamp(56px,7vw,96px) 0 0;padding:0;list-style:none}
+.phone{display:flex;flex-direction:column;gap:22px}
+/* A flat outline in the screen's own shape: no bezel, no gloss. 10.5%/4.85% ≈ a 41pt corner on a 390×844 screen. */
+.screen{max-width:300px;overflow:hidden;border:1px solid var(--line);border-radius:10.5%/4.85%;background:var(--page2)}
+.screen img{display:block;width:100%;height:auto}
+/* The shots follow the section's tone; the hidden one is lazy and never loads. */
+#phones[data-tone="light"] .shot-d,#phones:not([data-tone="light"]) .shot-l{display:none}
+@media (max-width:760px){
+  /* Side by side, one swipe apart; the next phone peeks in from the edge. */
+  .phones{display:flex;gap:20px;overflow-x:auto;scroll-snap-type:x mandatory;overscroll-behavior-x:contain;scrollbar-width:none;
+    margin-inline:calc(-1 * clamp(16px,4vw,40px));padding-inline:clamp(16px,4vw,40px);scroll-padding-inline:clamp(16px,4vw,40px)}
+  .phones::-webkit-scrollbar{display:none}
+  .phone{flex:0 0 min(74vw,280px);scroll-snap-align:start}
+}
+
+/* ---------- Get ---------- */
+.get{padding-top:clamp(64px,8vw,112px)}
+.get-head{display:flex;justify-content:space-between;align-items:end;flex-wrap:wrap;gap:24px 56px}
+.get-head p{margin:22px 0 0;max-width:34rem;font-size:17.5px;color:var(--ink2);text-wrap:pretty}
+.get-head .ver{margin:0 0 14px;font-size:13px;color:var(--ink2)}
+.get-links{display:flex;flex-wrap:wrap;gap:8px 24px;font-size:15px}
+.get-links a,.os a:not(.btn),.get-notes a,.src a{color:var(--accent);text-decoration:none}
+.get-links a:hover,.os a:not(.btn):hover{text-decoration:underline;text-underline-offset:3px}
+/* Links inside running text also get a hairline underline: their colour alone sits too close to the text around them. */
+.get-notes a,.src a{text-decoration-line:underline;text-decoration-thickness:1px;text-underline-offset:3px;text-decoration-color:color-mix(in srgb,currentColor 45%,transparent)}
+.get-notes a:hover,.src a:hover{text-decoration-color:currentColor}
+.dl{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:48px clamp(24px,3vw,40px);margin:clamp(48px,6vw,64px) 0 0;padding:0;list-style:none}
+.os{min-width:0;padding-top:18px;border-top:1px solid var(--line)}
+.os h3{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em;color:var(--ink-strong)}
+.os .fname{display:block;margin-top:4px;font-size:12.5px;color:var(--ink2)}
+.os .btn{width:100%;margin-top:16px}
+.os .req{margin:16px 0 0;font-size:15px;line-height:1.5;color:var(--ink)}
+.os ol{display:grid;gap:8px;margin:12px 0 0;padding-left:1.25em;font-size:14.5px;line-height:1.5;color:var(--ink2)}
+.os ol li::marker{font:400 12px var(--mono);color:var(--ink2)}
+.os .aside{margin:12px 0 0;font-size:14.5px;line-height:1.5;color:var(--ink2)}
+/* Commands run on in the text: no box, so a long one can wrap without breaking into pieces. */
+.get code,.head code{font:400 .88em/1.5 var(--mono);color:var(--ink);overflow-wrap:anywhere}
+.get-notes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:32px clamp(24px,3vw,40px);margin-top:clamp(48px,6vw,72px)}
+.get-notes h3{margin:0 0 10px;font:400 12px/1.4 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+.get-notes p{margin:0;font-size:15px;line-height:1.55;color:var(--ink2);text-wrap:pretty}
+.get-notes p+p{margin-top:8px}
+.src{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:28px clamp(40px,6vw,96px);align-items:start;margin-top:clamp(72px,9vw,112px);padding-top:clamp(28px,3vw,36px);border-top:1px solid var(--line)}
+.src h3{margin:0;font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1.2;color:var(--ink-strong)}
+.src p{margin:12px 0 0;max-width:32rem;font-size:15.5px;color:var(--ink2);text-wrap:pretty}
+.src .term{margin-top:0}
+.wordmark{margin:clamp(72px,10vw,140px) 0 0;font-weight:600;font-size:clamp(72px,23vw,330px);line-height:.8;letter-spacing:-.06em;color:var(--ink-strong);white-space:nowrap}
+.foot{display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px 24px;margin-top:36px;padding-block:22px calc(44px + env(safe-area-inset-bottom,0px));border-top:1px solid var(--line);font-size:12.5px;color:var(--ink2)}
+.foot nav{display:flex;gap:18px}
+.foot a{text-decoration:none}
+.foot a:hover{color:var(--ink)}
+@media (max-width:1000px){.dl{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:900px){.src{grid-template-columns:minmax(0,1fr)}}
+/* Three columns squeeze the inline commands into a ribbon on a tablet: two, with mailctl across both. */
+@media (max-width:1000px){.get-notes{grid-template-columns:repeat(2,minmax(0,1fr))}.get-notes>:last-child{grid-column:1/-1}.get-notes>:last-child p{max-width:40rem}}
+@media (max-width:760px){.get-notes{grid-template-columns:minmax(0,1fr)}}
+/* On a phone the card for the phone it is open on comes first (the script marks it). */
+@media (max-width:560px){.dl{grid-template-columns:minmax(0,1fr)}.os.mine{order:-1}}
+
+/* Touch screens: the small controls get a target of about 40px; the negative margins keep the layout as drawn. */
+@media (pointer:coarse){
+  .btn-sm,.seg button{height:40px}
+  .foot a,.get-links a,.log-head a,.linkbtn{display:inline-block;padding-block:10px;margin-block:-10px}
+  .logo{padding-block:8px}
+}
+
+@media (prefers-reduced-motion:reduce){
+  html:focus-within{scroll-behavior:auto}
+  body{transition-duration:0s}
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-tray" viewBox="0 0 16 16"><path d="M2.5 9.5 4 3.5h8l1.5 6v3h-11z"/><path d="M2.5 9.5h3l1 1.5h3l1-1.5h3"/></symbol>
+  <symbol id="i-star" viewBox="0 0 16 16"><path d="M8 2.2l1.75 3.6 3.95.55-2.87 2.77.7 3.93L8 11.2l-3.53 1.85.7-3.93L2.3 6.35l3.95-.55z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M8 4.8V8l2.2 1.4"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 16 16"><path d="M4 2h5.5L12 4.5V14H4z"/><path d="M6 7.5h4M6 10h4"/></symbol>
+  <symbol id="i-send" viewBox="0 0 16 16"><path d="M2 7.5 14 2l-4.5 12-2-5z"/><path d="M7.5 9 14 2"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 16 16"><path d="M2 3h12v3H2z"/><path d="M3 6v7h10V6"/><path d="M6.5 8.5h3"/></symbol>
+  <symbol id="i-junk" viewBox="0 0 16 16"><path d="M8 1.8 13 3.6v4.2c0 3-2.1 5.2-5 6.4-2.9-1.2-5-3.4-5-6.4V3.6z"/><path d="m6.2 6.2 3.6 3.6m0-3.6L6.2 9.8"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.5 4.5h11M6 4.5V2.8h4v1.7M4 4.5l.7 9h6.6l.7-9"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="m10.2 10.2 3.6 3.6"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6 5 5M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/></symbol>
+  <symbol id="i-clip" viewBox="0 0 16 16"><path d="M10.5 4.5 5.8 9.2a1.3 1.3 0 0 0 1.9 1.9l5-5a2.6 2.6 0 0 0-3.7-3.7L3.9 7.5a3.9 3.9 0 0 0 5.5 5.5l3.7-3.7"/></symbol>
+  <symbol id="i-reply" viewBox="0 0 16 16"><path d="M6.5 3.5 2.5 7.5l4 4"/><path d="M2.5 7.5H9a4.5 4.5 0 0 1 4.5 4.5v.5"/></symbol>
+  <symbol id="i-fwd" viewBox="0 0 16 16"><path d="m9.5 3.5 4 4-4 4"/><path d="M13.5 7.5H7a4.5 4.5 0 0 0-4.5 4.5v.5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.2c0-.6.4-1 1-1h3.3l1.4 1.6H13c.6 0 1 .4 1 1V12c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1z"/></symbol>
+  <symbol id="i-image" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="6.6" r="1.2"/><path d="m2.5 12 3.8-3.6 2.5 2.3 1.9-1.6 2.8 2.6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 16 16"><path d="M10 3.5 5.5 8l4.5 4.5"/></symbol>
+  <symbol id="i-mark" viewBox="0 0 20 20"><rect x="1.75" y="3.25" width="16.5" height="13.5" rx="3.25"/><path d="M8 8.25h6.5M8 11.75h6.5"/></symbol>
+</svg>
+
+<header class="nav" id="nav">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="Flomsi, back to top">
+      <svg class="ic" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-mark"/><circle cx="5.1" cy="8.25" r="1.35" fill="var(--accent)" stroke="none"/></svg>
+      Flomsi
+    </a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#pieces">Features</a>
+      <a href="#phones">Phones</a>
+      <a href="#keys">Keys</a>
+      <a href="#core">Core</a>
+      <a href="#updates">Updates</a>
+    </nav>
+    <div class="nav-end">
+      <a class="gh" href="https://github.com/zondaxxx/Flomsi">GitHub</a>
+      <a class="btn btn-p btn-sm" href="#get">Get Flomsi</a>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+
+<section class="hero" data-tone="dark" aria-labelledby="h-hero">
+  <div class="wrap">
+    <p class="eyebrow rise">Open-source mail for macOS, Windows, iOS and Android</p>
+    <h1 id="h-hero" class="rise d1"><span>Mail,</span><span>keyboard first<i class="dot" aria-hidden="true"></i></span></h1>
+    <p class="lede rise d2"><kbd>j</kbd> and <kbd>k</kbd> move through threads, <kbd>e</kbd> archives, <kbd class="modk">⌘K</kbd> opens the command list. A Rust core keeps your recent mail on the device, so search, archive, star and move answer at once, even offline.</p>
+    <div class="ctas rise d3">
+      <a class="btn btn-p" href="#get">Get Flomsi</a>
+      <a class="btn btn-s" href="https://github.com/zondaxxx/Flomsi">Source on GitHub</a>
+    </div>
+  </div>
+
+  <div class="stage rise d4" id="stage">
+    <div class="tilt" id="tilt">
+      <div class="frame" id="frame">
+        <div class="win" id="win" role="application" aria-label="Flomsi demo window. j and k move, e archives, h snoozes, slash searches, command K opens commands.">
+          <div class="topbar">
+            <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+            <button class="back" id="back" type="button" tabindex="-1"><svg class="ic"><use href="#i-back"/></svg><span id="backLbl">Inbox</span></button>
+            <div class="ttl"><b id="tName">Inbox</b><span class="mono" id="tCount"></span></div>
+            <label class="search">
+              <svg class="ic"><use href="#i-search"/></svg>
+              <input id="q" type="text" placeholder="Search mail or run a command" autocomplete="off" spellcheck="false" aria-label="Search the demo inbox">
+              <span class="mono">⌘K</span>
+            </label>
+            <div class="sync"><i id="syncDot"></i><span class="mono">synced 09:41</span><button class="qbtn" id="qbtn" type="button" tabindex="-1" aria-label="Commands">?</button></div>
+          </div>
+          <div class="panes">
+            <div class="side">
+              <div class="side-list" id="side"></div>
+              <div class="side-foot"><span>+ Add account</span><svg class="ic"><use href="#i-gear"/></svg></div>
+            </div>
+            <div class="list">
+              <div class="filters" id="filters"></div>
+              <div class="rows" id="rows" role="listbox" aria-label="Threads"></div>
+            </div>
+            <div class="read">
+              <div class="tbar">
+                <button class="tb" type="button" tabindex="-1" data-act="reply"><svg class="ic"><use href="#i-reply"/></svg>Reply <span class="mono">r</span></button>
+                <button class="tb" type="button" tabindex="-1" data-act="reply" aria-label="Forward"><svg class="ic"><use href="#i-fwd"/></svg><span class="mono">f</span></button>
+                <span class="tb-sep"></span>
+                <button class="tb" type="button" tabindex="-1" data-act="archive"><svg class="ic"><use href="#i-archive"/></svg>Archive <span class="mono">e</span></button>
+                <button class="tb" type="button" tabindex="-1" data-act="snooze"><svg class="ic"><use href="#i-clock"/></svg><span id="snzLbl">Snooze</span> <span class="mono" data-key="snooze">h</span></button>
+                <button class="tb" type="button" tabindex="-1" data-act="move"><svg class="ic"><use href="#i-folder"/></svg>Move <span class="mono">l</span></button>
+                <button class="tb" type="button" tabindex="-1" data-act="delete" aria-label="Delete"><svg class="ic"><use href="#i-trash"/></svg><span class="mono">#</span></button>
+                <span class="mono tpos" id="tpos"></span>
+              </div>
+              <div class="rbody" id="rbody"></div>
+              <div class="qr">
+                <label><input id="qr" type="text" autocomplete="off" placeholder="Reply" aria-label="Quick reply"></label>
+                <button class="send" type="button" tabindex="-1" id="sendBtn"><svg class="ic"><use href="#i-send"/></svg>Send <span class="mono">⌘↵</span></button>
+              </div>
+            </div>
+          </div>
+          <div class="status mono" id="status">
+            <span class="st-t" id="stT">INBOX</span>
+            <span id="stPos"></span>
+            <span class="st-acc">gmail · icloud · yandex</span>
+            <span class="st-hint" id="stHint"></span>
+          </div>
+          <div class="pal" id="pal" hidden>
+            <div class="pbox" role="dialog" aria-label="Command palette">
+              <div class="pin"><svg class="ic"><use href="#i-search"/></svg><input id="palq" type="text" autocomplete="off" spellcheck="false" aria-label="Filter commands"></div>
+              <div class="plist" id="plist" role="listbox"></div>
+              <div class="pfoot"><span class="mono">↑↓ navigate &nbsp; ↵ run &nbsp; esc close</span><span class="mono" id="pcount"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p class="demo-hint wrap" id="hint"></p>
+</section>
+
+<section class="band" id="pieces" data-tone="light" aria-labelledby="h-pieces">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="h-pieces">The common actions have keys, and the keys are on screen.</h2>
+      <p>Flomsi prints the shortcut next to the action: in the toolbar, in the command palette, in the status line at the bottom. You pick the keys up by using the app, not by studying a cheat sheet.</p>
+    </div>
+
+    <div class="pieces">
+      <div class="piece"><div class="piece-in" data-speed="-0.06">
+        <div class="frag" aria-hidden="true">
+          <div class="pin"><svg class="ic"><use href="#i-search"/></svg><span style="color:var(--fg)">sta</span><i class="caret"></i></div>
+          <div class="plist">
+            <div class="pg">Message</div>
+            <div class="pi on"><span>Star / Unstar</span><span class="mono" data-key="star">*</span></div>
+            <div class="pg">Go</div>
+            <div class="pi"><span>Go to Starred</span><span class="mono">g s</span></div>
+          </div>
+          <div class="pfoot"><span class="mono">↑↓ navigate &nbsp; ↵ run &nbsp; esc close</span><span class="mono">2 results</span></div>
+        </div>
+        <div class="cap"><h3>Command palette <span class="mono modk">⌘K</span></h3><p>Commands in one searchable list, each with its key beside it.</p></div>
+      </div></div>
+
+      <div class="piece"><div class="piece-in" data-speed="0.05">
+        <div class="frag" aria-hidden="true">
+          <div class="pin"><svg class="ic"><use href="#i-clock"/></svg><span>Snooze until…</span></div>
+          <div class="plist">
+            <div class="pg">Snooze</div>
+            <div class="pi"><span>Later today</span><span class="mono">today 18:00</span></div>
+            <div class="pi on"><span>Tomorrow</span><span class="mono">tomorrow 08:00</span></div>
+            <div class="pi"><span>This weekend</span><span class="mono">Sat 26 Sep 09:00</span></div>
+            <div class="pi"><span>Next week</span><span class="mono">Mon 28 Sep 08:00</span></div>
+          </div>
+        </div>
+        <div class="cap"><h3>Snooze <span class="mono" data-key="snooze">h</span></h3><p>Hide a thread until later. When the time comes it returns to the top of the inbox, unread.</p></div>
+      </div></div>
+
+      <div class="piece"><div class="piece-in" data-speed="-0.03">
+        <div class="frag f-pad" aria-hidden="true">
+          <div class="f-field"><svg class="ic"><use href="#i-search"/></svg><span>from:anna has:attachment after:2026-09</span></div>
+          <div class="f-row">
+            <div class="r1"><span class="sender">Anna Sokolova</span><span class="mono">2</span><svg class="ic"><use href="#i-clip"/></svg><span class="mono">09:40</span></div>
+            <div class="r2"><span class="subj">Re: Design review Thursday</span><span class="snip">  —  Moving it to 15:00…</span></div>
+          </div>
+        </div>
+        <div class="cap"><h3>Search <span class="mono">/</span></h3><p>from:, to:, subject:, has:attachment, is:unread, is:starred, before:, after:, in:, account:. Full text over the mail on the device, and Search on the server for the rest.</p></div>
+      </div></div>
+
+      <div class="piece"><div class="piece-in" data-speed="0.04">
+        <div class="frag f-pad" aria-hidden="true">
+          <div class="f-chips">
+            <span class="file"><svg class="ic"><use href="#i-clip"/></svg>invoice-2026-09.pdf <span class="mono">84 KB</span></span>
+            <span class="file"><svg class="ic"><use href="#i-clip"/></svg>list-v3.fig <span class="mono">12.4 MB</span></span>
+            <span class="file"><svg class="ic"><use href="#i-clip"/></svg>contrast.png <span class="mono">482 KB</span></span>
+          </div>
+          <div class="f-drop">Drop files to attach</div>
+        </div>
+        <div class="cap"><h3>Attachments <span class="mono modk">⌘⇧A</span></h3><p>Drag files onto the composer, open or save with one click, forward with the originals. Files that can run code are not opened from the mail.</p></div>
+      </div></div>
+
+      <div class="piece"><div class="piece-in" data-speed="-0.05">
+        <div class="frag f-pad" aria-hidden="true">
+          <div class="blocked" style="margin:0"><svg class="ic"><use href="#i-image"/></svg><span class="mono" style="color:var(--fg2)">1 image blocked</span><span class="mini-btn" style="display:inline-flex;align-items:center">Load images</span></div>
+          <p style="margin:12px 2px 2px;color:var(--fg2);font-size:13px">Hi, your invoice for <b style="color:var(--fg);font-weight:500">September</b> is paid. Thank you.</p>
+        </div>
+        <div class="cap"><h3>Remote images <span class="mono">off by default</span></h3><p>Mail HTML is cleaned in the Rust core and drawn without a WebView or JavaScript. Trackers stay out until you click.</p></div>
+      </div></div>
+
+      <div class="piece"><div class="piece-in" data-speed="0.06">
+        <div class="frag f-side" aria-hidden="true">
+          <div class="sec">Accounts</div>
+          <div class="srow"><span class="lead"><i class="acc-dot" style="background:var(--green)"></i></span><span class="lbl">dev@gmail.com</span><span class="mono">2</span></div>
+          <div class="srow"><span class="lead"><i class="acc-dot" style="background:var(--blue)"></i></span><span class="lbl">me@icloud.com</span><span class="mono">1</span></div>
+          <div class="srow"><span class="lead"><i class="acc-dot" style="background:var(--yellow)"></i></span><span class="lbl">work@yandex.ru</span><span class="mono"></span></div>
+          <div class="sec">Mailboxes</div>
+          <div class="srow"><span class="lead"><svg class="ic"><use href="#i-tray"/></svg></span><span class="lbl">Inbox</span><span class="mono">3</span></div>
+          <div class="srow"><span class="lead"><svg class="ic"><use href="#i-star"/></svg></span><span class="lbl">Starred</span><span class="mono">1</span></div>
+          <div class="srow"><span class="lead"><svg class="ic"><use href="#i-archive"/></svg></span><span class="lbl">Archive</span><span class="mono"></span></div>
+        </div>
+        <div class="cap"><h3>Accounts <span class="mono">IMAP · SMTP</span></h3><p>Gmail, iCloud, Yandex, Mail.ru, Fastmail or any IMAP server, with an app password. One inbox for all of them, or one account at a time.</p></div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="phones" data-tone="dark" aria-labelledby="h-phones">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="h-phones">The same inbox on your phone.</h2>
+      <p>On a phone the panes and the keys give way to a bar of buttons, swipes, and screens of their own for a conversation, a new message and settings. Touch targets are 48 points, and the theme follows the system.</p>
+    </div>
+    <ul class="phones">
+      <li class="phone">
+        <div class="screen">
+          <img class="shot-d" src="img/phone-inbox-dark.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi on a phone: the inbox for all accounts, with Mailboxes, Search, Unread and Compose in a bar at the bottom.">
+          <img class="shot-l" src="img/phone-inbox-light.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi on a phone: the inbox for all accounts, with Mailboxes, Search, Unread and Compose in a bar at the bottom.">
+        </div>
+        <div class="cap"><h3>A bar at the bottom</h3><p>Mailboxes, Search, Unread and Compose sit under your thumb. Tap the account line under the title to switch accounts or see them all.</p></div>
+      </li>
+      <li class="phone">
+        <div class="screen">
+          <img class="shot-d" src="img/phone-menu-dark.webp" width="390" height="844" loading="lazy" decoding="async" alt="The menu that opens on a long press: Reply, Forward, Archive, Delete, Move to, Snooze, Star and Mark as unread.">
+          <img class="shot-l" src="img/phone-menu-light.webp" width="390" height="844" loading="lazy" decoding="async" alt="The menu that opens on a long press: Reply, Forward, Archive, Delete, Move to, Snooze, Star and Mark as unread.">
+        </div>
+        <div class="cap"><h3>Long press and swipe</h3><p>Hold a message for its menu. Swipe right to archive, left to delete. Archive, delete and move wait five seconds with Undo before they reach the server.</p></div>
+      </li>
+      <li class="phone">
+        <div class="screen">
+          <img class="shot-d" src="img/phone-welcome-dark.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, Sign in with Microsoft, and Other email account.">
+          <img class="shot-l" src="img/phone-welcome-light.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, Sign in with Microsoft, and Other email account.">
+        </div>
+        <div class="cap"><h3>Sign in</h3><p>Continue with Google or Microsoft on the provider's own page, or add any IMAP account with step-by-step app-password instructions. The Google button comes with the next build; Microsoft sign-in follows later.</p></div>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section class="band" id="keys" data-tone="light" aria-labelledby="h-keys">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="h-keys">Vim or Gmail. Keep the keys your hands already know.</h2>
+      <div class="head-side">
+        <p>Two presets ship with the app. Each is a small JSON file in <code>app/assets/keymaps</code>, so changing a key is a one-line edit and a rebuild. The demo at the top follows the preset you pick here.</p>
+        <div class="seg" role="group" aria-label="Key preset">
+          <button type="button" id="pVim" aria-pressed="true">vim</button>
+          <button type="button" id="pGmail" aria-pressed="false">gmail</button>
+        </div>
+      </div>
+    </div>
+    <div class="keygrid" id="keygrid">
+      <!-- The vim preset as plain HTML, for a page read without scripts; renderKeys() redraws it. -->
+      <div class="kg"><h3>Move</h3><div class="kr"><span>Next thread</span><span class="ks"><kbd>j</kbd></span></div><div class="kr"><span>Previous thread</span><span class="ks"><kbd>k</kbd></span></div><div class="kr"><span>Open</span><span class="ks"><kbd>↵</kbd><span class="or">or</span><kbd>o</kbd></span></div><div class="kr"><span>Back</span><span class="ks"><kbd>esc</kbd><span class="or">or</span><kbd>u</kbd></span></div></div>
+      <div class="kg"><h3>Act</h3><div class="kr"><span>Archive</span><span class="ks"><kbd>e</kbd></span></div><div class="kr"><span>Delete</span><span class="ks"><kbd>#</kbd></span></div><div class="kr"><span>Snooze</span><span class="ks"><kbd>h</kbd></span></div><div class="kr"><span>Star</span><span class="ks"><kbd>*</kbd></span></div><div class="kr"><span>Move to folder</span><span class="ks"><kbd>l</kbd></span></div></div>
+      <div class="kg"><h3>Write</h3><div class="kr"><span>New message</span><span class="ks"><kbd>c</kbd></span></div><div class="kr"><span>Reply</span><span class="ks"><kbd>r</kbd></span></div><div class="kr"><span>Reply all</span><span class="ks"><kbd>a</kbd></span></div><div class="kr"><span>Forward</span><span class="ks"><kbd>f</kbd></span></div><div class="kr"><span>Send</span><span class="ks"><kbd>⌘↵</kbd></span></div></div>
+      <div class="kg"><h3>Go</h3><div class="kr"><span>Inbox</span><span class="ks"><kbd>g</kbd><kbd>i</kbd></span></div><div class="kr"><span>Starred</span><span class="ks"><kbd>g</kbd><kbd>s</kbd></span></div><div class="kr"><span>Archive</span><span class="ks"><kbd>g</kbd><kbd>a</kbd></span></div><div class="kr"><span>Search</span><span class="ks"><kbd>/</kbd></span></div><div class="kr"><span>Commands</span><span class="ks"><kbd>⌘K</kbd><span class="or">or</span><kbd>?</kbd></span></div><div class="kr"><span>Settings</span><span class="ks"><kbd>⌘,</kbd></span></div></div>
+    </div>
+    <p class="note">Reply, reply all and forward work in an open conversation: <kbd>↵</kbd> or <kbd>o</kbd> opens it. Single-key shortcuts only fire outside text fields, so typing an <kbd>e</kbd> in search types an e; it never archives the thread you were reading.</p>
+  </div>
+</section>
+
+<section class="band" id="core" data-tone="dark" aria-labelledby="h-core">
+  <div class="wrap core">
+    <div>
+      <h2 id="h-core">A Rust core that answers before the server does.</h2>
+      <p class="lead-p">Archive, delete, star and move land in a local SQLite database first. An outbox replays them to the server two seconds later and survives a lost connection, so the list never waits on the network.</p>
+      <div class="term">
+        <div class="term-h mono">mailctl · the same mailbox from a terminal</div>
+        <div class="term-b"><pre><span class="p">$</span> mailctl add-imap --email you@gmail.com \
+    --host imap.gmail.com \
+    --smtp-host smtp.gmail.com
+<span class="p">$</span> mailctl sync
+<span class="p">$</span> mailctl ls "is:unread"
+<span class="p">$</span> mailctl reply 12 --text "Works for me."
+<span class="p">$</span> mailctl save 345 1 --dir ~/Downloads</pre></div>
+      </div>
+    </div>
+    <dl class="specs">
+      <div class="spec"><dt>push</dt><dd>IMAP IDLE on each account's inbox and a full sync every 10 minutes while Flomsi runs. Local changes reach the server within seconds. Phones check when the app is opened.</dd></div>
+      <div class="spec"><dt>cache</dt><dd>The newest 200 messages of Inbox, Sent and Archive (All Mail on Gmail) to start, 50 of Junk and Trash. Load older mail brings 200 more at a time.</dd></div>
+      <div class="spec"><dt>search</dt><dd>SQLite FTS5 over the mail on the device, with one query language in the app and in the CLI. Search on the server looks past the cache.</dd></div>
+      <div class="spec"><dt>html mail</dt><dd>Cleaned in the core and drawn without a WebView or JavaScript. Remote images wait for your click.</dd></div>
+      <div class="spec"><dt>secrets</dt><dd>Passwords and tokens live in Keychain, in Windows Credential Manager, or on Android under a key held in the Android Keystore; never in the database.</dd></div>
+      <div class="spec"><dt>sending</dt><dd>SMTP over TLS on 465 or STARTTLS on 587, straight to the server, so it needs a connection. Bcc stays in the envelope.</dd></div>
+      <div class="spec"><dt>tested</dt><dd>IMAP and SMTP run end to end in CI on every push to main and every pull request: against scripted TLS servers and against real Dovecot and mailpit. The same run builds all four apps.</dd></div>
+      <div class="spec"><dt>platforms</dt><dd>One Rust core under a Flutter interface on macOS, Windows, iOS and Android.</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="band" id="updates" data-tone="light" aria-labelledby="h-updates">
+  <div class="wrap">
+    <div class="log-head">
+      <h2 id="h-updates">Recent changes</h2>
+      <a href="https://github.com/zondaxxx/Flomsi/commits/main">Full history on GitHub</a>
+    </div>
+    <div class="log">
+      <article class="entry"><time class="mono" datetime="2026-09-23T15:57+03:00">Sep 23</time><h3>Undo on phones</h3><p>Archive, delete and move wait five seconds with Undo before they reach the server. A conversation, a new message and settings each get a screen of their own.</p></article>
+      <article class="entry"><time class="mono" datetime="2026-09-23T14:38+03:00">Sep 23</time><h3>A phone layout</h3><p>A bottom bar with Mailboxes, Search, Unread and Compose, and dropdown menus for accounts and the rest. Swipe right to archive, left to delete, long press for everything else.</p></article>
+      <article class="entry"><time class="mono" datetime="2026-09-23T14:38+03:00">Sep 23</time><h3>Sign in with Google and Microsoft</h3><p>A start screen with Continue with Google, Sign in with Microsoft and Other email account. Sign-in happens on the provider's page and tokens refresh by themselves. The Google button reaches the downloads with the next build; Microsoft follows later.</p></article>
+      <article class="entry"><time class="mono" datetime="2026-09-23T14:12+03:00">Sep 23</time><h3>New-mail notifications</h3><p>On macOS, Windows and Android while Flomsi runs, one per conversation. On macOS, closing the window keeps mail coming in.</p></article>
+      <article class="entry"><time class="mono" datetime="2026-09-23T14:12+03:00">Sep 23</time><h3>Older mail and server search</h3><p>Load older mail at the end of the list brings 200 more messages. Search on the server looks past what is on the device.</p></article>
+      <article class="entry"><time class="mono" datetime="2026-09-23T02:46+03:00">Sep 23</time><h3>Move and snooze</h3><p><kbd>l</kbd> moves a thread to any folder of its account. <kbd data-key="snooze">h</kbd> hides it until later today, tomorrow, the weekend or next week.</p></article>
+    </div>
+
+    <div class="stand">
+      <div>
+        <h3>Where Flomsi stands</h3>
+        <p class="sub">Version 0.2.0, an early build. Here is what works and what comes next.</p>
+      </div>
+      <div>
+        <h4>Works today</h4>
+        <ul>
+          <li>App passwords for Gmail, iCloud, Yandex, Mail.ru, Fastmail and any IMAP server, with step-by-step guides</li>
+          <li>Several accounts in one inbox, or one at a time</li>
+          <li>Search, stars, snooze, and move to any folder</li>
+          <li>Attachments, and drafts saved on the device</li>
+          <li>New-mail notifications on macOS, Windows and Android while Flomsi runs</li>
+          <li>A phone layout with swipes and Undo</li>
+          <li>Vim and Gmail key presets, dark and light themes</li>
+        </ul>
+      </div>
+      <div class="next">
+        <h4>Coming next</h4>
+        <ul>
+          <li>Google sign-in in the downloads with the next build: it is in the code, but 0.2.0 was built before the app ID was added. Microsoft sign-in, which Outlook, Hotmail and Microsoft 365 need, comes after it.</li>
+          <li>Drafts synced with the server's Drafts folder</li>
+          <li>Gmail labels and your own folders in the sidebar</li>
+          <li>Gmail API, JMAP and Microsoft Graph</li>
+          <li>New mail on phones while the app is closed</li>
+          <li>Signed builds, and a macOS build for Intel Macs</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="get" id="get" data-tone="dark" aria-labelledby="h-get">
+  <div class="wrap">
+    <div class="get-head">
+      <div>
+        <p class="ver mono">Version 0.2.0 · 23 Sep 2026</p>
+        <h2 id="h-get">Get Flomsi</h2>
+        <p>Builds for macOS, Windows, Android and iOS. They are not signed by Apple, Microsoft or Google yet: macOS, Windows and Android ask once before they open them, and on iOS you sign the app yourself with AltStore or Sideloadly.</p>
+      </div>
+      <div class="get-links">
+        <a href="https://github.com/zondaxxx/Flomsi/releases/latest">Release notes (in Russian) and all files</a>
+        <a href="https://github.com/zondaxxx/Flomsi/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a>
+      </div>
+    </div>
+
+    <ul class="dl">
+      <li class="os" data-os="mac">
+        <h3>macOS</h3>
+        <span class="fname mono">Flomsi-macOS.zip · 25 MB</span>
+        <a class="btn btn-s" href="https://github.com/zondaxxx/Flomsi/releases/latest/download/Flomsi-macOS.zip">Download for macOS</a>
+        <p class="req">macOS 12 or later on Apple silicon. Intel Macs: build from source for now.</p>
+        <ol>
+          <li>Unzip the file and move Flomsi.app to Applications.</li>
+          <li>The app is not notarised, so the first launch is blocked. On macOS 15 and later, try to open it once, then click Open Anyway in System Settings → Privacy &amp; Security. On macOS 14 and earlier, Control-click the app, choose Open, then Open again.</li>
+        </ol>
+        <p class="aside">Or in Terminal: <code>xattr -dr com.apple.quarantine /Applications/Flomsi.app</code></p>
+      </li>
+      <li class="os" data-os="win">
+        <h3>Windows</h3>
+        <span class="fname mono">Flomsi-windows.zip · 18 MB</span>
+        <a class="btn btn-s" href="https://github.com/zondaxxx/Flomsi/releases/latest/download/Flomsi-windows.zip">Download for Windows</a>
+        <p class="req">64-bit Windows 10 or 11.</p>
+        <ol>
+          <li>Extract the whole zip into any folder and run Flomsi.exe. The DLLs next to it have to stay in the same folder.</li>
+          <li>The app is not code-signed. If SmartScreen says “Windows protected your PC”, click More info, then Run anyway.</li>
+        </ol>
+      </li>
+      <li class="os" data-os="android">
+        <h3>Android</h3>
+        <span class="fname mono">Flomsi-android.apk · 84 MB</span>
+        <a class="btn btn-s" href="https://github.com/zondaxxx/Flomsi/releases/latest/download/Flomsi-android.apk">Download for Android</a>
+        <p class="req">A 64-bit phone (arm64-v8a).</p>
+        <ol>
+          <li>Open the APK on the phone and allow installs from that source when Android asks.</li>
+          <li>Allow notifications to get new-mail alerts.</li>
+        </ol>
+        <p class="aside">0.2.0 is signed with a one-off key, so the next release will not install over it: uninstall 0.2.0 first and add your accounts again. Later releases use a permanent key.</p>
+      </li>
+      <li class="os" data-os="ios">
+        <h3>iOS</h3>
+        <span class="fname mono">Flomsi-iOS-unsigned.ipa · 15 MB</span>
+        <a class="btn btn-s" href="https://github.com/zondaxxx/Flomsi/releases/latest/download/Flomsi-iOS-unsigned.ipa">Download for iOS</a>
+        <p class="req">iOS 15 or later.</p>
+        <ol>
+          <li>The IPA is unsigned. Install it with AltStore or Sideloadly, which sign it with your Apple ID on the way in.</li>
+          <li>On iOS 16 and later, turn on Developer Mode in Settings → Privacy &amp; Security before the first launch.</li>
+          <li>With a free Apple ID the signature lasts 7 days. AltStore renews it while AltServer is reachable; with Sideloadly, install again.</li>
+        </ol>
+        <p class="aside">Mail is checked when you open the app; there are no alerts while it is closed.</p>
+      </li>
+    </ul>
+
+    <div class="get-notes">
+      <div>
+        <h3>Sign-in</h3>
+        <p>The 0.2.0 files were built before the app's sign-in IDs were added, so they have no sign-in buttons: add accounts with an app password. Google sign-in comes with the next build. Outlook, Hotmail and Microsoft 365 need Microsoft sign-in, which comes later.</p>
+        <p>When the buttons arrive, and until Google has verified Flomsi, Google's page will warn that the app is unverified: choose Advanced, then Go to Flomsi.</p>
+      </div>
+      <div>
+        <h3>Checksums</h3>
+        <p><a href="https://github.com/zondaxxx/Flomsi/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> covers every file. On Linux, <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code>. On macOS, <code>shasum -a 256 Flomsi-macOS.zip</code> and compare with its line. On Windows, <code>Get-FileHash Flomsi-windows.zip</code>.</p>
+      </div>
+      <div>
+        <h3>mailctl</h3>
+        <p>The terminal tool on the same core ships for Linux x86_64: <a href="https://github.com/zondaxxx/Flomsi/releases/latest/download/mailctl-linux-x86_64">mailctl-linux-x86_64</a>, 10 MB. Run <code>chmod +x</code> on it first. It reads the password from <code>$MAIL_PASSWORD</code> or asks, and keeps it in a Secret Service keyring such as GNOME Keyring or KWallet, which a bare server may not run. It is built on Ubuntu 24.04 and needs a glibc at least that new.</p>
+        <p>On macOS, build it with <code>make cli</code>. On Windows, run <code>cargo build --release -p mailctl</code> in <code>core/</code>, and pass <code>--data-dir %USERPROFILE%\.mail_</code> to open the app's mailbox. <a href="https://github.com/zondaxxx/Flomsi/blob/main/docs/SMOKE.md">docs/SMOKE.md</a> (in Russian) has a first check.</p>
+      </div>
+    </div>
+
+    <div class="src">
+      <div>
+        <h3>Build from source</h3>
+        <p>You need Rust (stable, through rustup) and Flutter, plus Xcode for macOS and iOS, or Visual Studio with the Desktop development with C++ workload for Windows. A build on your own Mac runs on Intel too: <code>flutter build macos --release</code> in <code>app/</code> makes Flomsi.app. On Windows, run <code>flutter build windows --release</code> there.</p>
+        <p>Google and Microsoft sign-in appear only in builds given the app's client IDs, such as <code>FLOMSI_GOOGLE_CLIENT_ID</code>; <a href="https://github.com/zondaxxx/Flomsi/blob/main/docs/SETUP.md">docs/SETUP.md</a> (in Russian) lists them. Without them, accounts use app passwords.</p>
+      </div>
+      <div class="term">
+        <div class="term-h mono">build from source</div>
+        <div class="term-b"><pre><span class="p">$</span> git clone https://github.com/zondaxxx/Flomsi
+<span class="p">$</span> cd Flomsi
+<span class="c"># run the macOS app from source</span>
+<span class="p">$</span> make app-mac
+<span class="c"># the interface alone, with sample mail</span>
+<span class="p">$</span> make app-mac-mock
+<span class="c"># mailctl, into core/target/release</span>
+<span class="p">$</span> make cli</pre></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- Outside main so the footer is the page's contentinfo; no section covers it, so the page keeps the dark tone here. -->
+<div class="wrap">
+  <div class="wordmark" aria-hidden="true">Flomsi<i class="dot"></i></div>
+  <footer class="foot mono">
+    <span>Flomsi 0.2.0 · GPL-3.0</span>
+    <span>Rust core · Flutter interface · IBM Plex</span>
+    <nav aria-label="Legal"><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a></nav>
+    <a href="https://github.com/zondaxxx/Flomsi">github.com/zondaxxx/Flomsi</a>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  const ico = (id, cls = 'ic') => `<svg class="${cls}"><use href="#i-${id}"/></svg>`;
+
+  // Page copy says ⌘ on Apple machines and Ctrl elsewhere. The demo window itself is a macOS window and keeps ⌘.
+  if (!isMac) document.querySelectorAll('.modk').forEach(k => { k.textContent = k.textContent.replace('⌘', 'Ctrl+'); });
+
+  /* ---------------- Sample mailbox (after the app's MockRepository) ----------------
+     No labels: with a real account the app has none yet, so the demo shows none. The third
+     account is one an app password can add today; Outlook needs Microsoft sign-in. */
+  const ACCOUNTS = [
+    { id: 1, email: 'dev@gmail.com', color: 'var(--green)' },
+    { id: 2, email: 'me@icloud.com', color: 'var(--blue)' },
+    { id: 3, email: 'work@yandex.ru', color: 'var(--yellow)' },
+  ];
+  const SEED = [
+    { id: 1, acct: 1, sender: 'GitHub', addr: 'notifications@github.com', subject: '[flomsi] PR #42 · feat(sync): incremental IMAP fetch', when: '09:41', date: 'Wed 23 Sep 2026, 09:41', unread: true,
+      snippet: 'anna approved these changes · 3 files changed, +212 −48',
+      msgs: [{ from: 'GitHub', to: 'me', when: '09:41', body: ['anna approved these changes.', '3 files changed, +212 −48 in core/mailcore/src/sync.rs, src/provider/imap.rs and tests/fake_imap.rs.', 'Merge when CI is green, or reply to this email to comment.'] }] },
+    { id: 2, acct: 1, sender: 'Anna Sokolova', addr: 'anna@studio.dev', subject: 'Re: Design review Thursday', when: '09:40', date: 'Wed 23 Sep 2026, 09:12', clip: true,
+      snippet: 'Moving it to 15:00, the list prototype needs one more pass…',
+      msgs: [
+        { from: 'Anna Sokolova', to: 'me', when: '09:12', body: ['Hey — moving the review to 15:00. The list prototype needs one more pass on contrast in the light theme: secondary text drops below 4.5:1.', 'Can you check the keyboard flow before then? j/k feels right, but archive on e collides with the search field when it has focus.', 'Updated frames attached.'], files: [['list-v3.fig', '12.4 MB'], ['contrast.png', '482 KB']] },
+        { from: 'you', to: 'Anna Sokolova', when: '09:40', body: ['Works for me. I’ll move shortcut handling to a scoped keymap so focused inputs swallow keys first. Will ping you in Linear when it’s up.'] },
+      ] },
+    { id: 3, acct: 1, sender: 'Vercel', addr: 'notifications@vercel.com', subject: 'Deployment ready — flomsi-site', when: '08:57', date: 'Wed 23 Sep 2026, 08:57',
+      snippet: 'production · main · a3f9c1e · built in 41s',
+      msgs: [{ from: 'Vercel', to: 'me', when: '08:57', body: ['Your deployment is ready.', 'production · main · a3f9c1e · built in 41s'] }] },
+    { id: 4, acct: 2, sender: 'DHL Express', addr: 'noreply@dhl.com', subject: 'Your parcel arrives today', when: '08:30', date: 'Wed 23 Sep 2026, 08:30', unread: true,
+      snippet: 'Between 12:00 and 15:00 · a signature is needed',
+      msgs: [{ from: 'DHL Express', to: 'me', when: '08:30', body: ['Your parcel is on its way and arrives today between 12:00 and 15:00.', 'Someone has to sign for it at the door.'] }] },
+    { id: 5, acct: 1, sender: 'Linear', addr: 'notifications@linear.app', subject: '3 issues assigned to you', when: 'yesterday', date: 'Tue 22 Sep 2026, 17:02',
+      snippet: 'MAIL-118 unified inbox ordering · MAIL-121 snooze on Android',
+      msgs: [{ from: 'Linear', to: 'me', when: 'yesterday', body: ['MAIL-118 Unified inbox ordering', 'MAIL-121 Snooze on Android', 'MAIL-124 Keymap scopes for focused inputs'] }] },
+    { id: 6, acct: 3, lang: 'ru', sender: 'Дмитрий Козлов', addr: 'dmitry.kozlov@yandex.ru', subject: 'Ключи от офиса', when: 'yesterday', date: 'Tue 22 Sep 2026, 12:14',
+      snippet: 'Оставил у охраны, скажи что от меня',
+      msgs: [{ from: 'Дмитрий Козлов', to: 'me', when: 'yesterday', body: ['Оставил у охраны, скажи что от меня.', 'Карта от парковки там же, в конверте.'] }] },
+    { id: 7, acct: 1, sender: 'Hetzner', addr: 'billing@hetzner.com', subject: 'Your invoice for September', when: 'yesterday', date: 'Tue 22 Sep 2026, 09:05', clip: true, invoice: true,
+      snippet: 'Paid · CX22 · mail-sync-worker',
+      msgs: [{ from: 'Hetzner', to: 'me', when: 'yesterday', blocked: 1, files: [['invoice-2026-09.pdf', '84 KB']] }] },
+    { id: 8, acct: 1, sender: 'Protocol Weekly', addr: 'issue@protocolweekly.dev', subject: 'Top stories this week', when: 'mon', date: 'Mon 21 Sep 2026, 08:00',
+      snippet: 'Why every mail client eventually reimplements IMAP',
+      msgs: [{ from: 'Protocol Weekly', to: 'me', when: 'mon', body: ['Why every mail client eventually reimplements IMAP', 'CONDSTORE and QRESYNC, explained with packet captures', 'JMAP in production: notes from three providers'] }] },
+    { id: 9, acct: 1, sender: 'Figma', addr: 'comments@figma.com', subject: 'Anna left 4 comments in “Flomsi / List”', when: 'mon', date: 'Mon 21 Sep 2026, 07:12',
+      snippet: '“sidebar counts should use tabular figures”',
+      msgs: [{ from: 'Figma', to: 'me', when: 'mon', body: ['“sidebar counts should use tabular figures”', '“the unread dot needs 1px more room on the left”', 'and 2 more comments'] }] },
+    { id: 10, acct: 1, sender: 'GitHub', addr: 'notifications@github.com', subject: '[flomsi] CI passed on main', when: 'sun', date: 'Sun 20 Sep 2026, 19:30',
+      snippet: 'Rust checks, Flutter tests, macOS build · all green',
+      msgs: [{ from: 'GitHub', to: 'me', when: 'sun', body: ['All checks have passed on main.', 'Rust checks and tests · Flutter analyze and tests · macOS release build'] }] },
+    { id: 11, acct: 2, sender: 'Marina Wu', addr: 'marina.wu@icloud.com', subject: 'Lunch next week?', when: 'sun', date: 'Sun 20 Sep 2026, 14:20', starred: true,
+      snippet: 'Tuesday or Wednesday works, the ramen place near…',
+      msgs: [{ from: 'Marina Wu', to: 'me', when: 'sun', body: ['Tuesday or Wednesday works, the ramen place near the office? They open at 12.', '— M'] }] },
+  ];
+  const clone = () => SEED.map(t => ({ ...t, box: 'inbox', until: '', unread: !!t.unread, starred: !!t.starred, msgs: t.msgs.map(m => ({ ...m })) }));
+
+  // open: on a narrow screen the thread has replaced the list (see .win.narrow).
+  const S = { view: 'inbox', filter: 'all', query: '', sel: 2, scope: 'list', open: false, preset: 'vim', force: '', threads: clone(), imgs: {} };
+  const PRESETS = { vim: { snooze: 'h', star: '*' }, gmail: { snooze: 'b', star: 's' } };
+  const keyOf = a => PRESETS[S.preset][a];
+
+  const win = $('#win'), rowsEl = $('#rows'), rbody = $('#rbody'), q = $('#q'), qr = $('#qr');
+  let narrow = false;
+
+  /* ---------------- Queries ---------------- */
+  const VIEWS = { inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', drafts: 'Drafts', sent: 'Sent', archive: 'Archive', junk: 'Junk', trash: 'Trash' };
+  function inView(t, v = S.view) {
+    if (v === 'inbox') return t.box === 'inbox';
+    if (v === 'starred') return t.starred && t.box !== 'trash';
+    if (v.startsWith('acct:')) return t.box === 'inbox' && t.acct === +v.slice(5);
+    return t.box === v;
+  }
+  function matches(t, query) {
+    for (const tok of query.toLowerCase().split(/\s+/).filter(Boolean)) {
+      const [k, ...rest] = tok.split(':'); const v = rest.join(':');
+      if (tok === 'is:unread') { if (!t.unread) return false; continue; }
+      if (tok === 'is:starred') { if (!t.starred) return false; continue; }
+      if (tok === 'has:attachment') { if (!t.clip) return false; continue; }
+      if (v && k === 'from') { if (!(t.sender + ' ' + t.addr).toLowerCase().includes(v)) return false; continue; }
+      if (v && k === 'to') { if (!t.msgs.some(m => m.to.toLowerCase().includes(v))) return false; continue; }
+      if (v && k === 'in') { if (t.box !== v) return false; continue; }
+      if (v && k === 'account') { if (!ACCOUNTS.find(a => a.id === t.acct).email.includes(v)) return false; continue; }
+      if (v && k === 'subject') { if (!t.subject.toLowerCase().includes(v)) return false; continue; }
+      if (v && (k === 'after' || k === 'before')) continue;
+      if (!(t.sender + ' ' + t.subject + ' ' + t.snippet).toLowerCase().includes(tok)) return false;
+    }
+    return true;
+  }
+  const base = () => S.threads.filter(t => inView(t));
+  function visible() {
+    let l = base();
+    if (S.filter === 'unread') l = l.filter(t => t.unread);
+    if (S.filter === 'starred') l = l.filter(t => t.starred);
+    if (S.query.trim()) l = l.filter(t => matches(t, S.query));
+    return l;
+  }
+  function title() {
+    if (S.query.trim()) return 'Search';
+    if (S.view.startsWith('acct:')) return ACCOUNTS.find(a => a.id === +S.view.slice(5)).email;
+    return VIEWS[S.view];
+  }
+  const current = () => S.threads.find(t => t.id === S.sel && visible().includes(t));
+
+  /* ---------------- Render ---------------- */
+  function renderSide() {
+    const inbox = S.threads.filter(t => t.box === 'inbox');
+    const rows = [
+      ['sec', 'Mailboxes'],
+      ['inbox', 'Inbox', 'tray', inbox.filter(t => t.unread).length],
+      ['starred', 'Starred', 'star', S.threads.filter(t => t.starred && t.box !== 'trash').length],
+      ['snoozed', 'Snoozed', 'clock', S.threads.filter(t => t.box === 'snoozed').length],
+      ['drafts', 'Drafts', 'doc', 1],
+      ['sent', 'Sent', 'send', 0],
+      ['archive', 'Archive', 'archive', 0],
+      ['junk', 'Junk', 'junk', 0],
+      ['trash', 'Trash', 'trash', 0],
+      ['sec', 'Accounts'],
+      ...ACCOUNTS.map(a => ['acct:' + a.id, a.email, { dot: a.color }, inbox.filter(t => t.acct === a.id && t.unread).length]),
+    ];
+    $('#side').innerHTML = rows.map(([v, label, icon, count]) => {
+      if (v === 'sec') return `<div class="sec">${label}</div>`;
+      const lead = typeof icon === 'string' ? ico(icon) : `<i class="acc-dot" style="background:${icon.dot}"></i>`;
+      return `<div class="srow${S.view === v && !S.query.trim() ? ' on' : ''}" data-view="${v}"><span class="lead">${lead}</span><span class="lbl">${esc(label)}</span><span class="mono">${count || ''}</span></div>`;
+    }).join('');
+  }
+  function renderFilters() {
+    const b = base();
+    const f = [['all', 'All', b.length], ['unread', 'Unread', b.filter(t => t.unread).length], ['starred', 'Starred', b.filter(t => t.starred).length]];
+    $('#filters').innerHTML = f.map(([k, l, n]) => `<button type="button" tabindex="-1" class="chip${S.filter === k ? ' on' : ''}" data-filter="${k}">${l}<span class="mono">${n}</span></button>`).join('');
+  }
+  function rowHTML(t) {
+    const when = t.box === 'snoozed' ? `<span class="mono snz">${ico('clock')}${esc(t.until)}</span>` : `<span class="mono">${t.when}</span>`;
+    return `<div class="row${t.unread ? ' unread' : ''}${t.id === S.sel ? ' sel' : ''}" role="option" aria-selected="${t.id === S.sel}" id="t${t.id}" data-id="${t.id}"${t.lang ? ` lang="${t.lang}"` : ''}>
+      <span class="udot"></span>
+      <div class="rmain">
+        <div class="r1"><span class="sender">${esc(t.sender)}</span>${t.msgs.length > 1 ? `<span class="mono" style="color:var(--fg3)">${t.msgs.length}</span>` : ''}${t.clip ? ico('clip') : ''}${t.starred ? ico('star', 'ic star') : ''}${when}</div>
+        <div class="r2"><span class="subj">${esc(t.subject)}</span><span class="snip">  —  ${esc(t.snippet)}</span></div>
+      </div></div>`;
+  }
+  function renderList() {
+    const l = visible();
+    rowsEl.innerHTML = l.length ? l.map(rowHTML).join('') : `<div class="empty">${S.query.trim() ? 'No matches' : 'No messages'}</div>`;
+    markActive();
+  }
+  // The rows are never focused (keys are page-wide), so the listbox points at the selected one.
+  function markActive() {
+    if (rowsEl.querySelector(`#t${S.sel}`)) rowsEl.setAttribute('aria-activedescendant', `t${S.sel}`);
+    else rowsEl.removeAttribute('aria-activedescendant');
+  }
+  function msgHTML(t, m, i, animate) {
+    const style = animate ? ` class="msg appear" style="animation-delay:${i * 40}ms"` : ' class="msg"';
+    let body = '';
+    if (t.invoice) {
+      const img = S.imgs[t.id]
+        ? `<div class="img-ph"><span class="mono">header.png · 600×80</span></div>`
+        : `<div class="blocked">${ico('image')}<span class="mono">${m.blocked} image blocked</span><button type="button" tabindex="-1" class="mini-btn" data-act="images">Load images</button></div>`;
+      body = `${img}<p>Hi,</p><p>your invoice for <b>September</b> is paid. Thank you.</p>
+        <table class="inv"><tr><th>Item</th><th class="num">Amount</th></tr><tr><td>CX22 · mail-sync-worker</td><td class="num">€ 4.51</td></tr><tr><td>Traffic</td><td class="num">€ 0.00</td></tr></table>
+        <p><a href="#" tabindex="-1" data-act="noop">Open the console</a></p><p class="fine">Hetzner Online GmbH</p>`;
+    } else body = m.body.map(p => `<p>${esc(p)}</p>`).join('');
+    const files = m.files ? `<div class="files">${m.files.map(([n, s]) => `<span class="file">${ico('clip')}${esc(n)} <span class="mono">${s}</span></span>`).join('')}</div>` : '';
+    const lang = t.lang ? ` lang="${t.lang}"` : '';
+    return `<div${style}><div class="mh"><b${m.from === 'you' ? '' : lang}>${esc(m.from)}</b><span class="mono">→ ${esc(m.to)} · ${esc(m.when)}</span></div><div class="mb"${m.from === 'you' ? '' : lang}>${body}${files}</div></div>`;
+  }
+  function renderRead(animate = false, onlyLast = false) {
+    const t = current();
+    const l = visible();
+    $('#tpos').textContent = t ? `${l.indexOf(t) + 1} / ${l.length}` : '';
+    qr.placeholder = t ? `Reply to ${t.sender}` : 'Reply';
+    $('#snzLbl').textContent = t && t.box === 'snoozed' ? 'Snoozed' : 'Snooze';
+    if (!t) { rbody.innerHTML = `<div class="empty">No message selected</div>`; return; }
+    const meta = [['from', `${t.sender}  <${t.addr}>`], ['to', 'me'], ['date', t.date]];
+    // A div, not a heading: the demo should not add entries to the page's own outline.
+    const lang = t.lang ? ` lang="${t.lang}"` : '';
+    const head = `<div class="subject"${lang}>${esc(t.subject)}</div><dl class="meta">${meta.map(([k, v]) => `<div><dt>${k}</dt><dd${k === 'from' ? lang : ''}>${esc(v)}</dd></div>`).join('')}</dl>`;
+    const msgs = t.msgs.map((m, i) => msgHTML(t, m, i, animate && (!onlyLast || i === t.msgs.length - 1))).join('');
+    rbody.innerHTML = `<div${animate && !onlyLast ? ' class="appear"' : ''}>${head}<div class="msgs">${msgs}</div></div>`;
+    if (!onlyLast) rbody.scrollTop = 0; else rbody.scrollTop = rbody.scrollHeight;
+  }
+  const HINTS = {
+    list: 'j/k move · e archive · ↵ open · / search · ⌘K commands',
+    thread: 'r reply · e archive · esc back',
+    search: 'esc back · ↵ search',
+    reply: '⌘↵ send · esc close',
+    dialog: 'esc cancel · ↵ confirm',
+  };
+  let notice = null, noticeTimer = 0;
+  function renderStatus(swap = false) {
+    const l = visible(), t = current();
+    $('#tName').textContent = $('#backLbl').textContent = title();
+    const b = S.query.trim() ? l : base();
+    $('#tCount').textContent = `${b.length} · ${b.filter(x => x.unread).length} new`;
+    $('#stT').textContent = title().toUpperCase();
+    $('#stPos').textContent = t ? `${l.indexOf(t) + 1}/${l.length}` : `${l.length}`;
+    const h = $('#stHint');
+    h.textContent = notice || HINTS[S.scope];
+    h.classList.toggle('note', !!notice);
+    if (swap) { h.classList.remove('swap'); void h.offsetWidth; h.classList.add('swap'); }
+  }
+  function notify(text) {
+    notice = text; renderStatus(true);
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => { notice = null; renderStatus(true); }, 2200);
+  }
+  function ensureSel() {
+    const l = visible();
+    if (!l.some(t => t.id === S.sel)) S.sel = l.length ? l[0].id : null;
+  }
+  function render(animate = false) {
+    ensureSel(); renderSide(); renderFilters(); renderList(); renderRead(animate); renderStatus();
+  }
+  function setScope(s) { S.scope = s; renderStatus(true); }
+  function openPane(v) { S.open = v && !!current(); win.classList.toggle('open', S.open); }
+
+  /* ---------------- Actions ---------------- */
+  function select(id, animate = true) {
+    if (id == null || id === S.sel) return;
+    S.sel = id;
+    const t = S.threads.find(x => x.id === id);
+    const wasUnread = t.unread;
+    t.unread = false; // opening a thread marks it read, as in the app
+    rowsEl.querySelectorAll('.row').forEach(r => {
+      const on = +r.dataset.id === id;
+      r.classList.toggle('sel', on); r.setAttribute('aria-selected', on);
+      if (on) { r.classList.remove('unread'); r.scrollIntoView({ block: 'nearest' }); }
+    });
+    markActive();
+    renderRead(animate);
+    renderStatus();
+    if (wasUnread) { renderSide(); renderFilters(); }
+  }
+  function step(d) {
+    const l = visible(); if (!l.length) return;
+    const i = l.findIndex(t => t.id === S.sel);
+    const n = l[clamp(i < 0 ? 0 : i + d, 0, l.length - 1)];
+    select(n.id);
+  }
+  let busy = false;
+  function removeCurrent(apply, text) {
+    const t = current(); if (!t || busy) return;
+    const l = visible(); const i = l.indexOf(t);
+    const next = l[i + 1] || l[i - 1];
+    const finish = () => {
+      apply(t);
+      S.sel = next ? next.id : null;
+      if (next) next.unread = false;
+      busy = false; openPane(false); render(true); notify(text);
+    };
+    const row = rowsEl.querySelector(`[data-id="${t.id}"]`);
+    if (row && !reduce.matches) {
+      busy = true;
+      row.style.height = row.offsetHeight + 'px'; void row.offsetHeight;
+      row.classList.add('leaving');
+      setTimeout(finish, 190);
+    } else finish();
+  }
+  const archive = () => removeCurrent(t => { t.box = 'archive'; }, 'Archived');
+  const del = () => removeCurrent(t => { t.box = 'trash'; }, 'Deleted');
+  function star() {
+    const t = current(); if (!t) return;
+    t.starred = !t.starred;
+    const row = rowsEl.querySelector(`[data-id="${t.id}"]`);
+    if (row) { const tmp = document.createElement('div'); tmp.innerHTML = rowHTML(t); row.querySelector('.r1').replaceWith(tmp.querySelector('.r1')); }
+    renderSide(); renderFilters();
+  }
+  function setRead(v) {
+    const t = current(); if (!t) return;
+    t.unread = !v;
+    const row = rowsEl.querySelector(`[data-id="${t.id}"]`);
+    if (row) row.classList.toggle('unread', t.unread);
+    renderSide(); renderFilters(); renderStatus();
+  }
+  function reply() {
+    if (!current()) return;
+    qr.focus({ preventScroll: true });
+  }
+  function send() {
+    const t = current(); const text = qr.value.trim();
+    if (!t || !text) return;
+    t.msgs.push({ from: 'you', to: t.sender, when: '09:42', body: [text] });
+    qr.value = ''; qr.blur();
+    renderRead(true, true);
+    const row = rowsEl.querySelector(`[data-id="${t.id}"]`);
+    if (row) { const tmp = document.createElement('div'); tmp.innerHTML = rowHTML(t); row.querySelector('.r1').replaceWith(tmp.querySelector('.r1')); }
+    notify(`Sent to ${t.addr}`);
+    const dot = $('#syncDot'); dot.classList.remove('pulse'); void dot.offsetWidth; dot.classList.add('pulse');
+  }
+  function go(view) {
+    openPane(false);
+    S.view = view; S.filter = 'all'; S.query = ''; q.value = '';
+    S.sel = null; render(true);
+    const t = current(); if (t) t.unread = false;
+    render(false);
+  }
+  function search(text) { openPane(false); q.value = text; S.query = text; S.sel = null; render(true); }
+  function syncNow() {
+    const dot = $('#syncDot'); dot.classList.remove('pulse'); void dot.offsetWidth; dot.classList.add('pulse');
+    notify('Synced all accounts');
+  }
+  function setFilter(f) { S.filter = f; S.sel = null; render(true); const t = current(); if (t) { t.unread = false; render(false); } }
+  function setForce(f) { S.force = f; if (f) win.dataset.force = f; else delete win.dataset.force; }
+
+  /* ---------------- Command palette ---------------- */
+  const P = { open: false, mode: 'cmd', items: [], idx: 0, prevScope: 'list' };
+  function paletteItems() {
+    const t = current();
+    if (P.mode === 'snooze') {
+      const opts = [['Later today', 'today 18:00'], ['Tomorrow', 'tomorrow 08:00'], ['This weekend', 'Sat 26 Sep 09:00'], ['Next week', 'Mon 28 Sep 08:00']]
+        .map(([title, d]) => ({ g: 'Snooze', title, d, run: () => removeCurrent(x => { x.box = 'snoozed'; x.until = d; }, `Snoozed until ${d}`) }));
+      if (t && t.box === 'snoozed') opts.unshift({ g: `Snoozed until ${t.until}`, title: 'Unsnooze', run: () => removeCurrent(x => { x.box = 'inbox'; x.until = ''; x.unread = true; }, 'Back in the inbox') });
+      return opts;
+    }
+    if (P.mode === 'move') {
+      return [['inbox', 'Inbox'], ['archive', 'Archive'], ['junk', 'Junk'], ['trash', 'Trash']]
+        .filter(([b]) => !t || t.box !== b)
+        .map(([b, title]) => ({ g: 'Mailboxes', title, run: () => removeCurrent(x => { x.box = b; x.until = ''; }, `Moved to ${title}`) }));
+    }
+    // The app's own list (ShellActions.commands()): titles, groups, details and keys as there.
+    const mode = { '': 'System', dark: 'Dark', light: 'Light' }[S.force];
+    return [
+      { g: 'Message', title: 'Archive', k: 'e', run: archive },
+      { g: 'Message', title: 'Delete', k: '#', run: del },
+      { g: 'Message', title: 'Reply All', k: 'a', run: reply },
+      { g: 'Message', title: 'Star / Unstar', k: keyOf('star'), run: star },
+      { g: 'Message', title: 'Mark as Read', run: () => setRead(true) },
+      { g: 'Message', title: 'Mark as Unread', run: () => setRead(false) },
+      { g: 'Go', title: 'Go to Inbox', k: 'g i', run: () => go('inbox') },
+      { g: 'Go', title: 'Go to Starred', k: 'g s', run: () => go('starred') },
+      { g: 'Go', title: 'Show Unread Only', run: () => search('is:unread') },
+      { g: 'Accounts', title: 'Sync Now', d: 'All accounts', run: syncNow },
+      { g: 'Accounts', title: 'Add Account…', run: () => notify('Add Account opens its sheet in the app') },
+      { g: 'App', title: 'Settings…', d: 'Accounts, signatures, keys, appearance', k: '⌘,', run: () => notify('Settings open in the app') },
+      { g: 'View', title: `Appearance: ${mode}`, d: 'Click to cycle', run: () => setForce({ '': 'dark', dark: 'light', light: '' }[S.force]) },
+    ];
+  }
+  function renderPalette() {
+    const f = $('#palq').value.trim().toLowerCase();
+    P.items = paletteItems().filter(i => !f || i.title.toLowerCase().includes(f) || (i.d || '').toLowerCase().includes(f));
+    P.idx = clamp(P.idx, 0, Math.max(0, P.items.length - 1));
+    let g = '', html = '';
+    P.items.forEach((it, i) => {
+      if (it.g !== g) { g = it.g; html += `<div class="pg">${g}</div>`; }
+      html += `<div class="pi${i === P.idx ? ' on' : ''}" role="option" aria-selected="${i === P.idx}" data-i="${i}"><span class="pt">${esc(it.title)}</span>${it.d ? `<span class="mono pd">${esc(it.d)}</span>` : ''}${it.k ? `<span class="mono pk">${esc(it.k)}</span>` : ''}</div>`;
+    });
+    $('#plist').innerHTML = html || `<div class="pnone">No matches</div>`;
+    $('#pcount').textContent = `${P.items.length} results`;
+    const on = $('#plist .pi.on'); if (on) on.scrollIntoView({ block: 'nearest' });
+  }
+  function openPalette(mode = 'cmd') {
+    if (mode !== 'cmd' && !current()) return;
+    if (!P.open) P.prevScope = S.scope === 'dialog' ? 'list' : S.scope;
+    P.open = true; P.mode = mode; P.idx = 0;
+    $('#palq').value = '';
+    $('#palq').placeholder = mode === 'snooze' ? 'Snooze until…' : mode === 'move' ? 'Move to…' : 'Search mail or run a command';
+    $('#pal').hidden = false;
+    const box = $('#pal .pbox'); box.style.animation = 'none'; void box.offsetWidth; box.style.animation = '';
+    renderPalette();
+    $('#palq').focus({ preventScroll: true });
+    setScope('dialog');
+  }
+  function closePalette() {
+    if (!P.open) return;
+    P.open = false; $('#pal').hidden = true; $('#palq').blur();
+    setScope(P.prevScope === 'dialog' ? 'list' : P.prevScope);
+  }
+  function runPalette(i) {
+    const it = P.items[i]; if (!it) return;
+    closePalette();
+    it.run();
+  }
+  $('#palq').addEventListener('input', () => { P.idx = 0; renderPalette(); });
+  $('#plist').addEventListener('mousemove', e => {
+    const el = e.target.closest('.pi'); if (!el || +el.dataset.i === P.idx) return;
+    P.idx = +el.dataset.i; renderPalette();
+  });
+  $('#plist').addEventListener('click', e => { const el = e.target.closest('.pi'); if (el) runPalette(+el.dataset.i); });
+  $('#pal').addEventListener('mousedown', e => { if (e.target.id === 'pal') { e.preventDefault(); closePalette(); } });
+
+  /* ---------------- Input ---------------- */
+  let active = false;
+  new IntersectionObserver(es => es.forEach(e => { active = e.intersectionRatio >= 0.3; }), { threshold: [0, 0.3, 0.6] }).observe($('#stage'));
+
+  let pendingG = 0;
+  document.addEventListener('keydown', e => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (P.open) {
+      if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) { e.preventDefault(); P.idx = Math.min(P.items.length - 1, P.idx + 1); renderPalette(); }
+      else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) { e.preventDefault(); P.idx = Math.max(0, P.idx - 1); renderPalette(); }
+      else if (e.key === 'Enter') { e.preventDefault(); runPalette(P.idx); }
+      else if (e.key === 'Escape' || (mod && e.key.toLowerCase() === 'k')) { e.preventDefault(); closePalette(); }
+      return;
+    }
+    const el = document.activeElement;
+    // Enter, space and Escape belong to whatever has focus outside the demo: a link, a button.
+    if ((e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') && el && el !== document.body && !win.contains(el)) return;
+    if (mod && e.key.toLowerCase() === 'k') {
+      if (active || win.contains(el)) { e.preventDefault(); openPalette('cmd'); }
+      return;
+    }
+    if (el === q) {
+      if (e.key === 'Escape') { e.preventDefault(); if (q.value) { q.value = ''; S.query = ''; S.sel = null; render(false); } q.blur(); }
+      else if (e.key === 'Enter') { e.preventDefault(); q.blur(); }
+      return;
+    }
+    if (el === qr) {
+      if (e.key === 'Escape') { e.preventDefault(); qr.blur(); }
+      else if (e.key === 'Enter') { e.preventDefault(); send(); }
+      return;
+    }
+    if (el && el.matches && el.matches('input, textarea, select, [contenteditable="true"]')) return;
+    if (mod || e.altKey || !active) return;
+
+    const k = e.key;
+    if (pendingG) {
+      clearTimeout(pendingG); pendingG = 0;
+      const dest = { i: 'inbox', a: 'archive', s: 'starred' }[k];
+      if (dest) { e.preventDefault(); go(dest); return; }
+    }
+    let handled = true;
+    if (k === 'j') step(1);
+    else if (k === 'k') step(-1);
+    else if (k === 'Enter' || k === 'o') { if (current()) { setScope('thread'); openPane(true); } }
+    else if (k === 'Escape' || k === 'u') { if (S.scope !== 'list' || S.open) { setScope('list'); openPane(false); } else handled = false; }
+    else if (k === 'e') archive();
+    else if (k === '#') del();
+    else if (k === keyOf('star')) star();
+    else if (k === keyOf('snooze')) openPalette('snooze');
+    else if (k === 'l') openPalette('move');
+    // As in the app's presets: reply keys work in an open thread, search from the list.
+    else if ((k === 'r' || k === 'a' || k === 'f') && S.scope === 'thread') reply();
+    else if (k === '/' && S.scope === 'list') q.focus({ preventScroll: true });
+    else if (k === '?') openPalette('cmd');
+    else if (k === 'g') pendingG = setTimeout(() => { pendingG = 0; }, 900);
+    else handled = false;
+    if (handled) e.preventDefault();
+  });
+
+  q.addEventListener('focus', () => setScope('search'));
+  q.addEventListener('blur', () => { if (!P.open) setScope('list'); });
+  q.addEventListener('input', () => { S.query = q.value; ensureSel(); renderSide(); renderList(); renderRead(false); renderStatus(); });
+  qr.addEventListener('focus', () => setScope('reply'));
+  qr.addEventListener('blur', () => { if (!P.open) setScope('list'); });
+  $('#sendBtn').addEventListener('mousedown', e => e.preventDefault());
+  $('#sendBtn').addEventListener('click', () => { if (qr.value.trim()) send(); else reply(); });
+  $('#qbtn').addEventListener('click', () => openPalette('cmd'));
+
+  win.addEventListener('click', e => {
+    if (e.target.closest('#back')) { setScope('list'); openPane(false); return; }
+    const row = e.target.closest('.row');
+    // On a narrow screen a tap opens the thread in place of the list, as on the app's phone layout.
+    if (row) { select(+row.dataset.id); if (narrow) { setScope('thread'); openPane(true); } return; }
+    const side = e.target.closest('.srow[data-view]');
+    if (side) { go(side.dataset.view); return; }
+    const chip = e.target.closest('[data-filter]');
+    if (chip) { setFilter(chip.dataset.filter); return; }
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    e.preventDefault();
+    const a = act.dataset.act;
+    if (a === 'archive') archive();
+    else if (a === 'delete') del();
+    else if (a === 'snooze') openPalette('snooze');
+    else if (a === 'move') openPalette('move');
+    else if (a === 'reply') reply();
+    else if (a === 'images') { const t = current(); S.imgs[t.id] = true; renderRead(false); }
+  });
+
+  /* ---------------- Preset: demo + key table ---------------- */
+  const mk = s => isMac ? s : s.replace('⌘', 'Ctrl+');
+  const GROUPS = () => [
+    ['Move', [['Next thread', [['j']]], ['Previous thread', [['k']]], ['Open', [['↵'], ['o']]], ['Back', [['esc'], ['u']]]]],
+    ['Act', [['Archive', [['e']]], ['Delete', [['#']]], ['Snooze', [[keyOf('snooze')]], 'snooze'], ['Star', [[keyOf('star')]], 'star'], ['Move to folder', [['l']]]]],
+    ['Write', [['New message', [['c']]], ['Reply', [['r']]], ['Reply all', [['a']]], ['Forward', [['f']]], ['Send', [[mk('⌘↵')]]]]],
+    ['Go', [['Inbox', [['g', 'i']]], ['Starred', [['g', 's']]], ['Archive', [['g', 'a']]], ['Search', [['/']]], ['Commands', [[mk('⌘K')], ['?']]], ['Settings', [[mk('⌘,')]]]]],
+  ];
+  function renderKeys(changed) {
+    $('#keygrid').innerHTML = GROUPS().map(([g, rows]) => `<div class="kg"><h3>${g}</h3>${rows.map(([label, alts, id]) =>
+      `<div class="kr"><span>${label}</span><span class="ks">${alts.map(seq => seq.map(k => `<kbd${changed && id ? ' class="changed"' : ''}>${esc(k)}</kbd>`).join('')).join('<span class="or">or</span>')}</span></div>`).join('')}</div>`).join('');
+  }
+  function renderHint() {
+    const h = $('#hint');
+    if (coarse) { h.innerHTML = `<span><b>Live demo.</b> ${narrow ? 'Tap a thread to open it.' : 'Tap a thread.'}</span> <button type="button" class="linkbtn" id="reset">Reset</button>`; return; }
+    h.innerHTML = `<span class="grp"><b>Live demo.</b></span>
+      <span class="grp"><kbd>j</kbd><kbd>k</kbd> move</span>
+      <span class="grp"><kbd>e</kbd> archive</span>
+      <span class="grp"><kbd>${esc(keyOf('snooze'))}</kbd> snooze</span>
+      <span class="grp"><kbd>/</kbd> search</span>
+      <span class="grp"><kbd>${isMac ? '⌘K' : 'Ctrl+K'}</kbd> commands</span>
+      <button type="button" class="linkbtn" id="reset">Reset</button>`;
+  }
+  function setPreset(p) {
+    if (S.preset === p) return;
+    S.preset = p;
+    $('#pVim').setAttribute('aria-pressed', p === 'vim');
+    $('#pGmail').setAttribute('aria-pressed', p === 'gmail');
+    document.querySelectorAll('[data-key]').forEach(el => { el.textContent = keyOf(el.dataset.key); });
+    renderKeys(true); renderHint();
+  }
+  $('#pVim').addEventListener('click', () => setPreset('vim'));
+  $('#pGmail').addEventListener('click', () => setPreset('gmail'));
+  document.addEventListener('click', e => {
+    if (e.target.id !== 'reset') return;
+    closePalette();
+    openPane(false);
+    Object.assign(S, { view: 'inbox', filter: 'all', query: '', sel: 2, scope: 'list', threads: clone(), imgs: {} });
+    q.value = ''; qr.value = ''; setForce('');
+    render(true);
+  });
+
+  /* ---------------- Scale, tilt, tone, parallax ---------------- */
+  const frame = $('#frame'), tiltEl = $('#tilt'), stage = $('#stage'), nav = $('#nav');
+  const toned = [...document.querySelectorAll('[data-tone]')].filter(el => el !== document.body);
+  const pieces = [...document.querySelectorAll('.piece-in')];
+  const themeColors = document.querySelectorAll('meta[name="theme-color"]');
+
+  // The phone section takes the visitor's own scheme, and its screenshots follow it (CSS).
+  const phones = $('#phones'), lightScheme = matchMedia('(prefers-color-scheme: light)');
+  const phoneTone = () => { phones.dataset.tone = lightScheme.matches ? 'light' : 'dark'; onScroll(); };
+  lightScheme.addEventListener?.('change', phoneTone);
+
+  // Downloads: the button for the system this page is open on becomes the primary one.
+  const ua = navigator.userAgent;
+  const os = /Android/.test(ua) ? 'android'
+    : /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'ios'
+    : /Macintosh|Mac OS X/.test(ua) ? 'mac' : /Windows/.test(ua) ? 'win' : '';
+  // On a phone its card also moves to the top of the list (CSS, .os.mine).
+  const mine = os && $(`.os[data-os="${os}"] .btn`);
+  if (mine) { mine.classList.replace('btn-s', 'btn-p'); mine.closest('.os').classList.add('mine'); }
+
+  // The window is drawn at 1200px, or at the phone width of .win.narrow (400px) below 620px, and scaled to fit.
+  function fit() {
+    const w = frame.clientWidth, n = w < 620;
+    if (n !== narrow) { narrow = n; win.classList.toggle('narrow', n); renderHint(); }
+    frame.style.setProperty('--k', Math.min(1, w / (n ? 400 : 1200)).toFixed(4));
+  }
+  new ResizeObserver(fit).observe(frame);
+  let ticking = false;
+  function tick() {
+    ticking = false;
+    const vh = innerHeight, mid = vh * 0.5;
+    let tone = 'dark';
+    for (const s of toned) { const r = s.getBoundingClientRect(); if (r.top <= mid && r.bottom > mid) { tone = s.dataset.tone; break; } }
+    if (document.body.dataset.tone !== tone) {
+      document.body.dataset.tone = tone;
+      themeColors.forEach(m => { m.content = tone === 'light' ? '#f5f5f6' : '#101216'; });
+    }
+    nav.classList.toggle('scrolled', scrollY > 8);
+    if (reduce.matches) { tiltEl.style.setProperty('--tilt', '0deg'); tiltEl.style.setProperty('--sc', '1'); pieces.forEach(p => { p.style.transform = ''; }); return; }
+    const r = stage.getBoundingClientRect();
+    const t = clamp((r.top - vh * 0.12) / (vh * 0.55), 0, 1);
+    tiltEl.style.setProperty('--tilt', (t * 14).toFixed(2) + 'deg');
+    tiltEl.style.setProperty('--sc', (1 - t * 0.05).toFixed(4));
+    const wide = innerWidth > 620;
+    for (const p of pieces) {
+      if (!wide) { p.style.transform = ''; continue; }
+      const pr = p.parentElement.getBoundingClientRect();
+      const d = pr.top + pr.height / 2 - mid;
+      p.style.transform = `translate3d(0, ${(d * +p.dataset.speed).toFixed(1)}px, 0)`;
+    }
+  }
+  const onScroll = () => { if (!ticking) { ticking = true; requestAnimationFrame(tick); } };
+  addEventListener('scroll', onScroll, { passive: true });
+  addEventListener('resize', onScroll);
+  reduce.addEventListener?.('change', onScroll);
+
+  fit(); render(false); renderKeys(false); renderHint(); phoneTone(); tick();
+})();
+</script>
+</body>
+</html>
