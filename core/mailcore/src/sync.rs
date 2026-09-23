@@ -131,6 +131,17 @@ impl SyncEngine {
                         removed,
                     });
                 }
+                // A dead connection fails every folder after it; stop here and let the
+                // caller reconnect later.
+                Err(e @ crate::Error::Io(_)) => {
+                    self.emit(SyncEvent::Error {
+                        account_id: account.id,
+                        message: format!("{}: {e}", folder.remote_name),
+                    });
+                    // What did sync still counts: snoozes follow their threads.
+                    let _ = self.store.rebind_snoozes();
+                    return Err(e);
+                }
                 Err(e) => {
                     let message = format!("{}: {e}", folder.remote_name);
                     report.errors.push(message.clone());
@@ -295,6 +306,12 @@ impl SyncEngine {
                 Ok(()) => {
                     self.store.mark_done(item.id)?;
                     done += 1;
+                }
+                // The connection died: the rest of the queue stays for the next sync
+                // instead of running against a session that can no longer answer.
+                Err(e @ crate::Error::Io(_)) => {
+                    self.store.mark_failed(item.id, &e.to_string())?;
+                    return Err(e);
                 }
                 Err(e) => self.store.mark_failed(item.id, &e.to_string())?,
             }

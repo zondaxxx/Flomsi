@@ -222,13 +222,19 @@ impl Core {
     pub async fn wait_for_change(&self, account_id: i64, timeout: Duration) -> Result<IdleOutcome> {
         let account = self.store.account(account_id)?;
         let mut provider = self.connect(&account).await?;
-        let inbox = self
-            .store
-            .folder_by_role(account_id, FolderRole::Inbox)?
-            .map(|f| f.remote_name)
+        let known = self.store.folder_by_role(account_id, FolderRole::Inbox)?;
+        let inbox = known
+            .as_ref()
+            .map(|f| f.remote_name.clone())
             .unwrap_or_else(|| "INBOX".to_string());
-        provider.select(&inbox).await?;
-        let outcome = provider.idle(timeout).await?;
+        let state = provider.select(&inbox).await?;
+        // Mail that arrived between two waits never raises IDLE: compare with what the
+        // last sync saw and report it at once.
+        let outcome = if missed_mail(known.as_ref(), &state) {
+            IdleOutcome::Changed
+        } else {
+            provider.idle(timeout).await?
+        };
         provider.logout().await?;
         Ok(outcome)
     }
@@ -618,6 +624,15 @@ fn remove_legacy_file_cache(data_dir: &Path) {
     }
 }
 
+/// True when the inbox has mail the last sync did not see (or was never synced), so
+/// waiting in IDLE would miss it.
+fn missed_mail(known: Option<&Folder>, state: &provider::FolderState) -> bool {
+    match known.and_then(|f| f.uidvalidity.zip(f.uidnext)) {
+        Some((validity, next)) => state.uidvalidity != validity || state.uidnext > next,
+        None => true,
+    }
+}
+
 struct InlineHtml {
     html: Sanitized,
     unresolved: usize,
@@ -796,5 +811,34 @@ mod tests {
         assert!(err.contains("already added"), "{err}");
         assert_eq!(core.store().accounts().unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn idle_starts_only_when_nothing_was_missed() {
+        let folder = |validity, next| Folder {
+            id: 1,
+            account_id: 1,
+            remote_name: "INBOX".into(),
+            role: FolderRole::Inbox,
+            uidvalidity: validity,
+            uidnext: next,
+            highest_modseq: None,
+            last_sync_at: None,
+            selectable: true,
+        };
+        let state = |validity, next| provider::FolderState {
+            uidvalidity: validity,
+            uidnext: next,
+            exists: 3,
+            highest_modseq: None,
+        };
+        assert!(!missed_mail(
+            Some(&folder(Some(7), Some(10))),
+            &state(7, 10)
+        ));
+        assert!(missed_mail(Some(&folder(Some(7), Some(10))), &state(7, 11)));
+        assert!(missed_mail(Some(&folder(Some(7), Some(10))), &state(8, 10)));
+        assert!(missed_mail(Some(&folder(None, None)), &state(7, 10)));
+        assert!(missed_mail(None, &state(7, 10)));
     }
 }

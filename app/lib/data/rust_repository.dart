@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/material.dart' show Color;
+import 'package:flutter/material.dart' show AppLifecycleListener, Color;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
@@ -25,14 +25,30 @@ class RustRepository implements MailRepository {
   final _problems = <int, Problem>{};
   Timer? _periodic;
   bool _disposed = false;
-  Future<void> _syncLock = Future.value();
+  final _locks = <int, Future<void>>{};
+  AppLifecycleListener? _lifecycle;
+  DateTime? _lastSync;
 
-  /// One sync at a time: the IDLE loops, the timer and the user share the same IMAP quota.
-  Future<T> _serial<T>(Future<T> Function() body) {
-    final previous = _syncLock;
-    final completer = Completer<void>();
-    _syncLock = completer.future;
-    return previous.then((_) => body()).whenComplete(completer.complete);
+  /// One sync per account at a time: its IDLE loop, the timer, outbox pushes and the user
+  /// share that account's connection quota. Different accounts run side by side. The core
+  /// gives up on a silent server within a minute; the deadline here is the last resort, so
+  /// one call that never returns cannot hold the account forever.
+  Future<T> _serial<T>(
+    int accountId,
+    Future<T> Function() body, {
+    Duration deadline = const Duration(minutes: 10),
+  }) {
+    final previous = _locks[accountId] ?? Future<void>.value();
+    final done = Completer<void>();
+    _locks[accountId] = done.future;
+    final run = previous.then((_) => body());
+    // The lock is held until the core call really ends, so two syncs of one account never
+    // overlap; the deadline only stops the caller from waiting on it.
+    run.then((_) {}, onError: (Object _) {}).whenComplete(() {
+      done.complete();
+      if (identical(_locks[accountId], done.future)) _locks.remove(accountId);
+    });
+    return run.timeout(deadline);
   }
 
   /// Desktop: `~/.mail_` (shared with the `mailctl` CLI). Mobile: app support dir.
@@ -91,7 +107,33 @@ class RustRepository implements MailRepository {
       sync();
       _scheduleWake();
     });
+    // Back from the background (a phone unlocked, a window restored): sockets may have
+    // died and snoozes come due while nothing ran. Catch up at once.
+    _lifecycle ??= AppLifecycleListener(
+      onHide: () => _hiddenAt ??= DateTime.now(),
+      onShow: _shown,
+    );
     await _refreshIdleLoops();
+  }
+
+  DateTime? _hiddenAt;
+  Future<void>? _fullSync;
+
+  /// Only a real absence counts: on the desktop, focus moving between windows fires
+  /// resume events all the time, and each would start a full sync.
+  void _shown() {
+    final hidden = _hiddenAt;
+    _hiddenAt = null;
+    if (_disposed || hidden == null) return;
+    if (DateTime.now().difference(hidden) < const Duration(seconds: 30)) return;
+    final last = _lastSync;
+    if (_fullSync == null &&
+        (last == null ||
+            DateTime.now().difference(last) > const Duration(seconds: 30))) {
+      unawaited(sync());
+    }
+    unawaited(_scheduleWake());
+    unawaited(_refreshIdleLoops());
   }
 
   Future<void> _refreshIdleLoops() async {
@@ -114,26 +156,49 @@ class RustRepository implements MailRepository {
     var backoff = const Duration(seconds: 30);
     while (!_disposed && (_idleLoops[accountId] ?? false)) {
       try {
-        // Servers drop IDLE after ~29 minutes; re-enter well before that.
+        // Re-enter every 10 minutes: servers drop IDLE after ~29, home routers forget a
+        // quiet connection much sooner, and each entry checks for mail that slipped by.
         final changed = await rust.waitForChange(
           accountId: accountId,
-          timeoutSecs: 25 * 60,
+          timeoutSecs: 10 * 60,
         );
-        backoff = const Duration(seconds: 30);
         if (changed &&
             (_idleLoops[accountId] ?? false) &&
             !_parked(accountId)) {
           _events.add(const SyncStarted());
-          final s = await _serial(
-            () async => _parked(accountId)
-                ? null
-                : await rust.syncAccount(accountId: accountId, inboxOnly: true),
-          );
           final errors = <String>[];
-          if (s != null) await _absorb(accountId, s, errors);
-          _events.add(SyncFinished(fetched: s?.fetched ?? 0, errors: errors));
-          _events.add(const ThreadsChanged());
+          rust.SyncSummaryDto? s;
+          try {
+            s = await _serial(
+              accountId,
+              () async => _parked(accountId)
+                  ? null
+                  : await rust.syncAccount(
+                      accountId: accountId,
+                      inboxOnly: true,
+                    ),
+            );
+            if (s != null) await _absorb(accountId, s, errors);
+          } catch (e) {
+            final host = (await _account(accountId))?.imapHost ?? '';
+            errors.add(problemFrom(e, host).title);
+            rethrow;
+          } finally {
+            // Every SyncStarted gets its SyncFinished, or the status line spins forever.
+            _events.add(SyncFinished(fetched: s?.fetched ?? 0, errors: errors));
+            _events.add(const ThreadsChanged());
+          }
+          // A sync that failed leaves the mail unseen, so the next wait reports it again
+          // at once: back off as after any failure instead of spinning at one pace.
+          if (errors.isNotEmpty) {
+            await Future<void>.delayed(backoff);
+            backoff = backoff * 2 > const Duration(minutes: 5)
+                ? const Duration(minutes: 5)
+                : backoff * 2;
+            continue;
+          }
         }
+        backoff = const Duration(seconds: 30);
       } catch (e) {
         final host = (await _account(accountId))?.imapHost ?? '';
         final p = problemFrom(e, host);
@@ -452,16 +517,20 @@ class RustRepository implements MailRepository {
       if (_disposed) return;
       try {
         final errors = <String>[];
-        for (final a in await rust.listAccounts()) {
-          final id = a.id.toInt();
-          // Checked again inside the lock: the account may have been parked meanwhile.
-          final s = await _serial(
-            () async => _parked(id)
-                ? null
-                : await rust.syncAccount(accountId: id, inboxOnly: true),
-          );
-          if (s != null) await _absorb(id, s, errors);
-        }
+        await Future.wait([
+          for (final a in await rust.listAccounts())
+            () async {
+              final id = a.id.toInt();
+              // Checked again inside the lock: the account may have been parked meanwhile.
+              final s = await _serial(
+                id,
+                () async => _parked(id)
+                    ? null
+                    : await rust.syncAccount(accountId: id, inboxOnly: true),
+              );
+              if (s != null) await _absorb(id, s, errors);
+            }(),
+        ]);
         if (errors.isNotEmpty) {
           _events.add(SyncFinished(fetched: 0, errors: errors));
         }
@@ -703,39 +772,48 @@ class RustRepository implements MailRepository {
     _events.add(const ThreadsChanged());
   }
 
+  /// A full sync; one already running is joined instead of started twice.
   @override
-  Future<void> sync() async => _syncAccounts(null);
+  Future<void> sync() =>
+      _fullSync ??= _syncAccounts(null).whenComplete(() => _fullSync = null);
 
   /// Sync [ids] (every account when null), skipping accounts parked on a sign-in
   /// problem; they still show in the status line.
   Future<void> _syncAccounts(List<int>? ids) async {
     final list = await rust.listAccounts();
     if (list.isEmpty) return;
+    if (ids == null) _lastSync = DateTime.now();
     _events.add(const SyncStarted());
     var fetched = 0;
     final errors = <String>[];
-    for (final a in list) {
-      final id = a.id.toInt();
-      if (ids != null && !ids.contains(id)) continue;
-      try {
-        final s = await _serial(
-          () async => _parked(id)
-              ? null
-              : await rust.syncAccount(accountId: id, inboxOnly: false),
-        );
-        if (s == null) continue;
-        fetched += s.fetched;
-        await _absorb(id, s, errors);
-      } catch (e) {
-        errors.add('${a.email}: ${problemFrom(e, a.imapHost).title}');
-      }
-    }
+    // Accounts sync side by side: a slow server does not hold up the others.
+    await Future.wait([
+      for (final a in list)
+        if (ids == null || ids.contains(a.id.toInt()))
+          () async {
+            final id = a.id.toInt();
+            try {
+              final s = await _serial(
+                id,
+                () async => _parked(id)
+                    ? null
+                    : await rust.syncAccount(accountId: id, inboxOnly: false),
+              );
+              if (s == null) return;
+              fetched += s.fetched;
+              await _absorb(id, s, errors);
+            } catch (e) {
+              errors.add('${a.email}: ${problemFrom(e, a.imapHost).title}');
+            }
+          }(),
+    ]);
     _events.add(SyncFinished(fetched: fetched, errors: errors));
     _events.add(const ThreadsChanged());
   }
 
   void dispose() {
     _disposed = true;
+    _lifecycle?.dispose();
     _pushTimer?.cancel();
     _periodic?.cancel();
     _wakeTimer?.cancel();

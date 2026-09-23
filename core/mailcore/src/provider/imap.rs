@@ -12,7 +12,9 @@ use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::TlsConnector;
 
-type Session = async_imap::Session<TlsStream<TcpStream>>;
+use super::watchdog::{keepalive, Armed, Watchdog};
+
+type Session = async_imap::Session<TlsStream<Watchdog<TcpStream>>>;
 
 pub enum Credential {
     Password(String),
@@ -26,6 +28,8 @@ pub struct ImapProvider {
     host: String,
     /// The server speaks Gmail's IMAP extensions (X-GM-EXT-1).
     gmail: bool,
+    /// Off only while IDLE, when silence is the point.
+    armed: Armed,
 }
 
 struct XOAuth2 {
@@ -301,6 +305,9 @@ impl ImapProvider {
         let tcp = within("connecting", TcpStream::connect((host, port)))
             .await?
             .map_err(Error::Io)?;
+        keepalive(&tcp);
+        let armed = Armed::new();
+        let tcp = Watchdog::new(tcp, armed.clone());
         let domain = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| Error::Tls(e.to_string()))?;
         let client = match transport.security {
@@ -319,15 +326,22 @@ impl ImapProvider {
                 let mut plain = async_imap::Client::new(tcp);
                 // A TLS-only port (993) says nothing in plain text: say which setting to change
                 // instead of waiting for the server to give up.
+                let no_greeting = || {
+                    Error::Tls(
+                        "no greeting in plain text: the port may expect TLS instead of STARTTLS"
+                            .into(),
+                    )
+                };
                 let _greeting = tokio::time::timeout(CONNECT_TIMEOUT, plain.read_response())
                     .await
-                    .map_err(|_| {
-                        Error::Tls(
-                            "no greeting in plain text: the port may expect TLS instead of STARTTLS"
-                                .into(),
-                        )
-                    })?
-                    .map_err(|e| Error::Imap(e.to_string()))?;
+                    .map_err(|_| no_greeting())?
+                    .map_err(|e| {
+                        if e.kind() == std::io::ErrorKind::TimedOut {
+                            no_greeting()
+                        } else {
+                            Error::Imap(e.to_string())
+                        }
+                    })?;
                 within("STARTTLS", plain.run_command_and_check_ok("STARTTLS", None))
                     .await?
                     .map_err(|e| Error::Tls(format!("STARTTLS refused: {e}")))?;
@@ -359,17 +373,31 @@ impl ImapProvider {
             .map_err(|(e, _)| login_error(e))?,
         };
         let mut session = session;
-        let gmail = session
-            .capabilities()
-            .await
-            .map(|c| c.has_str("X-GM-EXT-1"))
-            .unwrap_or(false);
+        let gmail = match session.capabilities().await {
+            Ok(c) => c.has_str("X-GM-EXT-1"),
+            // The connection died right after LOGIN: say so rather than hand back a
+            // session that answers everything with nothing.
+            Err(async_imap::error::Error::Io(e)) => return Err(Error::Io(e)),
+            Err(_) => false,
+        };
         Ok(ImapProvider {
             session: Some(session),
             selected: None,
             host: host.to_string(),
             gmail,
+            armed,
         })
+    }
+
+    /// A command that failed on the connection itself leaves a stream async-imap still
+    /// writes to but no longer reads: later commands would "succeed" with empty answers.
+    /// Drop the session so they fail plainly instead.
+    fn after<T>(&mut self, r: Result<T>) -> Result<T> {
+        if let Err(Error::Io(_)) = &r {
+            self.session = None;
+            self.selected = None;
+        }
+        r
     }
 
     fn s(&mut self) -> Result<&mut Session> {
@@ -389,75 +417,91 @@ impl ImapProvider {
 
 impl Provider for ImapProvider {
     async fn list_folders(&mut self) -> Result<Vec<RemoteFolder>> {
-        let s = self.s()?;
-        let names: Vec<async_imap::types::Name> =
-            s.list(Some(""), Some("*")).await?.try_collect().await?;
-        Ok(names
-            .iter()
-            .map(|n| {
-                let attrs = format!("{:?}", n.attributes());
-                let selectable = !attrs.to_lowercase().contains("noselect");
-                RemoteFolder {
-                    name: n.name().to_string(),
-                    // Roles match on the readable name ("Корзина"), commands use the raw one.
-                    role: role_for(&decode_folder_name(n.name()), &attrs),
-                    selectable,
-                }
-            })
-            .collect())
+        let r: Result<Vec<RemoteFolder>> = async {
+            let s = self.s()?;
+            let names: Vec<async_imap::types::Name> =
+                s.list(Some(""), Some("*")).await?.try_collect().await?;
+            Ok(names
+                .iter()
+                .map(|n| {
+                    let attrs = format!("{:?}", n.attributes());
+                    let selectable = !attrs.to_lowercase().contains("noselect");
+                    RemoteFolder {
+                        name: n.name().to_string(),
+                        // Roles match on the readable name ("Корзина"), commands use the raw one.
+                        role: role_for(&decode_folder_name(n.name()), &attrs),
+                        selectable,
+                    }
+                })
+                .collect())
+        }
+        .await;
+        self.after(r)
     }
 
     async fn select(&mut self, folder: &str) -> Result<FolderState> {
-        let s = self.s()?;
-        let mb = s.select(folder).await?;
-        self.selected = Some(folder.to_string());
-        Ok(FolderState {
-            uidvalidity: mb.uid_validity.unwrap_or(0),
-            uidnext: mb.uid_next.unwrap_or(1),
-            exists: mb.exists,
-            highest_modseq: mb.highest_modseq,
-        })
+        let r: Result<FolderState> = async {
+            let s = self.s()?;
+            let mb = s.select(folder).await?;
+            self.selected = Some(folder.to_string());
+            Ok(FolderState {
+                uidvalidity: mb.uid_validity.unwrap_or(0),
+                uidnext: mb.uid_next.unwrap_or(1),
+                exists: mb.exists,
+                highest_modseq: mb.highest_modseq,
+            })
+        }
+        .await;
+        self.after(r)
     }
 
     async fn uids(&mut self) -> Result<Vec<u32>> {
-        let s = self.s()?;
-        let set = s.uid_search("ALL").await?;
-        let mut v: Vec<u32> = set.into_iter().collect();
-        v.sort_unstable();
-        Ok(v)
+        let r: Result<Vec<u32>> = async {
+            let s = self.s()?;
+            let set = s.uid_search("ALL").await?;
+            let mut v: Vec<u32> = set.into_iter().collect();
+            v.sort_unstable();
+            Ok(v)
+        }
+        .await;
+        self.after(r)
     }
 
     async fn fetch(&mut self, uids: &[u32]) -> Result<Vec<FetchedMessage>> {
-        if uids.is_empty() {
-            return Ok(vec![]);
-        }
-        let query = if self.gmail {
-            "(UID FLAGS RFC822.SIZE X-GM-MSGID BODY.PEEK[])"
-        } else {
-            "(UID FLAGS RFC822.SIZE BODY.PEEK[])"
-        };
-        let s = self.s()?;
-        let mut out = Vec::with_capacity(uids.len());
-        for chunk in uids.chunks(25) {
-            let set = chunk
-                .iter()
-                .map(|u| u.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            let fetches: Vec<async_imap::types::Fetch> =
-                s.uid_fetch(&set, query).await?.try_collect().await?;
-            for f in fetches {
-                let Some(uid) = f.uid else { continue };
-                out.push(FetchedMessage {
-                    uid,
-                    flags: to_flags(f.flags()),
-                    size: f.size.unwrap_or(0),
-                    raw: f.body().map(|b| b.to_vec()).unwrap_or_default(),
-                    gm_msgid: f.gmail_msg_id().copied(),
-                });
+        let r: Result<Vec<FetchedMessage>> = async {
+            if uids.is_empty() {
+                return Ok(vec![]);
             }
+            let query = if self.gmail {
+                "(UID FLAGS RFC822.SIZE X-GM-MSGID BODY.PEEK[])"
+            } else {
+                "(UID FLAGS RFC822.SIZE BODY.PEEK[])"
+            };
+            let s = self.s()?;
+            let mut out = Vec::with_capacity(uids.len());
+            for chunk in uids.chunks(25) {
+                let set = chunk
+                    .iter()
+                    .map(|u| u.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let fetches: Vec<async_imap::types::Fetch> =
+                    s.uid_fetch(&set, query).await?.try_collect().await?;
+                for f in fetches {
+                    let Some(uid) = f.uid else { continue };
+                    out.push(FetchedMessage {
+                        uid,
+                        flags: to_flags(f.flags()),
+                        size: f.size.unwrap_or(0),
+                        raw: f.body().map(|b| b.to_vec()).unwrap_or_default(),
+                        gm_msgid: f.gmail_msg_id().copied(),
+                    });
+                }
+            }
+            Ok(out)
         }
-        Ok(out)
+        .await;
+        self.after(r)
     }
 
     async fn fetch_flags(
@@ -465,65 +509,81 @@ impl Provider for ImapProvider {
         uid_set: &str,
         since_modseq: Option<u64>,
     ) -> Result<Vec<FlagChange>> {
-        let s = self.s()?;
-        let query = match since_modseq {
-            Some(m) => format!("(UID FLAGS) (CHANGEDSINCE {m})"),
-            None => "(UID FLAGS)".to_string(),
-        };
-        let fetches: Vec<async_imap::types::Fetch> =
-            s.uid_fetch(uid_set, &query).await?.try_collect().await?;
-        Ok(fetches
-            .iter()
-            .filter_map(|f| {
-                f.uid.map(|uid| FlagChange {
-                    uid,
-                    flags: to_flags(f.flags()),
+        let r: Result<Vec<FlagChange>> = async {
+            let s = self.s()?;
+            let query = match since_modseq {
+                Some(m) => format!("(UID FLAGS) (CHANGEDSINCE {m})"),
+                None => "(UID FLAGS)".to_string(),
+            };
+            let fetches: Vec<async_imap::types::Fetch> =
+                s.uid_fetch(uid_set, &query).await?.try_collect().await?;
+            Ok(fetches
+                .iter()
+                .filter_map(|f| {
+                    f.uid.map(|uid| FlagChange {
+                        uid,
+                        flags: to_flags(f.flags()),
+                    })
                 })
-            })
-            .collect())
+                .collect())
+        }
+        .await;
+        self.after(r)
     }
 
     async fn store_flags(&mut self, uid: u32, add: Flags, remove: Flags) -> Result<()> {
-        let s = self.s()?;
-        if add.0 != 0 {
-            let _: Vec<_> = s
-                .uid_store(
-                    uid.to_string(),
-                    format!("+FLAGS.SILENT {}", add.imap_atoms()),
-                )
-                .await?
-                .try_collect()
-                .await?;
+        let r: Result<()> = async {
+            let s = self.s()?;
+            if add.0 != 0 {
+                let _: Vec<_> = s
+                    .uid_store(
+                        uid.to_string(),
+                        format!("+FLAGS.SILENT {}", add.imap_atoms()),
+                    )
+                    .await?
+                    .try_collect()
+                    .await?;
+            }
+            if remove.0 != 0 {
+                let _: Vec<_> = s
+                    .uid_store(
+                        uid.to_string(),
+                        format!("-FLAGS.SILENT {}", remove.imap_atoms()),
+                    )
+                    .await?
+                    .try_collect()
+                    .await?;
+            }
+            Ok(())
         }
-        if remove.0 != 0 {
-            let _: Vec<_> = s
-                .uid_store(
-                    uid.to_string(),
-                    format!("-FLAGS.SILENT {}", remove.imap_atoms()),
-                )
-                .await?
-                .try_collect()
-                .await?;
-        }
-        Ok(())
+        .await;
+        self.after(r)
     }
 
     async fn move_to(&mut self, uid: u32, dest: &str) -> Result<()> {
-        let s = self.s()?;
-        s.uid_mv(uid.to_string(), dest).await?;
-        Ok(())
+        let r: Result<()> = async {
+            let s = self.s()?;
+            s.uid_mv(uid.to_string(), dest).await?;
+            Ok(())
+        }
+        .await;
+        self.after(r)
     }
 
     async fn append(&mut self, folder: &str, raw: &[u8], flags: Flags) -> Result<()> {
-        let s = self.s()?;
-        let atoms = flags.imap_atoms();
-        let flag_str = if flags.0 == 0 {
-            None
-        } else {
-            Some(atoms.as_str())
-        };
-        s.append(folder, flag_str, None, raw).await?;
-        Ok(())
+        let r: Result<()> = async {
+            let s = self.s()?;
+            let atoms = flags.imap_atoms();
+            let flag_str = if flags.0 == 0 {
+                None
+            } else {
+                Some(atoms.as_str())
+            };
+            s.append(folder, flag_str, None, raw).await?;
+            Ok(())
+        }
+        .await;
+        self.after(r)
     }
 
     async fn idle(&mut self, timeout: Duration) -> Result<IdleOutcome> {
@@ -533,8 +593,11 @@ impl Provider for ImapProvider {
             .ok_or_else(|| Error::Imap("session closed".into()))?;
         let mut handle = session.idle();
         handle.init().await?;
+        self.armed.set(false);
         let (wait, _stop) = handle.wait_with_timeout(timeout);
-        let outcome = match wait.await? {
+        let waited = wait.await;
+        self.armed.set(true);
+        let outcome = match waited? {
             async_imap::extensions::idle::IdleResponse::NewData(_) => IdleOutcome::Changed,
             _ => IdleOutcome::Timeout,
         };

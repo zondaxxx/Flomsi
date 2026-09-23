@@ -56,7 +56,9 @@ pub fn diagnose(message: &str, host: &str) -> Diagnosis {
     // lettre prints SMTP replies as `permanent error (535): …`; a bare "535" could be a
     // port, a line number or a UID.
     let smtp_auth = has(&m, &["error (535)", "error (534)"]);
-    let is_auth = tagged("auth:") || has(&m, &auth_words) || smtp_auth;
+    // A broken connection is never a verdict on the password, whatever its text says.
+    let io = tagged("io:");
+    let is_auth = !io && (tagged("auth:") || has(&m, &auth_words) || smtp_auth);
 
     if m.contains("is already added") {
         return Diagnosis {
@@ -96,14 +98,16 @@ pub fn diagnose(message: &str, host: &str) -> Diagnosis {
         };
     }
 
-    if has(
-        &m,
-        &[
-            "webalert",
-            "log in via your web browser",
-            "please log in via",
-        ],
-    ) {
+    if !io
+        && has(
+            &m,
+            &[
+                "webalert",
+                "log in via your web browser",
+                "please log in via",
+            ],
+        )
+    {
         return Diagnosis {
             kind: ErrorKind::Auth,
             title: "Google blocked this sign-in".into(),
@@ -113,7 +117,8 @@ pub fn diagnose(message: &str, host: &str) -> Diagnosis {
             ),
         };
     }
-    if yandex
+    if !io
+        && yandex
         && has(
             &m,
             &[
@@ -189,7 +194,7 @@ pub fn diagnose(message: &str, host: &str) -> Diagnosis {
             "Check the port: 993 for IMAP over TLS, 465 or 587 for SMTP.",
         ),
         (
-            &["timed out", "timeout", "deadline"],
+            &["timed out", "timeout", "deadline", "stopped answering"],
             "The server did not answer in time",
             "Check the connection and try again.",
         ),
@@ -445,6 +450,15 @@ mod tests {
             .hint
             .as_deref(),
             Some("The port may expect STARTTLS instead of TLS, or the other way round.")
+        );
+        // A dropped connection is the network, even if a quoted reply mentions a login.
+        assert_eq!(
+            diagnose(
+                "io: connection reset while reading LOGIN failed reply",
+                "imap.gmail.com"
+            )
+            .kind,
+            ErrorKind::Network
         );
         // A server's own words about disks are the server's problem.
         assert_eq!(

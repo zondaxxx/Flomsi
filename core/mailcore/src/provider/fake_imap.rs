@@ -41,7 +41,12 @@ pub struct FakeState {
     /// Behave like Gmail: X-GM-EXT-1, labels as folders over one message store.
     pub gmail: bool,
     next_gm: u64,
+    /// Hang in the middle of the next body FETCH, like a server that stopped answering.
+    pub stall_fetch: bool,
 }
+
+/// Marks a reply the server sends only in part before going silent.
+const STALLED: &[u8] = b"\0stall\0";
 
 pub const GMAIL_ALL: &str = "[Gmail]/All Mail";
 pub const GMAIL_TRASH: &str = "[Gmail]/Trash";
@@ -512,8 +517,14 @@ where
                                     }
                                 }
                             }
-                            out.extend_from_slice(ok("FETCH").as_bytes());
-                            out
+                            if body && st.stall_fetch {
+                                // Half a response, then nothing: the connection stays open.
+                                out.truncate(out.len() / 2);
+                                STALLED.to_vec().into_iter().chain(out).collect()
+                            } else {
+                                out.extend_from_slice(ok("FETCH").as_bytes());
+                                out
+                            }
                         }
                         "STORE" => {
                             let op = args
@@ -610,6 +621,10 @@ where
                         _ => format!("{tag} BAD unsupported UID command\r\n").into_bytes(),
                     }
                 };
+                if let Some(rest) = reply.strip_prefix(STALLED) {
+                    send(&w, rest).await?;
+                    std::future::pending::<()>().await;
+                }
                 send(&w, &reply).await?;
             }
             "APPEND" => {
@@ -1320,6 +1335,68 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn a_server_that_stops_mid_fetch_fails_the_sync_instead_of_hanging() {
+        let fake = server().await;
+        fake.with(|s| s.stall_fetch = true);
+        let (_store, engine, account) = setup(&fake);
+        let mut p = connect(&fake, "secret").await.unwrap();
+        let started = Instant::now();
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await;
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+        // The folder that hung is reported, in words the classifier knows.
+        let errors = match report {
+            Ok(r) => r.errors,
+            Err(e) => vec![e.to_string()],
+        };
+        assert!(
+            errors.iter().any(|e| e.contains("stopped answering")),
+            "{errors:?}"
+        );
+        let d = crate::diagnose::diagnose(&errors[0], "localhost");
+        assert_ne!(d.kind, crate::diagnose::ErrorKind::Auth);
+    }
+
+    #[tokio::test]
+    async fn a_pause_between_commands_is_not_a_stall() {
+        let fake = server().await;
+        let mut p = connect(&fake, "secret").await.unwrap();
+        p.select("INBOX").await.unwrap();
+        // Local work (or a suspended phone) between two commands, longer than the limit.
+        tokio::time::sleep(crate::provider::watchdog::STALL + Duration::from_secs(1)).await;
+        assert_eq!(p.uids().await.unwrap(), vec![1, 2]);
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn after_a_stall_nothing_pretends_to_succeed() {
+        let fake = server().await;
+        fake.with(|s| s.stall_fetch = true);
+        let mut p = connect(&fake, "secret").await.unwrap();
+        p.select("INBOX").await.unwrap();
+        assert!(matches!(p.fetch(&[1]).await, Err(Error::Io(_))));
+        // The dead session is gone: a flag change fails instead of "succeeding" empty.
+        let r = p.store_flags(1, Flags::SEEN, Flags::default()).await;
+        assert!(r.is_err(), "{r:?}");
+        assert!(p.list_folders().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn idle_outlasts_the_stall_watchdog() {
+        let fake = server().await;
+        let mut p = connect(&fake, "secret").await.unwrap();
+        p.select("INBOX").await.unwrap();
+        // Longer than the watchdog's limit: silence during IDLE is expected.
+        let quiet = crate::provider::watchdog::STALL + Duration::from_secs(1);
+        assert_eq!(p.idle(quiet).await.unwrap(), IdleOutcome::Timeout);
+        // And the watchdog is back on afterwards: the session still works.
+        assert_eq!(p.uids().await.unwrap(), vec![1, 2]);
+        p.logout().await.unwrap();
     }
 
     #[tokio::test]

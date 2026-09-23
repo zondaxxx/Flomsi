@@ -271,39 +271,46 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                       ? (accounts != null && accounts.isEmpty
                             ? const FirstRun()
                             : const EmptyNote('No mail'))
-                      : AnimatedList(
-                          key: _listKey,
-                          controller: _scroll,
-                          initialItemCount: _items.length,
-                          itemBuilder: (context, i, anim) {
-                            if (i >= _items.length) {
-                              return const SizedBox.shrink();
-                            }
-                            final t = _items[i];
-                            final row = ThreadRow(
-                              thread: t,
-                              selected: t.id == selected,
-                              onTap: () {
-                                ref
-                                    .read(selectedThreadIdProvider.notifier)
-                                    .select(t.id);
-                                widget.onOpen?.call(t.id);
-                              },
-                            );
-                            return _Transition(
-                              anim: anim,
-                              child: RevealOnSelect(
-                                key: ValueKey('reveal-${t.id}'),
+                      : _pullToRefresh(
+                          AnimatedList(
+                            key: _listKey,
+                            controller: _scroll,
+                            // On a phone the list always scrolls, so a short one can be
+                            // pulled down to refresh too.
+                            physics: _touch
+                                ? const AlwaysScrollableScrollPhysics()
+                                : null,
+                            initialItemCount: _items.length,
+                            itemBuilder: (context, i, anim) {
+                              if (i >= _items.length) {
+                                return const SizedBox.shrink();
+                              }
+                              final t = _items[i];
+                              final row = ThreadRow(
+                                thread: t,
                                 selected: t.id == selected,
-                                child: KeyedSubtree(
-                                  key: t.id == selected
-                                      ? _selectedRowKey
-                                      : null,
-                                  child: _touch ? _swipeable(t, row) : row,
+                                onTap: () {
+                                  ref
+                                      .read(selectedThreadIdProvider.notifier)
+                                      .select(t.id);
+                                  widget.onOpen?.call(t.id);
+                                },
+                              );
+                              return _Transition(
+                                anim: anim,
+                                child: RevealOnSelect(
+                                  key: ValueKey('reveal-${t.id}'),
+                                  selected: t.id == selected,
+                                  child: KeyedSubtree(
+                                    key: t.id == selected
+                                        ? _selectedRowKey
+                                        : null,
+                                    child: _touch ? _swipeable(t, row) : row,
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
                 ),
         ),
@@ -311,7 +318,15 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     );
   }
 
-  static final bool _touch = Platform.isIOS || Platform.isAndroid;
+  static bool get _touch => kTouch;
+
+  /// Phones: pull the list down to sync now (the platform's own spinner).
+  Widget _pullToRefresh(Widget list) => _touch
+      ? RefreshIndicator.adaptive(
+          onRefresh: () => ref.read(repositoryProvider).sync(),
+          child: list,
+        )
+      : list;
 
   /// Swipe right to archive, left to delete. The action is local-first, like the keyboard path.
   Widget _swipeable(Thread t, Widget row) {

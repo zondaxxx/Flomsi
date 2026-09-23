@@ -2,6 +2,7 @@
 
 pub mod imap;
 pub mod parse;
+pub mod watchdog;
 
 #[cfg(test)]
 pub(crate) mod fake_imap;
