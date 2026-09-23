@@ -50,10 +50,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 dco_decode_box_autoadd_i_64(dynamic raw);
 
   @protected
+  ServerDto dco_decode_box_autoadd_server_dto(dynamic raw);
+
+  @protected
   ThreadDto dco_decode_box_autoadd_thread_dto(dynamic raw);
 
   @protected
   int dco_decode_box_autoadd_u_32(dynamic raw);
+
+  @protected
+  DiagnosisDto dco_decode_diagnosis_dto(dynamic raw);
 
   @protected
   DraftAttachmentDto dco_decode_draft_attachment_dto(dynamic raw);
@@ -104,6 +110,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
 
   @protected
+  ServerDto? dco_decode_opt_box_autoadd_server_dto(dynamic raw);
+
+  @protected
   ThreadDto? dco_decode_opt_box_autoadd_thread_dto(dynamic raw);
 
   @protected
@@ -111,6 +120,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SavedDraftDto dco_decode_saved_draft_dto(dynamic raw);
+
+  @protected
+  ServerDto dco_decode_server_dto(dynamic raw);
 
   @protected
   SyncEventDto dco_decode_sync_event_dto(dynamic raw);
@@ -160,10 +172,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64 sse_decode_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  ServerDto sse_decode_box_autoadd_server_dto(SseDeserializer deserializer);
+
+  @protected
   ThreadDto sse_decode_box_autoadd_thread_dto(SseDeserializer deserializer);
 
   @protected
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer);
+
+  @protected
+  DiagnosisDto sse_decode_diagnosis_dto(SseDeserializer deserializer);
 
   @protected
   DraftAttachmentDto sse_decode_draft_attachment_dto(
@@ -222,6 +240,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
 
   @protected
+  ServerDto? sse_decode_opt_box_autoadd_server_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   ThreadDto? sse_decode_opt_box_autoadd_thread_dto(
     SseDeserializer deserializer,
   );
@@ -231,6 +254,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   SavedDraftDto sse_decode_saved_draft_dto(SseDeserializer deserializer);
+
+  @protected
+  ServerDto sse_decode_server_dto(SseDeserializer deserializer);
 
   @protected
   SyncEventDto sse_decode_sync_event_dto(SseDeserializer deserializer);
@@ -293,6 +319,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_box_autoadd_server_dto(
+    ServerDto self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_box_autoadd_thread_dto(
     ThreadDto self,
     SseSerializer serializer,
@@ -300,6 +332,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_box_autoadd_u_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_diagnosis_dto(DiagnosisDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_draft_attachment_dto(
@@ -380,6 +415,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_opt_box_autoadd_server_dto(
+    ServerDto? self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_opt_box_autoadd_thread_dto(
     ThreadDto? self,
     SseSerializer serializer,
@@ -390,6 +431,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_saved_draft_dto(SavedDraftDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_server_dto(ServerDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_sync_event_dto(SyncEventDto self, SseSerializer serializer);

@@ -40,8 +40,113 @@ impl async_imap::Authenticator for XOAuth2 {
     }
 }
 
-/// Public web PKI roots, plus any extra certificates the caller trusts on purpose.
-fn tls_connector(extra_roots: &[CertificateDer<'static>]) -> Result<TlsConnector> {
+/// Is `host` this machine? Local bridges (Proton Bridge) listen there with a self-signed
+/// certificate; nothing else may skip certificate checks.
+pub fn is_loopback(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_matches(|c| c == '[' || c == ']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Certificate checks for a local bridge: any certificate is accepted, but the handshake
+/// signatures are still verified against it. Only ever used for loopback hosts.
+#[derive(Debug)]
+struct LocalBridgeVerifier(Arc<rustls::crypto::CryptoProvider>);
+
+impl rustls::client::danger::ServerCertVerifier for LocalBridgeVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.0.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// Public web PKI roots plus any extra certificates the caller trusts on purpose; or, for a
+/// local bridge on a loopback host, any certificate.
+/// How long one step of connecting may take before it counts as no answer.
+#[cfg(not(test))]
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+async fn within<T>(what: &str, f: impl std::future::Future<Output = T>) -> Result<T> {
+    tokio::time::timeout(CONNECT_TIMEOUT, f).await.map_err(|_| {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{what} timed out"),
+        ))
+    })
+}
+
+/// Only a NO or BAD answer to LOGIN means the server refused the credentials. A dropped
+/// connection or a garbled reply is not a verdict on the password and must not park the
+/// account.
+fn login_error(e: async_imap::error::Error) -> Error {
+    use async_imap::error::Error as E;
+    match e {
+        E::No(_) | E::Bad(_) | E::Validate(_) => Error::Auth(e.to_string()),
+        E::Io(io) => Error::Io(io),
+        other => Error::Imap(other.to_string()),
+    }
+}
+
+fn tls_connector(
+    host: &str,
+    local_bridge: bool,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<TlsConnector> {
+    if local_bridge {
+        if !is_loopback(host) {
+            return Err(Error::Tls(format!(
+                "a self-signed certificate is only accepted from this computer, not from {host}"
+            )));
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(LocalBridgeVerifier(provider)))
+            .with_no_client_auth();
+        return Ok(TlsConnector::from(Arc::new(config)));
+    }
     let mut roots = rustls::RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     for cert in extra_roots {
@@ -53,6 +158,13 @@ fn tls_connector(extra_roots: &[CertificateDer<'static>]) -> Result<TlsConnector
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(TlsConnector::from(Arc::new(config)))
+}
+
+/// How to reach a server: TLS or STARTTLS, and whether it is a local bridge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Transport {
+    pub security: crate::model::Security,
+    pub local_bridge: bool,
 }
 
 fn to_flags<'a>(it: impl Iterator<Item = Flag<'a>>) -> Flags {
@@ -173,34 +285,78 @@ impl ImapProvider {
         cred: Credential,
         extra_roots: &[CertificateDer<'static>],
     ) -> Result<ImapProvider> {
-        let tcp = TcpStream::connect((host, port)).await?;
+        Self::connect_with(host, port, Transport::default(), extra_roots, user, cred).await
+    }
+
+    /// The general form: TLS from the first byte or STARTTLS, trusted roots, local bridge.
+    pub async fn connect_with(
+        host: &str,
+        port: u16,
+        transport: Transport,
+        extra_roots: &[CertificateDer<'static>],
+        user: &str,
+        cred: Credential,
+    ) -> Result<ImapProvider> {
+        let connector = tls_connector(host, transport.local_bridge, extra_roots)?;
+        let tcp = within("connecting", TcpStream::connect((host, port)))
+            .await?
+            .map_err(Error::Io)?;
         let domain = rustls::pki_types::ServerName::try_from(host.to_string())
             .map_err(|e| Error::Tls(e.to_string()))?;
-        let tls = tls_connector(extra_roots)?
-            .connect(domain, tcp)
-            .await
-            .map_err(|e| Error::Tls(e.to_string()))?;
-        let mut client = async_imap::Client::new(tls);
-        // Consume the server greeting.
-        let _greeting = client
-            .read_response()
-            .await
-            .map_err(|e| Error::Imap(e.to_string()))?;
+        let client = match transport.security {
+            crate::model::Security::Tls => {
+                let tls = within("the TLS handshake", connector.connect(domain, tcp))
+                    .await?
+                    .map_err(|e| Error::Tls(e.to_string()))?;
+                let mut client = async_imap::Client::new(tls);
+                // Consume the server greeting.
+                let _greeting = within("the greeting", client.read_response())
+                    .await?
+                    .map_err(|e| Error::Imap(e.to_string()))?;
+                client
+            }
+            crate::model::Security::StartTls => {
+                let mut plain = async_imap::Client::new(tcp);
+                // A TLS-only port (993) says nothing in plain text: say which setting to change
+                // instead of waiting for the server to give up.
+                let _greeting = tokio::time::timeout(CONNECT_TIMEOUT, plain.read_response())
+                    .await
+                    .map_err(|_| {
+                        Error::Tls(
+                            "no greeting in plain text: the port may expect TLS instead of STARTTLS"
+                                .into(),
+                        )
+                    })?
+                    .map_err(|e| Error::Imap(e.to_string()))?;
+                within("STARTTLS", plain.run_command_and_check_ok("STARTTLS", None))
+                    .await?
+                    .map_err(|e| Error::Tls(format!("STARTTLS refused: {e}")))?;
+                let tls = within(
+                    "the TLS handshake",
+                    connector.connect(domain, plain.into_inner()),
+                )
+                .await?
+                .map_err(|e| Error::Tls(e.to_string()))?;
+                // No greeting after STARTTLS: the session continues.
+                async_imap::Client::new(tls)
+            }
+        };
         let session = match cred {
-            Credential::Password(p) => client
-                .login(user, &p)
-                .await
-                .map_err(|e| Error::Auth(e.0.to_string()))?,
-            Credential::AccessToken(t) => client
-                .authenticate(
+            Credential::Password(p) => within("signing in", client.login(user, &p))
+                .await?
+                .map_err(|(e, _)| login_error(e))?,
+            Credential::AccessToken(t) => within(
+                "signing in",
+                client.authenticate(
                     "XOAUTH2",
                     XOAuth2 {
                         user: user.to_string(),
                         token: t,
                     },
-                )
-                .await
-                .map_err(|e| Error::Auth(e.0.to_string()))?,
+                ),
+            )
+            .await?
+            .map_err(|(e, _)| login_error(e))?,
         };
         let mut session = session;
         let gmail = session

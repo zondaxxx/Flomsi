@@ -151,7 +151,8 @@ class SyncStatusController extends Notifier<SyncStatus> {
       }
     });
     ref.onDispose(() => _sub?.cancel());
-    return SyncStatus(lastOk: DateTime.now());
+    // Nothing synced yet: the status line says so instead of showing a made-up time.
+    return const SyncStatus();
   }
 }
 

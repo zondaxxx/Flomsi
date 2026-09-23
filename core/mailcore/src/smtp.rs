@@ -18,12 +18,15 @@ pub struct SmtpConfig {
     pub cred: SmtpCredential,
     /// TLS from the first byte (port 465). Otherwise STARTTLS is required (587).
     pub implicit_tls: bool,
+    /// Accept a self-signed certificate on 127.0.0.1 (local bridges).
+    pub local_bridge: bool,
 }
 
 impl SmtpConfig {
     pub fn new(host: String, port: u16, user: String, cred: SmtpCredential) -> SmtpConfig {
         SmtpConfig {
             implicit_tls: port == 465,
+            local_bridge: false,
             host,
             port,
             user,
@@ -42,7 +45,48 @@ pub async fn send_trusting(
     message: lettre::Message,
     extra_roots: &[CertificateDer<'static>],
 ) -> Result<()> {
+    let mailer = transport(cfg, extra_roots)?;
+    mailer
+        .send(message)
+        .await
+        .map_err(|e| Error::Other(format!("smtp: {e}")))?;
+    Ok(())
+}
+
+/// Connect, start TLS and authenticate without sending anything: the "check" step when an
+/// account is added or its password changes.
+pub async fn check(cfg: &SmtpConfig, extra_roots: &[CertificateDer<'static>]) -> Result<()> {
+    let ok = transport(cfg, extra_roots)?
+        .test_connection()
+        .await
+        .map_err(|e| Error::Other(format!("smtp: {e}")))?;
+    if ok {
+        Ok(())
+    } else {
+        Err(Error::Other(
+            "smtp: the server closed the connection".into(),
+        ))
+    }
+}
+
+fn transport(
+    cfg: &SmtpConfig,
+    extra_roots: &[CertificateDer<'static>],
+) -> Result<AsyncSmtpTransport<Tokio1Executor>> {
     let mut params = TlsParameters::builder(cfg.host.clone());
+    if cfg.local_bridge {
+        if !crate::provider::imap::is_loopback(&cfg.host) {
+            return Err(Error::Tls(format!(
+                "a self-signed certificate is only accepted from this computer, not from {}",
+                cfg.host
+            )));
+        }
+        // Like LocalBridgeVerifier on the IMAP side: the name is not checked either, since
+        // Proton Bridge's certificate names 127.0.0.1 and people may type localhost.
+        params = params
+            .dangerous_accept_invalid_certs(true)
+            .dangerous_accept_invalid_hostnames(true);
+    }
     for der in extra_roots {
         let cert = Certificate::from_der(der.to_vec()).map_err(|e| Error::Tls(e.to_string()))?;
         params = params.add_root_certificate(cert);
@@ -61,12 +105,7 @@ pub async fn send_trusting(
         })
         .credentials(Credentials::new(cfg.user.clone(), secret))
         .authentication(mechanism);
-    let mailer = builder.build();
-    mailer
-        .send(message)
-        .await
-        .map_err(|e| Error::Other(format!("smtp: {e}")))?;
-    Ok(())
+    Ok(builder.build())
 }
 
 /// Well-known SMTP endpoints for the IMAP hosts we recognise.
@@ -79,6 +118,7 @@ pub fn guess_smtp(imap_host: &str) -> Option<(String, u16)> {
         "imap.yandex.ru" => ("smtp.yandex.ru", 465),
         "imap.yandex.com" => ("smtp.yandex.com", 465),
         "imap.fastmail.com" => ("smtp.fastmail.com", 465),
+        "imap.mail.ru" => ("smtp.mail.ru", 465),
         _ => {
             if let Some(rest) = h.strip_prefix("imap.") {
                 return Some((format!("smtp.{rest}"), 587));

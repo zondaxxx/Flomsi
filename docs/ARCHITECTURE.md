@@ -44,7 +44,8 @@ model      типы: Account, Folder, Message, Thread, Label, Flags, Op
 sanitize   ammonia: HTML писем без script/style/form/iframe, remote-картинки → data-blocked-src
 compose    Draft: reply / reply-all / forward, In-Reply-To + References, цитирование, вложения, MIME через lettre
 files      безопасные имена файлов для вложений, `name (1).ext` при совпадении
-smtp       lettre: 465 implicit TLS, 587 STARTTLS, PLAIN/LOGIN или XOAUTH2
+smtp       lettre: 465 implicit TLS, 587 STARTTLS, PLAIN/LOGIN или XOAUTH2; check() входит без отправки
+diagnose   сырая ошибка → вид (auth/network/tls/server/local), заголовок и подсказка по провайдеру
 storage    SQLite: схема, миграции, upsert, запросы, FTS5, outbox
 search     язык запросов `from:anna has:attachment before:2026-09` → SQL
 threading  JWZ-lite по Message-ID / References, фолбэк на тему
@@ -132,9 +133,17 @@ Enum с данными в DTO не используем: кодогенерат�
 9. **Тесты протоколов.** В ядре есть скриптованные IMAP и SMTP серверы поверх TLS (сертификат rcgen в момент теста):
    полный синк, выгрузка outbox (STORE/MOVE), смена UIDVALIDITY, IDLE, APPEND, отправка со STARTTLS и неявным TLS,
    Bcc только в конверте. `connect_trusting` / `send_trusting` добавляют доверенный корень (частный CA, локальный мост);
-   обычные вызовы проверяют сертификат по web PKI.
+   обычные вызовы проверяют сертификат по web PKI. Фейковый IMAP умеет режим STARTTLS (порт без TLS, как 143 и Proton Bridge).
+12. **Первый вход.** У аккаунта своя защита соединения для IMAP и SMTP (`tls` с первого байта или `starttls`) и флаг
+   локального моста: сертификат моста на этом компьютере (Proton Bridge, 127.0.0.1:1143/1025) принимается как есть, но
+   только для loopback-адресов, подписи рукопожатия всё равно проверяются. Форма добавления заполняет серверы по домену
+   (Gmail, iCloud, Outlook с честной пометкой, Yandex, Mail.ru и родня, Fastmail, Proton), проверяет вход в IMAP, потом
+   в SMTP, и показывает ошибку словами (`diagnose`) с ответом сервера под катом. Повторное добавление адреса
+   отказывается до записи в keychain. Аккаунт, чей пароль сервер отверг, «паркуется»: без IDLE, таймера и выгрузки
+   outbox, чтобы повторные попытки не заблокировали ящик; пароль меняется в настройках (сначала проверка входа, потом
+   запись) или «Try again». Строка статуса говорит правду: no accounts, not synced yet, sign-in needed, sync failed.
 
-## Схема базы (v7)
+## Схема базы (v8)
 
 ```
 accounts(id, kind, email, display_name, imap_host, imap_port, smtp_host, smtp_port, auth_kind, created_at,
@@ -150,6 +159,7 @@ settings(key, value)                                                  -- v4: the
 snoozes(account_id, thread_key, thread_id, until, woke)               -- v5
 trigger messages_fts_cleanup: DELETE из messages чистит messages_fts  -- v6
 messages.gm_msgid, messages.dedup_key, folders.selectable            -- v7
+accounts.imap_security, accounts.smtp_security, accounts.local_bridge -- v8
 threads(id, account_id, subject, subject_norm, last_date, msg_count, unread_count, snippet, has_attachment, starred, participants)
 labels(id, account_id, name, color) ; message_labels(message_id, label_id)
 messages_fts(subject, from_text, to_text, body)   -- FTS5
@@ -158,7 +168,7 @@ outbox(id, account_id, op_json, created_at, attempts, last_error, done)
 
 Миграции по `PRAGMA user_version`. Переход v1 → v2 сбрасывает кэш писем (аккаунты, ярлыки и outbox остаются, у папок
 обнуляется UIDVALIDITY): старые строки не знают своих вложений, а сервер остаётся источником правды, так что следующий синк
-заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`, v3 → v4 добавляет подпись аккаунта и `settings`, v4 → v5 добавляет `snoozes`, v5 → v6 пересобирает поисковый индекс и ставит триггер его очистки, v6 → v7 добавляет ключ письма и пересчитывает треды.
+заново качает окно из 200 последних писем на папку. Переход v2 → v3 только добавляет `drafts`, v3 → v4 добавляет подпись аккаунта и `settings`, v4 → v5 добавляет `snoozes`, v5 → v6 пересобирает поисковый индекс и ставит триггер его очистки, v6 → v7 добавляет ключ письма и пересчитывает треды, v7 → v8 добавляет защиту соединения и флаг локального моста (у старых аккаунтов TLS, SMTP по порту).
 Все шаги миграции идут одной транзакцией: оборванное обновление оставляет прежнюю схему. Базу с `user_version` новее,
 чем знает сборка, приложение и mailctl не открывают.
 

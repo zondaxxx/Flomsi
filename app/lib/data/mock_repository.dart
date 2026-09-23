@@ -242,6 +242,7 @@ class MockRepository implements MailRepository {
         displayName: _profiles[id]?.$1 ?? '',
         signature: _profiles[id]?.$2 ?? '',
         server: server,
+        problem: problems[id],
       ),
   ];
 
@@ -674,29 +675,104 @@ class MockRepository implements MailRepository {
     _events.add(const ThreadsChanged());
   }
 
-  @override
-  Future<void> testImapLogin({
-    required String email,
-    required String host,
-    required int port,
-    required String password,
-  }) async {}
+  /// Sign-in problems per account, for design work and tests.
+  final Map<int, Problem> problems = {};
+
+  /// The password the mock servers accept; anything else is refused.
+  static const goodPassword = 'app-password';
+
+  static const _refused = Problem(
+    kind: 'auth',
+    title: 'The server rejected the name or password',
+    hint: 'Check the address and password. Many providers want an app password for mail apps.',
+    detail: 'auth: NO [AUTHENTICATIONFAILED] Invalid credentials',
+  );
 
   @override
-  Future<Account> addImapAccount({
-    required String email,
-    required String host,
-    required int port,
-    required String password,
-    String displayName = '',
-  }) async {
+  Future<void> checkAccount(AccountSetup setup, String password) async {
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    if (setup.imap.host.isEmpty) {
+      throw const Problem(
+        kind: 'network',
+        title: "Can't find that server",
+        hint: 'Check the server name.',
+        stage: 'imap',
+      );
+    }
+    if (password != goodPassword) {
+      throw Problem(
+        kind: _refused.kind,
+        title: _refused.title,
+        hint: _refused.hint,
+        detail: _refused.detail,
+        stage: 'imap',
+      );
+    }
+    if (setup.smtp.host.startsWith('blocked.')) {
+      throw const Problem(
+        kind: 'network',
+        title: 'Nothing answers on that port',
+        hint: 'Check the port: 993 for IMAP over TLS, 465 or 587 for SMTP.',
+        stage: 'smtp',
+      );
+    }
+  }
+
+  @override
+  Future<Account> addAccount(AccountSetup setup, String password) async {
+    final email = setup.email.trim();
+    if (_accountRows.any((a) => a.$2.toLowerCase() == email.toLowerCase())) {
+      throw const Problem(
+        kind: 'local',
+        title: 'This address is already added',
+        hint: 'To use a new password, open Settings → Accounts.',
+      );
+    }
+    final id = _accountRows.fold(0, (m, a) => a.$1 > m ? a.$1 : m) + 1;
+    _accountRows.add((
+      id,
+      email,
+      'imap',
+      Swatch.purple,
+      '${setup.imap.host}:${setup.imap.port}',
+    ));
     _events.add(const ThreadsChanged());
-    return Account(id: 99, email: email, kind: 'imap', color: Swatch.purple);
+    return Account(id: id, email: email, kind: 'imap', color: Swatch.purple);
+  }
+
+  @override
+  ServerSetup? suggestSmtp(String imapHost) {
+    final h = imapHost.trim().toLowerCase();
+    if (!h.startsWith('imap.')) return null;
+    return ServerSetup(
+      host: 'smtp.${h.substring(5)}',
+      port: 587,
+      startTls: true,
+    );
+  }
+
+  /// Make the server refuse an account's stored password, as a real one would.
+  void failSignIn(int accountId, Problem p) {
+    problems[accountId] = p;
+    _events.add(const ThreadsChanged());
+  }
+
+  @override
+  Future<void> updatePassword(int accountId, String password) async {
+    if (password != goodPassword) throw _refused;
+    await retryAccount(accountId);
+  }
+
+  @override
+  Future<void> retryAccount(int accountId) async {
+    problems.remove(accountId);
+    _events.add(const ThreadsChanged());
   }
 
   @override
   Future<void> removeAccount(int id) async {
     _accountRows.removeWhere((a) => a.$1 == id);
+    problems.remove(id);
     _events.add(const ThreadsChanged());
   }
 

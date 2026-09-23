@@ -8,6 +8,8 @@ import '../../data/models.dart';
 import '../thread/snooze.dart';
 import '../../platform.dart';
 import '../../state/providers.dart';
+import '../accounts/add_account_sheet.dart';
+import '../settings/settings_sheet.dart';
 import '../../theme/motion.dart';
 import '../../theme/surfaces.dart';
 import '../../theme/tokens.dart';
@@ -121,6 +123,8 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     final syncError = ref.watch(
       syncStatusProvider.select((st) => st.lastError),
     );
+    final accounts = ref.watch(accountsProvider).value;
+    final locked = [...?accounts?.where((a) => a.needsPassword)];
     final list = threads.asData?.value;
     if (list != null) _sync(list);
     final unread = list?.where((t) => t.unread).length ?? 0;
@@ -184,7 +188,9 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
             ],
           ),
         ),
-        if (syncError != null)
+        for (final a in locked)
+          _SignInBanner(key: ValueKey('signin-${a.id}'), account: a),
+        if (syncError != null && (accounts?.isNotEmpty ?? true))
           Container(
             padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
             decoration: BoxDecoration(
@@ -218,7 +224,9 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                     child: Text('$e', style: mono(context, color: s.red)),
                   ),
                   data: (_) => _items.isEmpty
-                      ? const EmptyNote('No mail')
+                      ? (accounts != null && accounts.isEmpty
+                            ? const FirstRun()
+                            : const EmptyNote('No mail'))
                       : AnimatedList(
                           key: _listKey,
                           initialItemCount: _items.length,
@@ -290,6 +298,91 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
   void _setFilter(String f) {
     setState(() => _filter = f);
     ref.read(queryProvider.notifier).set(_compose(searchController.text));
+  }
+}
+
+/// An account the server stopped letting in: say which and why, and where to fix it.
+class _SignInBanner extends StatelessWidget {
+  const _SignInBanner({super.key, required this.account});
+  final Account account;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+      decoration: BoxDecoration(
+        color: s.red.withValues(alpha: 0.06),
+        border: Border(bottom: BorderSide(color: s.border)),
+      ),
+      child: Row(
+        children: [
+          Icon(CupertinoIcons.lock, size: 13, color: s.red),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '${account.email}: ${account.problem?.title ?? 'needs a password'}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: ui(context, size: 12, color: s.red),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SmallButton(
+            label: 'Enter password',
+            height: 22,
+            onPressed: () => showSettingsSheet(context),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// No account yet: what this is, what it needs, one button.
+class FirstRun extends StatelessWidget {
+  const FirstRun({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 360),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'No accounts yet',
+                style: ui(context, size: 15, weight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Add a mailbox over IMAP: Gmail, iCloud, Yandex, Mail.ru, Fastmail, '
+                'Proton through its Bridge, or any server you know the address of.',
+                style: ui(context, size: 12.5, color: s.fg2, height: 1.45),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Most providers want an app password, made in the account’s '
+                'security settings; your usual password is refused.',
+                style: ui(context, size: 12, color: s.fg3, height: 1.45),
+              ),
+              const SizedBox(height: 16),
+              SmallButton(
+                label: 'Add account',
+                primary: true,
+                height: 28,
+                onPressed: () => showAddAccountSheet(context),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 

@@ -34,6 +34,10 @@ class Account {
     this.displayName = '',
     this.signature = '',
     this.server = '',
+    this.imap,
+    this.smtp,
+    this.localBridge = false,
+    this.problem,
   });
   final int id;
   final String email;
@@ -47,8 +51,77 @@ class Account {
 
   /// `imap.example.com:993`
   final String server;
+  final ServerSetup? imap;
+  final ServerSetup? smtp;
+
+  /// A bridge on this computer (Proton) whose own certificate is accepted.
+  final bool localBridge;
+
+  /// Why this account stopped syncing; an [Problem.isAuth] problem waits for a new
+  /// password instead of retrying (retries can lock the mailbox).
+  final Problem? problem;
+  bool get needsPassword => problem?.isAuth ?? false;
+
   String get short =>
       kind == 'imap' ? email.split('@').last.split('.').first : kind;
+}
+
+/// One mail server as a person types it in.
+class ServerSetup {
+  const ServerSetup({
+    required this.host,
+    required this.port,
+    this.startTls = false,
+  });
+  final String host;
+  final int port;
+
+  /// Plain connection upgraded with STARTTLS (143, 587, Proton Bridge) instead of TLS
+  /// from the first byte (993, 465).
+  final bool startTls;
+  String get security => startTls ? 'starttls' : 'tls';
+
+  @override
+  String toString() => '$host:$port${startTls ? ' STARTTLS' : ''}';
+}
+
+/// Everything the add-account form collects, except the password.
+class AccountSetup {
+  const AccountSetup({
+    required this.email,
+    required this.imap,
+    required this.smtp,
+    this.displayName = '',
+    this.localBridge = false,
+  });
+  final String email;
+  final String displayName;
+  final ServerSetup imap;
+  final ServerSetup smtp;
+  final bool localBridge;
+}
+
+/// A failure put in words. [kind] is `auth`, `network`, `tls`, `server` or `local`;
+/// [stage] says which server answered (`imap`, `smtp`) when that matters.
+class Problem implements Exception {
+  const Problem({
+    required this.kind,
+    required this.title,
+    this.hint,
+    this.detail = '',
+    this.stage,
+  });
+  final String kind;
+  final String title;
+  final String? hint;
+
+  /// The server's own words, for people who want them.
+  final String detail;
+  final String? stage;
+  bool get isAuth => kind == 'auth';
+
+  @override
+  String toString() => hint == null ? title : '$title. $hint';
 }
 
 class Folder {

@@ -148,6 +148,16 @@ pub struct FakeImap {
 
 impl FakeImap {
     pub async fn start(user: &str, password: &str) -> FakeImap {
+        Self::start_mode(user, password, false).await
+    }
+
+    /// A server on a plain port that wants STARTTLS before anything else, the way
+    /// port 143 and Proton Bridge work.
+    pub async fn start_starttls(user: &str, password: &str) -> FakeImap {
+        Self::start_mode(user, password, true).await
+    }
+
+    async fn start_mode(user: &str, password: &str, starttls: bool) -> FakeImap {
         let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
         let cert = ck.cert.der().clone();
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
@@ -165,8 +175,18 @@ impl FakeImap {
             while let Ok((tcp, _)) = listener.accept().await {
                 let (acceptor, state, creds) = (acceptor.clone(), shared.clone(), creds.clone());
                 tokio::spawn(async move {
-                    if let Ok(tls) = acceptor.accept(tcp).await {
-                        let _ = serve(tls, state, creds).await;
+                    if starttls {
+                        let mut tcp = tcp;
+                        if plain_until_starttls(&mut tcp, &state)
+                            .await
+                            .unwrap_or(false)
+                        {
+                            if let Ok(tls) = acceptor.accept(tcp).await {
+                                let _ = serve(tls, state, creds, false).await;
+                            }
+                        }
+                    } else if let Ok(tls) = acceptor.accept(tcp).await {
+                        let _ = serve(tls, state, creds, true).await;
                     }
                 });
             }
@@ -308,10 +328,67 @@ fn fetch_line(seq: usize, m: &FakeMsg, body: bool, gm: bool) -> Vec<u8> {
     out
 }
 
+/// The plain part of a STARTTLS session: a greeting, then only CAPABILITY, NOOP and
+/// STARTTLS. `true` once the client asked for TLS and the stream should be upgraded.
+async fn plain_until_starttls(
+    tcp: &mut tokio::net::TcpStream,
+    state: &Arc<Mutex<FakeState>>,
+) -> io::Result<bool> {
+    let caps = "IMAP4rev1 STARTTLS LOGINDISABLED";
+    tcp.write_all(format!("* OK [CAPABILITY {caps}] fake plain\r\n").as_bytes())
+        .await?;
+    loop {
+        // One byte at a time, so nothing past the command line is buffered and lost
+        // when the stream turns into TLS.
+        let mut line = Vec::new();
+        loop {
+            let mut b = [0u8; 1];
+            if tcp.read(&mut b).await? == 0 {
+                return Ok(false);
+            }
+            line.push(b[0]);
+            if b[0] == b'\n' {
+                break;
+            }
+        }
+        let line = String::from_utf8_lossy(&line)
+            .trim_end_matches(['\r', '\n'])
+            .to_string();
+        let (tag, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+        let cmd = rest
+            .split(' ')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        state.lock().unwrap().log.push(if cmd == "LOGIN" {
+            "LOGIN …".into()
+        } else {
+            rest.to_string()
+        });
+        let reply = match cmd.as_str() {
+            "STARTTLS" => {
+                tcp.write_all(format!("{tag} OK Begin TLS negotiation now\r\n").as_bytes())
+                    .await?;
+                return Ok(true);
+            }
+            "CAPABILITY" => format!("* CAPABILITY {caps}\r\n{tag} OK CAPABILITY completed\r\n"),
+            "NOOP" => format!("{tag} OK NOOP completed\r\n"),
+            "LOGOUT" => {
+                tcp.write_all(format!("* BYE\r\n{tag} OK LOGOUT completed\r\n").as_bytes())
+                    .await?;
+                return Ok(false);
+            }
+            _ => format!("{tag} NO [PRIVACYREQUIRED] STARTTLS first\r\n"),
+        };
+        tcp.write_all(reply.as_bytes()).await?;
+    }
+}
+
 async fn serve<S>(
     stream: S,
     state: Arc<Mutex<FakeState>>,
     creds: (String, String),
+    greet: bool,
 ) -> io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -324,11 +401,13 @@ where
     } else {
         "IMAP4rev1 IDLE MOVE UIDPLUS"
     };
-    send(
-        &w,
-        format!("* OK [CAPABILITY {caps}] fake ready\r\n").as_bytes(),
-    )
-    .await?;
+    if greet {
+        send(
+            &w,
+            format!("* OK [CAPABILITY {caps}] fake ready\r\n").as_bytes(),
+        )
+        .await?;
+    }
     let mut selected: Option<String> = None;
     loop {
         let mut line = String::new();
@@ -627,7 +706,7 @@ where
 mod tests {
     use super::*;
     use crate::model::{AuthKind, Flags, FolderRole, NewAccount, ProviderKind};
-    use crate::provider::imap::{Credential, ImapProvider};
+    use crate::provider::imap::{Credential, ImapProvider, Transport};
     use crate::provider::{IdleOutcome, Provider};
     use crate::storage::Store;
     use crate::sync::{Actions, SyncEngine, SyncOptions};
@@ -676,6 +755,9 @@ mod tests {
                 smtp_host: String::new(),
                 smtp_port: 0,
                 auth: AuthKind::Password,
+                imap_security: Default::default(),
+                smtp_security: None,
+                local_bridge: false,
             })
             .unwrap();
         (store.clone(), SyncEngine::new(store), account)
@@ -812,6 +894,9 @@ mod tests {
                     smtp_host: String::new(),
                     smtp_port: 0,
                     auth: AuthKind::Password,
+                    imap_security: Default::default(),
+                    smtp_security: None,
+                    local_bridge: false,
                 })
                 .unwrap()
         };
@@ -878,6 +963,9 @@ mod tests {
                 smtp_host: String::new(),
                 smtp_port: 0,
                 auth: AuthKind::Password,
+                imap_security: Default::default(),
+                smtp_security: None,
+                local_bridge: false,
             })
             .unwrap();
         let engine = SyncEngine::new(store.clone());
@@ -1294,5 +1382,132 @@ mod tests {
         )
         .await;
         assert!(matches!(untrusted, Err(Error::Tls(_))));
+    }
+
+    #[tokio::test]
+    async fn starttls_upgrades_before_the_password_leaves() {
+        let fake = FakeImap::start_starttls("z@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.deliver("INBOX", PLAIN, &[]);
+        });
+        let starttls = Transport {
+            security: crate::model::Security::StartTls,
+            local_bridge: false,
+        };
+        let mut p = ImapProvider::connect_with(
+            "localhost",
+            fake.port,
+            starttls,
+            std::slice::from_ref(&fake.cert),
+            "z@x.dev",
+            Credential::Password("secret".into()),
+        )
+        .await
+        .unwrap();
+        let names: Vec<String> = p
+            .list_folders()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, ["INBOX"]);
+        p.logout().await.unwrap();
+        let log = fake.with(|s| s.log.clone());
+        let tls_at = log.iter().position(|l| l == "STARTTLS").unwrap();
+        let login_at = log.iter().position(|l| l == "LOGIN …").unwrap();
+        assert!(tls_at < login_at, "{log:?}");
+
+        // A wrong password still reads as a sign-in failure, not a TLS one.
+        let wrong = ImapProvider::connect_with(
+            "localhost",
+            fake.port,
+            starttls,
+            std::slice::from_ref(&fake.cert),
+            "z@x.dev",
+            Credential::Password("nope".into()),
+        )
+        .await;
+        assert!(matches!(wrong, Err(Error::Auth(_))));
+
+        // STARTTLS still checks the certificate.
+        let untrusted = ImapProvider::connect_with(
+            "localhost",
+            fake.port,
+            starttls,
+            &[],
+            "z@x.dev",
+            Credential::Password("secret".into()),
+        )
+        .await;
+        assert!(
+            matches!(untrusted, Err(Error::Tls(_))),
+            "{:?}",
+            untrusted.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn starttls_on_a_tls_port_says_so_instead_of_hanging() {
+        let fake = server().await; // TLS from the first byte, like 993
+        let started = Instant::now();
+        let r = ImapProvider::connect_with(
+            "localhost",
+            fake.port,
+            Transport {
+                security: crate::model::Security::StartTls,
+                local_bridge: false,
+            },
+            std::slice::from_ref(&fake.cert),
+            "z@x.dev",
+            Credential::Password("secret".into()),
+        )
+        .await;
+        match r.err() {
+            Some(Error::Tls(m)) => assert!(m.contains("may expect TLS instead of STARTTLS"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // Nothing was sent in the clear, so no password either.
+        assert!(fake.with(|s| s.log.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn a_local_bridge_is_trusted_only_on_this_computer() {
+        let fake = server().await;
+        let bridge = Transport {
+            security: crate::model::Security::Tls,
+            local_bridge: true,
+        };
+        for host in ["localhost", "127.0.0.1"] {
+            let mut p = ImapProvider::connect_with(
+                host,
+                fake.port,
+                bridge,
+                &[],
+                "z@x.dev",
+                Credential::Password("secret".into()),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{host}: {e}"));
+            p.logout().await.unwrap();
+        }
+        let remote = ImapProvider::connect_with(
+            "imap.example.com",
+            993,
+            bridge,
+            &[],
+            "z@x.dev",
+            Credential::Password("secret".into()),
+        )
+        .await;
+        match remote.err() {
+            Some(Error::Tls(m)) => assert!(m.contains("only accepted from this computer"), "{m}"),
+            other => panic!("{other:?}"),
+        }
+        assert!(crate::provider::imap::is_loopback("::1"));
+        assert!(crate::provider::imap::is_loopback("[::1]"));
+        assert!(!crate::provider::imap::is_loopback("127.0.0.1.nip.io"));
     }
 }

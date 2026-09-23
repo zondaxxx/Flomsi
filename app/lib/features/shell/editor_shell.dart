@@ -196,6 +196,23 @@ class _TopBar extends ConsumerWidget {
         ? '$drafts ${drafts == 1 ? 'draft' : 'drafts'}'
         : '$total · $unread new';
     final sync = ref.watch(syncStatusProvider);
+    final accounts = ref.watch(accountsProvider).value;
+    final signIn = accounts?.any((a) => a.needsPassword) ?? false;
+    final none = accounts != null && accounts.isEmpty;
+    // With no accounts left, old errors are about mail that is gone.
+    final alarm = !none && (sync.lastError != null || signIn);
+    // Say what is true: no accounts, never synced, a password to enter.
+    final syncText = sync.syncing
+        ? 'syncing'
+        : none
+        ? 'no accounts'
+        : signIn
+        ? 'sign-in needed'
+        : sync.lastError != null
+        ? 'sync failed'
+        : sync.lastOk == null
+        ? 'not synced yet'
+        : 'synced ${_hhmm(sync.lastOk)}';
     final mac = Platform.isMacOS;
 
     // Long titles (an account address, a search) ellipsize; the count stays whole.
@@ -259,7 +276,9 @@ class _TopBar extends ConsumerWidget {
                     width: 7,
                     height: 7,
                     decoration: BoxDecoration(
-                      color: sync.lastError != null ? s.red : s.green,
+                      color: alarm
+                          ? s.red
+                          : (sync.lastOk == null ? s.fg3 : s.green),
                       shape: BoxShape.circle,
                     ),
                   )
@@ -273,18 +292,12 @@ class _TopBar extends ConsumerWidget {
                 AnimatedSwitcher(
                   duration: Motion.of(context, Motion.fast),
                   child: Text(
-                    sync.syncing
-                        ? 'syncing'
-                        : (sync.lastError != null
-                              ? 'sync failed'
-                              : 'synced ${_hhmm(sync.lastOk)}'),
-                    key: ValueKey(
-                      '${sync.syncing}-${sync.lastError != null}-${sync.lastOk}',
-                    ),
+                    syncText,
+                    key: ValueKey(syncText),
                     style: mono(
                       context,
                       size: 11,
-                      color: sync.lastError != null ? s.red : s.fg2,
+                      color: alarm ? s.red : s.fg2,
                     ),
                   ),
                 ),
@@ -393,8 +406,7 @@ class _Sidebar extends ConsumerWidget {
     final s = context.s;
     final folders =
         ref.watch(foldersProvider).asData?.value ?? const <Folder>[];
-    final accounts =
-        ref.watch(accountsProvider).asData?.value ?? const <Account>[];
+    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final labels = ref.watch(labelsProvider).asData?.value ?? const <Label>[];
     final query = ref.watch(queryProvider);
     final entries = buildSidebar(
@@ -519,7 +531,17 @@ class _SideRow extends StatelessWidget {
                 style: ui(context, color: s.fg),
               ),
             ),
-            if (e.count > 0) Text('${e.count}', style: mono(context, size: 11)),
+            if (e.warning != null)
+              Tooltip(
+                message: e.warning!,
+                child: Icon(
+                  CupertinoIcons.exclamationmark_circle_fill,
+                  size: 12,
+                  color: s.red,
+                ),
+              )
+            else if (e.count > 0)
+              Text('${e.count}', style: mono(context, size: 11)),
           ],
         ),
       ),
@@ -537,8 +559,7 @@ class _StatusBar extends ConsumerWidget {
     final threads =
         ref.watch(threadsProvider).asData?.value ?? const <Thread>[];
     final selected = ref.watch(selectedThreadIdProvider);
-    final accounts =
-        ref.watch(accountsProvider).asData?.value ?? const <Account>[];
+    final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final drafts = query.trim() == 'in:drafts'
         ? ref.watch(draftsProvider).asData?.value.length
         : null;

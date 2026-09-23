@@ -50,6 +50,12 @@ enum Cmd {
         host: String,
         #[arg(long, default_value_t = 993)]
         port: u16,
+        /// Plain connection upgraded with STARTTLS (ports 143, 1143)
+        #[arg(long)]
+        starttls: bool,
+        /// Accept a self-signed certificate from a bridge on this machine
+        #[arg(long)]
+        local_bridge: bool,
     },
     /// List accounts
     Accounts,
@@ -208,17 +214,39 @@ async fn main() -> Result<()> {
                     smtp_host,
                     smtp_port,
                     auth: AuthKind::Password,
+                    imap_security: Default::default(),
+                    smtp_security: None,
+                    local_bridge: false,
                 },
                 &password,
             )?;
             println!("added account #{} {} (secret in keychain)", a.id, a.email);
         }
-        Cmd::TestLogin { email, host, port } => {
+        Cmd::TestLogin {
+            email,
+            host,
+            port,
+            starttls,
+            local_bridge,
+        } => {
             let password = password_for(&email)?;
-            match Core::check_login(&host, port, &email, &password).await {
+            let transport = mailcore::Transport {
+                security: if starttls {
+                    mailcore::Security::StartTls
+                } else {
+                    mailcore::Security::Tls
+                },
+                local_bridge,
+            };
+            match Core::check_login(&host, port, transport, &email, &password).await {
                 Ok(()) => println!("login ok: {email} via {host}:{port}"),
                 Err(e) => {
-                    println!("login failed: {e}");
+                    let d = mailcore::diagnose::diagnose(&e.to_string(), &host);
+                    println!("login failed: {}", d.title);
+                    if let Some(h) = d.hint {
+                        println!("  {h}");
+                    }
+                    println!("  ({e})");
                     std::process::exit(2);
                 }
             }

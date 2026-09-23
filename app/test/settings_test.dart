@@ -66,7 +66,7 @@ void main() {
     expect(find.byType(SettingsSheet), findsOneWidget);
     expect(c.read(scopeProvider), 'dialog');
     expect(find.text('dev@gmail.com'), findsOneWidget);
-    expect(find.text('imap.gmail.com:993'), findsOneWidget);
+    expect(find.text('IMAP imap.gmail.com:993'), findsOneWidget);
 
     final nameField = find.widgetWithText(TextField, 'Zonda');
     await tester.enterText(nameField, 'Zonda Dev');

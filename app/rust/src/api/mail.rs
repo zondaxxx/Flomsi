@@ -5,7 +5,8 @@ use flutter_rust_bridge::frb;
 use mailcore::compose::{AttachmentSource, Draft, DraftAttachment};
 use mailcore::sanitize::html_to_text;
 use mailcore::Address;
-use mailcore::{AuthKind, Core, FolderRole, NewAccount, ProviderKind, SyncEvent, SyncOptions};
+use mailcore::diagnose::ErrorKind;
+use mailcore::{AuthKind, Core, FolderRole, NewAccount, ProviderKind, Security, SyncEvent, SyncOptions};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -44,6 +45,28 @@ pub struct AccountDto {
     pub signature: String,
     pub imap_host: String,
     pub imap_port: u16,
+    /// `tls` or `starttls`.
+    pub imap_security: String,
+    /// Empty when the SMTP server is guessed from the IMAP one at send time.
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_security: String,
+    /// A bridge on this computer (Proton) whose self-signed certificate is accepted.
+    pub local_bridge: bool,
+}
+
+/// One server as the add-account form describes it; `security` is `tls` or `starttls`.
+pub struct ServerDto {
+    pub host: String,
+    pub port: u16,
+    pub security: String,
+}
+
+/// What went wrong, for people: `kind` is auth, network, tls, server or local.
+pub struct DiagnosisDto {
+    pub kind: String,
+    pub title: String,
+    pub hint: Option<String>,
 }
 
 pub struct FolderDto {
@@ -111,7 +134,10 @@ pub struct SyncSummaryDto {
     pub accounts: u32,
     pub fetched: u32,
     pub removed: u32,
+    /// The account could not sync at all (sign-in, network).
     pub errors: Vec<String>,
+    /// Folders that failed while the rest synced, as `folder: error`.
+    pub folder_errors: Vec<String>,
 }
 
 /// A message being written. Addresses are `Name <addr>` or bare `addr`.
@@ -228,18 +254,47 @@ pub fn list_accounts() -> Result<Vec<AccountDto>> {
     Ok(out)
 }
 
-pub fn add_imap_account(email: String, host: String, port: u16, password: String, display_name: String) -> Result<AccountDto> {
+fn security(s: &str) -> Result<Security> {
+    Security::parse(s).ok_or_else(|| anyhow!("unknown security {s:?}; use tls or starttls"))
+}
+
+fn server(dto: &ServerDto) -> Result<(String, u16, Security)> {
+    let host = dto.host.trim().to_string();
+    if host.is_empty() {
+        return Err(anyhow!("server name is empty"));
+    }
+    if dto.port == 0 {
+        return Err(anyhow!("port is empty"));
+    }
+    Ok((host, dto.port, security(&dto.security)?))
+}
+
+/// Register an account; the password goes to the OS keychain. Fails when the address is
+/// already added, so a second add cannot overwrite a working password.
+pub fn add_imap_account(
+    email: String,
+    display_name: String,
+    imap: ServerDto,
+    smtp: ServerDto,
+    local_bridge: bool,
+    password: String,
+) -> Result<AccountDto> {
+    let (imap_host, imap_port, imap_security) = server(&imap)?;
+    let (smtp_host, smtp_port, smtp_security) = server(&smtp)?;
     let c = core()?;
     let a = c.add_account(
         &NewAccount {
-            kind: if host.contains("gmail") { ProviderKind::Gmail } else { ProviderKind::Imap },
-            email,
-            display_name,
-            imap_host: host,
-            imap_port: port,
-            smtp_host: String::new(),
-            smtp_port: 0,
+            kind: if imap_host.contains("gmail") { ProviderKind::Gmail } else { ProviderKind::Imap },
+            email: email.trim().to_string(),
+            display_name: display_name.trim().to_string(),
+            imap_host,
+            imap_port,
+            smtp_host,
+            smtp_port,
             auth: AuthKind::Password,
+            imap_security,
+            smtp_security: Some(smtp_security),
+            local_bridge,
         },
         &password,
     )?;
@@ -247,6 +302,14 @@ pub fn add_imap_account(email: String, host: String, port: u16, password: String
 }
 
 fn account_dto(a: mailcore::Account, unread: u32) -> AccountDto {
+    let (smtp_host, smtp_port) = if a.smtp_host.is_empty() {
+        mailcore::smtp::guess_smtp(&a.imap_host).unwrap_or_default()
+    } else {
+        (a.smtp_host.clone(), a.smtp_port)
+    };
+    let smtp_security = a
+        .smtp_security
+        .unwrap_or(if smtp_port == 465 { Security::Tls } else { Security::StartTls });
     AccountDto {
         id: a.id,
         email: a.email,
@@ -256,12 +319,59 @@ fn account_dto(a: mailcore::Account, unread: u32) -> AccountDto {
         signature: a.signature,
         imap_host: a.imap_host,
         imap_port: a.imap_port,
+        imap_security: a.imap_security.as_str().to_string(),
+        smtp_host,
+        smtp_port,
+        smtp_security: smtp_security.as_str().to_string(),
+        local_bridge: a.local_bridge,
     }
 }
 
-/// Connect + authenticate once; nothing is stored. The error text carries the server's reason.
-pub async fn test_imap_login(email: String, host: String, port: u16, password: String) -> Result<()> {
-    Ok(Core::check_login(&host, port, &email, &password).await?)
+/// Sign in to IMAP once; nothing is stored. The error text carries the server's reason;
+/// pass it to [diagnose_error] for something to show.
+pub async fn test_imap_login(email: String, imap: ServerDto, local_bridge: bool, password: String) -> Result<()> {
+    let (host, port, security) = server(&imap)?;
+    let transport = mailcore::Transport { security, local_bridge };
+    Ok(Core::check_login(&host, port, transport, email.trim(), &password).await?)
+}
+
+/// Sign in to SMTP once without sending anything.
+pub async fn test_smtp_login(email: String, smtp: ServerDto, local_bridge: bool, password: String) -> Result<()> {
+    let (host, port, security) = server(&smtp)?;
+    Ok(Core::check_smtp(&host, port, security, local_bridge, email.trim(), &password).await?)
+}
+
+/// The SMTP server usually paired with an IMAP host (`imap.x` → `smtp.x`).
+#[frb(sync)]
+pub fn suggest_smtp(imap_host: String) -> Option<ServerDto> {
+    mailcore::smtp::guess_smtp(imap_host.trim()).map(|(host, port)| ServerDto {
+        host,
+        port,
+        security: if port == 465 { "tls" } else { "starttls" }.to_string(),
+    })
+}
+
+/// Turn an error from sign-in or sync into a title and a hint.
+#[frb(sync)]
+pub fn diagnose_error(message: String, host: String) -> DiagnosisDto {
+    let d = mailcore::diagnose::diagnose(&message, &host);
+    DiagnosisDto {
+        kind: match d.kind {
+            ErrorKind::Auth => "auth",
+            ErrorKind::Network => "network",
+            ErrorKind::Tls => "tls",
+            ErrorKind::Server => "server",
+            ErrorKind::Local => "local",
+        }
+        .to_string(),
+        title: d.title,
+        hint: d.hint,
+    }
+}
+
+/// Replace the stored password of an account (after the server started refusing it).
+pub fn update_account_password(id: i64, password: String) -> Result<()> {
+    Ok(core()?.set_password(id, &password)?)
 }
 
 pub fn remove_account(id: i64) -> Result<()> {
@@ -506,13 +616,15 @@ pub async fn sync_all(inbox_only: bool) -> Result<SyncSummaryDto> {
     if inbox_only {
         opts.roles = vec![FolderRole::Inbox];
     }
-    let mut summary = SyncSummaryDto { accounts: 0, fetched: 0, removed: 0, errors: vec![] };
+    let mut summary =
+        SyncSummaryDto { accounts: 0, fetched: 0, removed: 0, errors: vec![], folder_errors: vec![] };
     for (a, r) in c.sync_all(&opts).await? {
         summary.accounts += 1;
         match r {
             Ok(rep) => {
                 summary.fetched += rep.fetched as u32;
                 summary.removed += rep.removed as u32;
+                summary.folder_errors.extend(rep.errors.into_iter().map(|e| format!("{}: {e}", a.email)));
             }
             Err(e) => summary.errors.push(format!("{}: {e}", a.email)),
         }
@@ -536,11 +648,13 @@ pub async fn sync_account(account_id: i64, inbox_only: bool) -> Result<SyncSumma
     if inbox_only {
         opts.roles = vec![FolderRole::Inbox];
     }
-    let mut summary = SyncSummaryDto { accounts: 1, fetched: 0, removed: 0, errors: vec![] };
+    let mut summary =
+        SyncSummaryDto { accounts: 1, fetched: 0, removed: 0, errors: vec![], folder_errors: vec![] };
     match c.sync_account(account_id, &opts).await {
         Ok(rep) => {
             summary.fetched = rep.fetched as u32;
             summary.removed = rep.removed as u32;
+            summary.folder_errors = rep.errors;
         }
         Err(e) => summary.errors.push(e.to_string()),
     }

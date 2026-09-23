@@ -5,7 +5,7 @@ import 'package:flutter/material.dart' show Color;
 import 'package:path_provider/path_provider.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
-    show ExternalLibrary;
+    show AnyhowException, ExternalLibrary;
 
 import '../src/rust/api/mail.dart' as rust;
 import '../src/rust/frb_generated.dart';
@@ -19,6 +19,10 @@ class RustRepository implements MailRepository {
   final _events = StreamController<RepoEvent>.broadcast();
   StreamSubscription<rust.SyncEventDto>? _sub;
   final _idleLoops = <int, bool>{}; // account id → keep running
+
+  /// Accounts whose server refused the stored password. They wait for a new one: no IDLE,
+  /// no timer, no outbox pushes, since every retry counts toward a lockout.
+  final _problems = <int, Problem>{};
   Timer? _periodic;
   bool _disposed = false;
   Future<void> _syncLock = Future.value();
@@ -71,8 +75,7 @@ class RustRepository implements MailRepository {
           }
         case 'finished':
           repo._events.add(const ThreadsChanged());
-        case 'error':
-          repo._events.add(SyncFinished(fetched: 0, errors: [e.message]));
+        // Folder errors come back in the sync summary, where they are put in words.
       }
     });
     return repo;
@@ -92,11 +95,15 @@ class RustRepository implements MailRepository {
   }
 
   Future<void> _refreshIdleLoops() async {
-    final ids = (await rust.listAccounts()).map((a) => a.id.toInt()).toSet();
+    final ids = {
+      for (final a in await rust.listAccounts())
+        if (!(_problems[a.id.toInt()]?.isAuth ?? false)) a.id.toInt(),
+    };
     for (final id in ids) {
-      if (_idleLoops.containsKey(id)) continue;
+      final running = _idleLoops.containsKey(id);
+      // A loop told to stop may still sit in IDLE; telling it to go on is enough.
       _idleLoops[id] = true;
-      unawaited(_idleLoop(id));
+      if (!running) unawaited(_idleLoop(id));
     }
     for (final id in _idleLoops.keys.toList()) {
       if (!ids.contains(id)) _idleLoops[id] = false;
@@ -113,15 +120,27 @@ class RustRepository implements MailRepository {
           timeoutSecs: 25 * 60,
         );
         backoff = const Duration(seconds: 30);
-        if (changed) {
+        if (changed &&
+            (_idleLoops[accountId] ?? false) &&
+            !_parked(accountId)) {
           _events.add(const SyncStarted());
           final s = await _serial(
-            () => rust.syncAccount(accountId: accountId, inboxOnly: true),
+            () async => _parked(accountId)
+                ? null
+                : await rust.syncAccount(accountId: accountId, inboxOnly: true),
           );
-          _events.add(SyncFinished(fetched: s.fetched, errors: s.errors));
+          final errors = <String>[];
+          if (s != null) await _absorb(accountId, s, errors);
+          _events.add(SyncFinished(fetched: s?.fetched ?? 0, errors: errors));
           _events.add(const ThreadsChanged());
         }
       } catch (e) {
+        final host = (await _account(accountId))?.imapHost ?? '';
+        final p = problemFrom(e, host);
+        if (p.isAuth) {
+          await _stop(accountId, p);
+          break;
+        }
         // No network, auth failure, server hiccup: wait and try again, up to every 5 minutes.
         await Future<void>.delayed(backoff);
         backoff = backoff * 2 > const Duration(minutes: 5)
@@ -131,6 +150,74 @@ class RustRepository implements MailRepository {
     }
     _idleLoops.remove(accountId);
   }
+
+  /// The core's error text put in words.
+  static Problem problemFrom(Object e, String host, {String? stage}) {
+    if (e is Problem) return e;
+    final raw = e is AnyhowException ? e.message : '$e';
+    // The bridge sends anyhow's Debug text: the message, then "Caused by:" and a stack
+    // backtrace after a blank line. Only the message is about the server.
+    final cut = raw.indexOf('\n\n');
+    final message = (cut < 0 ? raw : raw.substring(0, cut)).trim();
+    final d = rust.diagnoseError(message: message, host: host);
+    return Problem(
+      kind: d.kind,
+      title: d.title,
+      hint: d.hint,
+      detail: message,
+      stage: stage,
+    );
+  }
+
+  Future<rust.AccountDto?> _account(int id) async {
+    for (final a in await rust.listAccounts()) {
+      if (a.id.toInt() == id) return a;
+    }
+    return null;
+  }
+
+  /// Park an account on a sign-in problem until the user acts.
+  Future<void> _stop(int accountId, Problem p) async {
+    _problems[accountId] = p;
+    if (_idleLoops.containsKey(accountId)) _idleLoops[accountId] = false;
+    _events.add(const ThreadsChanged());
+  }
+
+  bool _parked(int accountId) => _problems[accountId]?.isAuth ?? false;
+
+  /// Read one account's sync summary into [errors] (worded, prefixed with the address);
+  /// a refused password parks the account.
+  Future<void> _absorb(
+    int accountId,
+    rust.SyncSummaryDto s,
+    List<String> errors,
+  ) async {
+    if (s.errors.isEmpty && s.folderErrors.isEmpty) return;
+    final a = await _account(accountId);
+    final email = a?.email ?? '#$accountId';
+    final host = a?.imapHost ?? '';
+    for (final e in s.errors) {
+      final p = problemFrom(e, host);
+      if (p.isAuth) {
+        // Shown on the account itself (sidebar, settings) until a new password.
+        await _stop(accountId, p);
+      } else {
+        errors.add('$email: ${p.title}');
+      }
+    }
+    for (final e in s.folderErrors) {
+      final cut = e.indexOf(': ');
+      final folder = cut < 0 ? '' : e.substring(0, cut);
+      final p = problemFrom(cut < 0 ? e : e.substring(cut + 2), host);
+      errors.add('$email · $folder: ${p.title}');
+    }
+  }
+
+  static rust.ServerDto _server(ServerSetup s) =>
+      rust.ServerDto(host: s.host.trim(), port: s.port, security: s.security);
+
+  static ServerSetup _setup(String host, int port, String security) =>
+      ServerSetup(host: host, port: port, startTls: security == 'starttls');
 
   static Color _accountColor(String kind, int i) => switch (kind) {
     'gmail' => Swatch.green,
@@ -156,6 +243,12 @@ class RustRepository implements MailRepository {
           displayName: a.displayName,
           signature: a.signature,
           server: '${a.imapHost}:${a.imapPort}',
+          imap: _setup(a.imapHost, a.imapPort, a.imapSecurity),
+          smtp: a.smtpHost.isEmpty
+              ? null
+              : _setup(a.smtpHost, a.smtpPort, a.smtpSecurity),
+          localBridge: a.localBridge,
+          problem: _problems[a.id.toInt()],
         ),
     ];
   }
@@ -358,10 +451,19 @@ class RustRepository implements MailRepository {
     _pushTimer = Timer(const Duration(seconds: 2), () async {
       if (_disposed) return;
       try {
+        final errors = <String>[];
         for (final a in await rust.listAccounts()) {
-          await _serial(
-            () => rust.syncAccount(accountId: a.id.toInt(), inboxOnly: true),
+          final id = a.id.toInt();
+          // Checked again inside the lock: the account may have been parked meanwhile.
+          final s = await _serial(
+            () async => _parked(id)
+                ? null
+                : await rust.syncAccount(accountId: id, inboxOnly: true),
           );
+          if (s != null) await _absorb(id, s, errors);
+        }
+        if (errors.isNotEmpty) {
+          _events.add(SyncFinished(fetched: 0, errors: errors));
         }
         _events.add(const ThreadsChanged());
       } catch (_) {
@@ -489,38 +591,54 @@ class RustRepository implements MailRepository {
 
   @override
   Future<void> send(Draft d) async {
-    await rust.sendDraft(draft: _dto(d));
+    try {
+      await rust.sendDraft(draft: _dto(d));
+    } catch (e) {
+      final a = await _account(d.accountId);
+      throw problemFrom(e, a?.smtpHost ?? '', stage: 'smtp');
+    }
     _events.add(const ThreadsChanged());
   }
 
   @override
-  Future<void> testImapLogin({
-    required String email,
-    required String host,
-    required int port,
-    required String password,
-  }) => rust.testImapLogin(
-    email: email,
-    host: host,
-    port: port,
-    password: password,
-  );
+  Future<void> checkAccount(AccountSetup setup, String password) async {
+    try {
+      await rust.testImapLogin(
+        email: setup.email,
+        imap: _server(setup.imap),
+        localBridge: setup.localBridge,
+        password: password,
+      );
+    } catch (e) {
+      throw problemFrom(e, setup.imap.host, stage: 'imap');
+    }
+    try {
+      await rust.testSmtpLogin(
+        email: setup.email,
+        smtp: _server(setup.smtp),
+        localBridge: setup.localBridge,
+        password: password,
+      );
+    } catch (e) {
+      throw problemFrom(e, setup.smtp.host, stage: 'smtp');
+    }
+  }
 
   @override
-  Future<Account> addImapAccount({
-    required String email,
-    required String host,
-    required int port,
-    required String password,
-    String displayName = '',
-  }) async {
-    final a = await rust.addImapAccount(
-      email: email,
-      host: host,
-      port: port,
-      password: password,
-      displayName: displayName,
-    );
+  Future<Account> addAccount(AccountSetup setup, String password) async {
+    final rust.AccountDto a;
+    try {
+      a = await rust.addImapAccount(
+        email: setup.email,
+        displayName: setup.displayName,
+        imap: _server(setup.imap),
+        smtp: _server(setup.smtp),
+        localBridge: setup.localBridge,
+        password: password,
+      );
+    } catch (e) {
+      throw problemFrom(e, setup.imap.host);
+    }
     _events.add(const ThreadsChanged());
     unawaited(_refreshIdleLoops());
     return Account(
@@ -532,21 +650,87 @@ class RustRepository implements MailRepository {
   }
 
   @override
+  ServerSetup? suggestSmtp(String imapHost) {
+    final s = rust.suggestSmtp(imapHost: imapHost);
+    return s == null ? null : _setup(s.host, s.port, s.security);
+  }
+
+  @override
+  Future<void> updatePassword(int accountId, String password) async {
+    final a = await _account(accountId);
+    if (a == null) {
+      throw const Problem(kind: 'local', title: 'The account is gone');
+    }
+    try {
+      await rust.testImapLogin(
+        email: a.email,
+        imap: rust.ServerDto(
+          host: a.imapHost,
+          port: a.imapPort,
+          security: a.imapSecurity,
+        ),
+        localBridge: a.localBridge,
+        password: password,
+      );
+      await rust.updateAccountPassword(id: accountId, password: password);
+    } catch (e) {
+      throw problemFrom(e, a.imapHost, stage: 'imap');
+    }
+    await retryAccount(accountId);
+  }
+
+  /// Unpark and start syncing in the background; the caller does not wait for the sync
+  /// (which may queue behind others), only for the account to be let go.
+  @override
+  Future<void> retryAccount(int accountId) async {
+    _problems.remove(accountId);
+    _events.add(const ThreadsChanged());
+    unawaited(
+      _syncAccounts([accountId])
+          .then((_) => _refreshIdleLoops())
+          .catchError((Object _) {
+            // The status line shows sync errors; nothing else to do here.
+          }),
+    );
+  }
+
+  @override
   Future<void> removeAccount(int id) async {
     await rust.removeAccount(id: id);
-    _idleLoops[id] = false;
+    // SQLite may give the next account this id: forget everything about this one.
+    _problems.remove(id);
+    if (_idleLoops.containsKey(id)) _idleLoops[id] = false;
     _events.add(const ThreadsChanged());
   }
 
   @override
-  Future<void> sync() async {
+  Future<void> sync() async => _syncAccounts(null);
+
+  /// Sync [ids] (every account when null), skipping accounts parked on a sign-in
+  /// problem; they still show in the status line.
+  Future<void> _syncAccounts(List<int>? ids) async {
+    final list = await rust.listAccounts();
+    if (list.isEmpty) return;
     _events.add(const SyncStarted());
-    try {
-      final s = await _serial(() => rust.syncAll(inboxOnly: false));
-      _events.add(SyncFinished(fetched: s.fetched, errors: s.errors));
-    } catch (e) {
-      _events.add(SyncFinished(fetched: 0, errors: ['$e']));
+    var fetched = 0;
+    final errors = <String>[];
+    for (final a in list) {
+      final id = a.id.toInt();
+      if (ids != null && !ids.contains(id)) continue;
+      try {
+        final s = await _serial(
+          () async => _parked(id)
+              ? null
+              : await rust.syncAccount(accountId: id, inboxOnly: false),
+        );
+        if (s == null) continue;
+        fetched += s.fetched;
+        await _absorb(id, s, errors);
+      } catch (e) {
+        errors.add('${a.email}: ${problemFrom(e, a.imapHost).title}');
+      }
     }
+    _events.add(SyncFinished(fetched: fetched, errors: errors));
     _events.add(const ThreadsChanged());
   }
 

@@ -60,22 +60,25 @@ abstract class MailRepository {
   /// Name, size and MIME type of a local file, ready to go into a draft.
   Future<DraftAttachment> describeFile(String path);
 
-  /// Connect and authenticate once without storing anything. Throws with the server's reason.
-  Future<void> testImapLogin({
-    required String email,
-    required String host,
-    required int port,
-    required String password,
-  });
+  /// Sign in to IMAP, then SMTP, without storing anything. Throws a [Problem] whose
+  /// stage says which server refused.
+  Future<void> checkAccount(AccountSetup setup, String password);
 
-  /// Register an IMAP account. The secret goes to the OS keychain, never to the database.
-  Future<Account> addImapAccount({
-    required String email,
-    required String host,
-    required int port,
-    required String password,
-    String displayName = '',
-  });
+  /// Register an account; the password goes to the OS keychain, never to the database.
+  /// Throws a [Problem]; adding an address twice is refused.
+  Future<Account> addAccount(AccountSetup setup, String password);
+
+  /// The SMTP server usually paired with [imapHost], or null.
+  ServerSetup? suggestSmtp(String imapHost);
+
+  /// Check [password] against the account's IMAP server and store it; the account
+  /// syncs again. Throws a [Problem] and keeps the old password when it is refused.
+  Future<void> updatePassword(int accountId, String password);
+
+  /// Try an account that stopped on a sign-in problem again, with the stored password
+  /// (after turning IMAP on at the provider, say).
+  Future<void> retryAccount(int accountId);
+
   Future<void> removeAccount(int id);
 
   /// Name shown in From, and the signature new drafts start with.

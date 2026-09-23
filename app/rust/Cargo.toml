@@ -15,3 +15,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 chrono = "0.4"
 
 [workspace]
+
+# flutter_rust_bridge's #[frb] expands to cfg(frb_expand) checks.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'motion.dart';
 import 'tokens.dart';
 
 /// 1px separator.
@@ -230,6 +231,7 @@ class QuietField extends StatelessWidget {
     this.onChanged,
     this.onSubmitted,
     this.fontSize = 13,
+    this.keyboardType,
   });
   final TextEditingController? controller;
   final FocusNode? focusNode;
@@ -242,6 +244,7 @@ class QuietField extends StatelessWidget {
   final ValueChanged<String>? onChanged;
   final ValueChanged<String>? onSubmitted;
   final double fontSize;
+  final TextInputType? keyboardType;
   @override
   Widget build(BuildContext context) {
     final s = context.s;
@@ -264,6 +267,7 @@ class QuietField extends StatelessWidget {
                 focusNode: focusNode,
                 autofocus: autofocus,
                 obscureText: obscure,
+                keyboardType: keyboardType,
                 autocorrect: false,
                 enableSuggestions: false,
                 style: ui(context, size: fontSize),
@@ -342,4 +346,64 @@ class EmptyNote extends StatelessWidget {
   Widget build(BuildContext context) => Center(
     child: Text(text, style: ui(context, size: 15, color: context.s.fg3)),
   );
+}
+
+/// Segmented choice in the editor style: mono labels, the chosen one raised.
+class Segmented<T> extends StatelessWidget {
+  const Segmented({
+    super.key,
+    required this.options,
+    required this.value,
+    required this.onChanged,
+    this.height = 26,
+  });
+  final List<(T, String)> options;
+  final T value;
+  final ValueChanged<T> onChanged;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: const EdgeInsets.all(2),
+        decoration: BoxDecoration(
+          border: Border.all(color: s.border),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (v, label) in options)
+              HoverRegion(
+                onTap: () => onChanged(v),
+                builder: (context, hovered) => AnimatedContainer(
+                  duration: Motion.of(context, Motion.fast),
+                  curve: Motion.curve,
+                  height: height,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: v == value
+                        ? s.raised
+                        : (hovered ? s.hover : Colors.transparent),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    label,
+                    style: mono(
+                      context,
+                      size: 12,
+                      color: v == value ? s.fg : s.fg2,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
 }

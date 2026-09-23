@@ -261,7 +261,13 @@ class _ComposeBodyState extends ConsumerState<ComposeBody> {
     } catch (e) {
       setState(() {
         _sending = false;
-        _error = e.toString().replaceFirst(RegExp(r'^\w+: '), '');
+        // An unrecognised failure keeps the server's own words.
+        _error = switch (e) {
+          Problem(hint: null, detail: final d) when d.isNotEmpty =>
+            '${e.title}: ${d.split('\n').first}',
+          Problem() => '$e',
+          _ => _reason(e),
+        };
       });
     }
   }

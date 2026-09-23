@@ -65,6 +65,36 @@ pub struct NewAccount {
     pub smtp_host: String,
     pub smtp_port: u16,
     pub auth: AuthKind,
+    pub imap_security: Security,
+    /// None: by port, as mail apps usually do (465 TLS, otherwise STARTTLS).
+    pub smtp_security: Option<Security>,
+    /// Accept a self-signed certificate on 127.0.0.1 (local bridges such as Proton Bridge).
+    pub local_bridge: bool,
+}
+
+/// How a connection is secured: TLS from the first byte, or STARTTLS on a plain port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Security {
+    #[default]
+    Tls,
+    StartTls,
+}
+
+impl Security {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Security::Tls => "tls",
+            Security::StartTls => "starttls",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Security> {
+        match s {
+            "tls" => Some(Security::Tls),
+            "starttls" => Some(Security::StartTls),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +110,9 @@ pub struct Account {
     pub auth: AuthKind,
     /// Plain-text signature; drafts get it below a `-- ` line.
     pub signature: String,
+    pub imap_security: Security,
+    pub smtp_security: Option<Security>,
+    pub local_bridge: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

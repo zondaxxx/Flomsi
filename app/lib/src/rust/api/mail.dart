@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`, `thread_dto`
+// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `fmt_addr`, `new`, `parse_addr`, `security`, `server`, `thread_dto`
 
 /// Open (or create) the profile database under `data_dir`. Idempotent.
 Future<void> openCore({required String dataDir}) =>
@@ -16,30 +16,68 @@ Future<void> openCore({required String dataDir}) =>
 Future<List<AccountDto>> listAccounts() =>
     RustLib.instance.api.crateApiMailListAccounts();
 
+/// Register an account; the password goes to the OS keychain. Fails when the address is
+/// already added, so a second add cannot overwrite a working password.
 Future<AccountDto> addImapAccount({
   required String email,
-  required String host,
-  required int port,
-  required String password,
   required String displayName,
+  required ServerDto imap,
+  required ServerDto smtp,
+  required bool localBridge,
+  required String password,
 }) => RustLib.instance.api.crateApiMailAddImapAccount(
   email: email,
-  host: host,
-  port: port,
-  password: password,
   displayName: displayName,
+  imap: imap,
+  smtp: smtp,
+  localBridge: localBridge,
+  password: password,
 );
 
-/// Connect + authenticate once; nothing is stored. The error text carries the server's reason.
+/// Sign in to IMAP once; nothing is stored. The error text carries the server's reason;
+/// pass it to [diagnose_error] for something to show.
 Future<void> testImapLogin({
   required String email,
-  required String host,
-  required int port,
+  required ServerDto imap,
+  required bool localBridge,
   required String password,
 }) => RustLib.instance.api.crateApiMailTestImapLogin(
   email: email,
-  host: host,
-  port: port,
+  imap: imap,
+  localBridge: localBridge,
+  password: password,
+);
+
+/// Sign in to SMTP once without sending anything.
+Future<void> testSmtpLogin({
+  required String email,
+  required ServerDto smtp,
+  required bool localBridge,
+  required String password,
+}) => RustLib.instance.api.crateApiMailTestSmtpLogin(
+  email: email,
+  smtp: smtp,
+  localBridge: localBridge,
+  password: password,
+);
+
+/// The SMTP server usually paired with an IMAP host (`imap.x` → `smtp.x`).
+ServerDto? suggestSmtp({required String imapHost}) =>
+    RustLib.instance.api.crateApiMailSuggestSmtp(imapHost: imapHost);
+
+/// Turn an error from sign-in or sync into a title and a hint.
+DiagnosisDto diagnoseError({required String message, required String host}) =>
+    RustLib.instance.api.crateApiMailDiagnoseError(
+      message: message,
+      host: host,
+    );
+
+/// Replace the stored password of an account (after the server started refusing it).
+Future<void> updateAccountPassword({
+  required PlatformInt64 id,
+  required String password,
+}) => RustLib.instance.api.crateApiMailUpdateAccountPassword(
+  id: id,
   password: password,
 );
 
@@ -232,6 +270,17 @@ class AccountDto {
   final String imapHost;
   final int imapPort;
 
+  /// `tls` or `starttls`.
+  final String imapSecurity;
+
+  /// Empty when the SMTP server is guessed from the IMAP one at send time.
+  final String smtpHost;
+  final int smtpPort;
+  final String smtpSecurity;
+
+  /// A bridge on this computer (Proton) whose self-signed certificate is accepted.
+  final bool localBridge;
+
   const AccountDto({
     required this.id,
     required this.email,
@@ -241,6 +290,11 @@ class AccountDto {
     required this.signature,
     required this.imapHost,
     required this.imapPort,
+    required this.imapSecurity,
+    required this.smtpHost,
+    required this.smtpPort,
+    required this.smtpSecurity,
+    required this.localBridge,
   });
 
   @override
@@ -252,7 +306,12 @@ class AccountDto {
       unread.hashCode ^
       signature.hashCode ^
       imapHost.hashCode ^
-      imapPort.hashCode;
+      imapPort.hashCode ^
+      imapSecurity.hashCode ^
+      smtpHost.hashCode ^
+      smtpPort.hashCode ^
+      smtpSecurity.hashCode ^
+      localBridge.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -266,7 +325,12 @@ class AccountDto {
           unread == other.unread &&
           signature == other.signature &&
           imapHost == other.imapHost &&
-          imapPort == other.imapPort;
+          imapPort == other.imapPort &&
+          imapSecurity == other.imapSecurity &&
+          smtpHost == other.smtpHost &&
+          smtpPort == other.smtpPort &&
+          smtpSecurity == other.smtpSecurity &&
+          localBridge == other.localBridge;
 }
 
 class AttachmentDto {
@@ -302,6 +366,27 @@ class AttachmentDto {
           name == other.name &&
           mime == other.mime &&
           size == other.size;
+}
+
+/// What went wrong, for people: `kind` is auth, network, tls, server or local.
+class DiagnosisDto {
+  final String kind;
+  final String title;
+  final String? hint;
+
+  const DiagnosisDto({required this.kind, required this.title, this.hint});
+
+  @override
+  int get hashCode => kind.hashCode ^ title.hashCode ^ hint.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiagnosisDto &&
+          runtimeType == other.runtimeType &&
+          kind == other.kind &&
+          title == other.title &&
+          hint == other.hint;
 }
 
 /// A file going out with a draft: a local `path`, or part `idx` of stored message `message_id`.
@@ -532,6 +617,31 @@ class SavedDraftDto {
           draft == other.draft;
 }
 
+/// One server as the add-account form describes it; `security` is `tls` or `starttls`.
+class ServerDto {
+  final String host;
+  final int port;
+  final String security;
+
+  const ServerDto({
+    required this.host,
+    required this.port,
+    required this.security,
+  });
+
+  @override
+  int get hashCode => host.hashCode ^ port.hashCode ^ security.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ServerDto &&
+          runtimeType == other.runtimeType &&
+          host == other.host &&
+          port == other.port &&
+          security == other.security;
+}
+
 /// Flat event record: `kind` is one of started, folder, finished, error.
 class SyncEventDto {
   final String kind;
@@ -576,18 +686,28 @@ class SyncSummaryDto {
   final int accounts;
   final int fetched;
   final int removed;
+
+  /// The account could not sync at all (sign-in, network).
   final List<String> errors;
+
+  /// Folders that failed while the rest synced, as `folder: error`.
+  final List<String> folderErrors;
 
   const SyncSummaryDto({
     required this.accounts,
     required this.fetched,
     required this.removed,
     required this.errors,
+    required this.folderErrors,
   });
 
   @override
   int get hashCode =>
-      accounts.hashCode ^ fetched.hashCode ^ removed.hashCode ^ errors.hashCode;
+      accounts.hashCode ^
+      fetched.hashCode ^
+      removed.hashCode ^
+      errors.hashCode ^
+      folderErrors.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -597,7 +717,8 @@ class SyncSummaryDto {
           accounts == other.accounts &&
           fetched == other.fetched &&
           removed == other.removed &&
-          errors == other.errors;
+          errors == other.errors &&
+          folderErrors == other.folderErrors;
 }
 
 class ThreadDto {

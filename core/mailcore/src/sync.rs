@@ -40,6 +40,8 @@ pub struct SyncReport {
     pub fetched: usize,
     pub removed: usize,
     pub ops_replayed: usize,
+    /// Folders that failed, as `folder: error`; the rest of the account still synced.
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -129,10 +131,14 @@ impl SyncEngine {
                         removed,
                     });
                 }
-                Err(e) => self.emit(SyncEvent::Error {
-                    account_id: account.id,
-                    message: format!("{}: {e}", folder.remote_name),
-                }),
+                Err(e) => {
+                    let message = format!("{}: {e}", folder.remote_name);
+                    report.errors.push(message.clone());
+                    self.emit(SyncEvent::Error {
+                        account_id: account.id,
+                        message,
+                    });
+                }
             }
         }
         self.store.rebind_snoozes()?;

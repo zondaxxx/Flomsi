@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -186,6 +186,14 @@ CREATE INDEX messages_dedup ON messages(account_id, dedup_key);
 ALTER TABLE folders ADD COLUMN selectable INTEGER NOT NULL DEFAULT 1;
 "#;
 
+/// v8: how each account connects: IMAP TLS or STARTTLS, SMTP mode (empty = by port), and
+/// whether a self-signed certificate on 127.0.0.1 is accepted (local bridges).
+const SCHEMA_V8: &str = r#"
+ALTER TABLE accounts ADD COLUMN imap_security TEXT NOT NULL DEFAULT 'tls';
+ALTER TABLE accounts ADD COLUMN smtp_security TEXT NOT NULL DEFAULT '';
+ALTER TABLE accounts ADD COLUMN local_bridge INTEGER NOT NULL DEFAULT 0;
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -269,6 +277,9 @@ impl Store {
                 tx.execute_batch(SCHEMA_V7)?;
                 Self::refresh_all_threads(&tx)?;
             }
+            if version < 8 {
+                tx.execute_batch(SCHEMA_V8)?;
+            }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
@@ -290,11 +301,13 @@ impl Store {
     pub fn add_account(&self, a: &NewAccount) -> Result<Account> {
         self.with(|c| {
             c.execute(
-                "INSERT INTO accounts(kind,email,display_name,imap_host,imap_port,smtp_host,smtp_port,auth_kind,created_at)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                "INSERT INTO accounts(kind,email,display_name,imap_host,imap_port,smtp_host,smtp_port,auth_kind,created_at,imap_security,smtp_security,local_bridge)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 params![
                     a.kind.as_str(), a.email, a.display_name, a.imap_host, a.imap_port,
-                    a.smtp_host, a.smtp_port, a.auth.as_str(), ts(Utc::now())
+                    a.smtp_host, a.smtp_port, a.auth.as_str(), ts(Utc::now()),
+                    a.imap_security.as_str(), a.smtp_security.map(|s| s.as_str()).unwrap_or(""),
+                    a.local_bridge as i64
                 ],
             )?;
             let id = c.last_insert_rowid();
@@ -309,6 +322,9 @@ impl Store {
                 smtp_port: a.smtp_port,
                 auth: a.auth,
                 signature: String::new(),
+                imap_security: a.imap_security,
+                smtp_security: a.smtp_security,
+                local_bridge: a.local_bridge,
             })
         })
     }
@@ -367,6 +383,10 @@ impl Store {
             smtp_port: r.get::<_, i64>("smtp_port")? as u16,
             auth: AuthKind::parse(&r.get::<_, String>("auth_kind")?).unwrap_or(AuthKind::Password),
             signature: r.get("signature")?,
+            imap_security: Security::parse(&r.get::<_, String>("imap_security")?)
+                .unwrap_or_default(),
+            smtp_security: Security::parse(&r.get::<_, String>("smtp_security")?),
+            local_bridge: r.get::<_, i64>("local_bridge")? != 0,
         })
     }
 
@@ -1415,6 +1435,9 @@ mod tests {
             smtp_host: "".into(),
             smtp_port: 0,
             auth: AuthKind::Password,
+            imap_security: Default::default(),
+            smtp_security: None,
+            local_bridge: false,
         })
         .unwrap()
     }

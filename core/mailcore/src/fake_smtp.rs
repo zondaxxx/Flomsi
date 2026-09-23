@@ -259,6 +259,7 @@ mod tests {
             user: "z@x.dev".into(),
             cred: SmtpCredential::Password(pass.into()),
             implicit_tls,
+            local_bridge: false,
         }
     }
 
@@ -347,5 +348,35 @@ mod tests {
         .await;
         assert!(untrusted.is_err());
         assert_eq!(server.delivered.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn check_signs_in_without_sending() {
+        for implicit in [false, true] {
+            let server = FakeSmtp::start("z@x.dev", "secret", implicit).await;
+            let cert = std::slice::from_ref(&server.cert);
+            crate::smtp::check(&config(server.port, "secret", implicit), cert)
+                .await
+                .unwrap_or_else(|e| panic!("implicit={implicit}: {e}"));
+            let wrong = crate::smtp::check(&config(server.port, "nope", implicit), cert)
+                .await
+                .unwrap_err()
+                .to_string();
+            let d = crate::diagnose::diagnose(&wrong, "localhost");
+            assert_eq!(d.kind, crate::diagnose::ErrorKind::Auth, "{wrong}");
+            assert!(server.delivered.lock().unwrap().is_empty());
+        }
+
+        // A bridge on this computer is trusted without adding its certificate, whatever
+        // name the certificate carries (it says localhost, the account says 127.0.0.1).
+        let server = FakeSmtp::start("z@x.dev", "secret", false).await;
+        let mut cfg = config(server.port, "secret", false);
+        cfg.local_bridge = true;
+        crate::smtp::check(&cfg, &[]).await.unwrap();
+        cfg.host = "127.0.0.1".into();
+        crate::smtp::check(&cfg, &[]).await.unwrap();
+        cfg.host = "smtp.example.com".into();
+        let far = crate::smtp::check(&cfg, &[]).await.unwrap_err().to_string();
+        assert!(far.contains("only accepted from this computer"), "{far}");
     }
 }

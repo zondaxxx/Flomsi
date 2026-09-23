@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod compose;
+pub mod diagnose;
 pub mod error;
 pub mod files;
 pub mod logging;
@@ -33,6 +34,7 @@ pub use storage::Store;
 pub use sync::{SyncEvent, SyncOptions, SyncReport};
 
 use compose::{quote, AttachmentSource, Draft, DraftAttachment, OutgoingFile};
+pub use provider::imap::Transport;
 use provider::imap::{Credential, ImapProvider};
 use provider::parse;
 use provider::{IdleOutcome, Provider};
@@ -87,8 +89,31 @@ impl Core {
             AuthKind::Password => SECRET_PASSWORD,
             AuthKind::XOAuth2 => SECRET_REFRESH_TOKEN,
         };
+        // A second add of the same address must not replace the stored password of the
+        // account that already works.
+        let email = account.email.trim();
+        if self
+            .store
+            .accounts()?
+            .iter()
+            .any(|a| a.email.eq_ignore_ascii_case(email))
+        {
+            return Err(Error::Other(format!("{email} is already added")));
+        }
         secrets::set(&account.email, kind, secret)?;
         self.store.add_account(account)
+    }
+
+    /// Replace the stored password of an existing account, keeping its mail.
+    pub fn set_password(&self, account_id: i64, password: &str) -> Result<()> {
+        let a = self.store.account(account_id)?;
+        if a.auth != AuthKind::Password {
+            return Err(Error::Other(format!(
+                "{} does not sign in with a password",
+                a.email
+            )));
+        }
+        secrets::set(&a.email, SECRET_PASSWORD, password)
     }
 
     pub fn remove_account(&self, id: i64) -> Result<()> {
@@ -159,7 +184,18 @@ impl Core {
                 })?,
             ),
         };
-        ImapProvider::connect(&account.imap_host, account.imap_port, &account.email, cred).await
+        ImapProvider::connect_with(
+            &account.imap_host,
+            account.imap_port,
+            Transport {
+                security: account.imap_security,
+                local_bridge: account.local_bridge,
+            },
+            &[],
+            &account.email,
+            cred,
+        )
+        .await
     }
 
     pub async fn sync_account(&self, account_id: i64, opts: &SyncOptions) -> Result<SyncReport> {
@@ -198,15 +234,44 @@ impl Core {
     }
 
     /// Connect and authenticate once without storing anything: the "check credentials" step.
-    pub async fn check_login(host: &str, port: u16, email: &str, password: &str) -> Result<()> {
-        let mut p = ImapProvider::connect(
+    /// Sign in to IMAP once and leave, without storing anything.
+    pub async fn check_login(
+        host: &str,
+        port: u16,
+        transport: Transport,
+        email: &str,
+        password: &str,
+    ) -> Result<()> {
+        let mut p = ImapProvider::connect_with(
             host,
             port,
+            transport,
+            &[],
             email,
             Credential::Password(password.to_string()),
         )
         .await?;
         p.logout().await
+    }
+
+    /// Sign in to SMTP once without sending anything.
+    pub async fn check_smtp(
+        host: &str,
+        port: u16,
+        security: Security,
+        local_bridge: bool,
+        email: &str,
+        password: &str,
+    ) -> Result<()> {
+        let mut cfg = SmtpConfig::new(
+            host.to_string(),
+            port,
+            email.to_string(),
+            SmtpCredential::Password(password.to_string()),
+        );
+        cfg.implicit_tls = security == Security::Tls;
+        cfg.local_bridge = local_bridge;
+        smtp::check(&cfg, &[]).await
     }
 
     pub fn threads(&self, query: &str, limit: u32) -> Result<Vec<Thread>> {
@@ -350,11 +415,12 @@ impl Core {
         }
         let message = draft.to_mime(&files)?;
         let raw = message.formatted();
-        smtp::send(
-            &SmtpConfig::new(host, port, account.email.clone(), secret),
-            message,
-        )
-        .await?;
+        let mut cfg = SmtpConfig::new(host, port, account.email.clone(), secret);
+        if let Some(sec) = account.smtp_security {
+            cfg.implicit_tls = sec == Security::Tls;
+        }
+        cfg.local_bridge = account.local_bridge;
+        smtp::send(&cfg, message).await?;
 
         // Gmail files sent mail on its own; everyone else gets an APPEND into Sent.
         if !account.imap_host.contains("gmail") {
@@ -578,6 +644,9 @@ mod tests {
                 smtp_host: String::new(),
                 smtp_port: 0,
                 auth: AuthKind::Password,
+                imap_security: Default::default(),
+                smtp_security: None,
+                local_bridge: false,
             })
             .unwrap();
         let inbox = core
@@ -704,5 +773,28 @@ mod tests {
             AttachmentSource::Message { message_id, .. } if message_id == id
         ));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_second_add_of_the_same_address_leaves_the_first_alone() {
+        let (core, dir, _) = setup("dup");
+        let again = NewAccount {
+            kind: ProviderKind::Imap,
+            email: " Z@X.dev ".into(),
+            display_name: String::new(),
+            imap_host: "imap.x.dev".into(),
+            imap_port: 993,
+            smtp_host: String::new(),
+            smtp_port: 0,
+            auth: AuthKind::Password,
+            imap_security: Default::default(),
+            smtp_security: None,
+            local_bridge: false,
+        };
+        // Refused before the keychain is touched, so the stored password stays.
+        let err = core.add_account(&again, "other").unwrap_err().to_string();
+        assert!(err.contains("already added"), "{err}");
+        assert_eq!(core.store().accounts().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

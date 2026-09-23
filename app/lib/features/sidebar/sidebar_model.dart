@@ -11,8 +11,12 @@ class SidebarEntry {
     this.color,
     this.count = 0,
     this.section = false,
+    this.warning,
   });
   final String label;
+
+  /// Something needs the user (an account whose password was refused).
+  final String? warning;
   final String? query;
   final IconData? icon;
   final Color? color;
@@ -80,6 +84,7 @@ List<SidebarEntry> buildSidebar({
       icon: CupertinoIcons.circle_fill,
       color: a.color,
       count: a.unread,
+      warning: a.needsPassword ? 'Needs password: ${a.problem!.title}' : null,
     ),
   if (labels.isNotEmpty) const SidebarEntry(label: 'Labels', section: true),
   for (final l in labels)
