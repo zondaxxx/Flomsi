@@ -1634,7 +1634,7 @@ mod tests {
             let cert = ck.cert.der().clone();
             let key =
                 PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.signing_key.serialize_der()));
-            *crate::http::TEST_ROOT.lock().unwrap() = Some(cert.clone());
+            crate::http::TEST_ROOTS.lock().unwrap().push(cert.clone());
             let config = rustls::ServerConfig::builder()
                 .with_no_client_auth()
                 .with_single_cert(vec![cert], key)
