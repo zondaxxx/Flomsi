@@ -816,11 +816,11 @@ kbd.changed{animation:flash 1.4s var(--ease)}
     <ul class="dl">
       <li class="os" data-os="mac">
         <h3>macOS</h3>
-        <span class="fname mono">Flomsi-macOS.zip · 25 MB</span>
-        <a class="btn btn-s" href="https://github.com/zondaxxx/Flomsi/releases/latest/download/Flomsi-macOS.zip">Download for macOS</a>
+        <span class="fname mono">Flomsi-macOS.dmg · 25 MB</span>
+        <a class="btn btn-s" href="https://github.com/zondaxxx/Flomsi/releases/latest/download/Flomsi-macOS.dmg">Download for macOS</a>
         <p class="req">macOS 12 or later on Apple silicon. Intel Macs: build from source for now.</p>
         <ol>
-          <li>Unzip the file and move Flomsi.app to Applications.</li>
+          <li>Open the disk image and drag Flomsi to Applications.</li>
           <li>The app is not notarised, so the first launch is blocked. On macOS 15 and later, try to open it once, then click Open Anyway in System Settings → Privacy &amp; Security. On macOS 14 and earlier, Control-click the app, choose Open, then Open again.</li>
         </ol>
         <p class="aside">Or in Terminal: <code>xattr -dr com.apple.quarantine /Applications/Flomsi.app</code></p>
@@ -868,7 +868,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       </div>
       <div>
         <h3>Checksums</h3>
-        <p><a href="https://github.com/zondaxxx/Flomsi/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> covers every file. On Linux, <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code>. On macOS, <code>shasum -a 256 Flomsi-macOS.zip</code> and compare with its line. On Windows, <code>Get-FileHash Flomsi-windows.zip</code>.</p>
+        <p><a href="https://github.com/zondaxxx/Flomsi/releases/latest/download/SHA256SUMS.txt">SHA256SUMS.txt</a> covers every file. On Linux, <code>sha256sum -c --ignore-missing SHA256SUMS.txt</code>. On macOS, <code>shasum -a 256 Flomsi-macOS.dmg</code> and compare with its line. On Windows, <code>Get-FileHash Flomsi-windows.zip</code>.</p>
       </div>
       <div>
         <h3>mailctl</h3>
