@@ -308,6 +308,47 @@ async fn checked_partial<T>(
     }
 }
 
+/// What a SELECT or EXAMINE answer says about the folder, gathered line by line.
+#[derive(Default)]
+struct Opening {
+    uidvalidity: Option<u32>,
+    uidnext: Option<u32>,
+    exists: u32,
+    highest_modseq: Option<u64>,
+    /// Untagged NO and BAD lines, as sent.
+    warnings: Vec<String>,
+}
+
+impl Opening {
+    /// One untagged line. A NO or BAD among them is a warning (RFC 3501 7.1.2, 7.1.3), such
+    /// as `* NO [ALERT] Mailbox is at 95% of quota` or `* NO [UIDNOTSTICKY]`: only the tagged
+    /// reply says whether the folder opened.
+    fn read(&mut self, r: &async_imap::imap_proto::Response<'_>) {
+        use async_imap::imap_proto::{MailboxDatum, Response, ResponseCode, Status};
+        match r {
+            Response::Data {
+                status: Status::Ok,
+                code: Some(code),
+                ..
+            } => match code {
+                ResponseCode::UidValidity(v) => self.uidvalidity = Some(*v),
+                ResponseCode::UidNext(n) => self.uidnext = Some(*n),
+                ResponseCode::HighestModSeq(m) => self.highest_modseq = Some(*m),
+                _ => {}
+            },
+            Response::Data {
+                status: status @ (Status::No | Status::Bad),
+                code,
+                information,
+            } => self
+                .warnings
+                .push(format!("{status:?} {code:?} {information:?}")),
+            Response::MailboxData(MailboxDatum::Exists(n)) => self.exists = *n,
+            _ => {}
+        }
+    }
+}
+
 /// UIDs from `* SEARCH` lines.
 fn search_ids(r: &async_imap::imap_proto::Response<'_>) -> Option<Vec<u32>> {
     use async_imap::imap_proto::{MailboxDatum, Response};
@@ -795,24 +836,49 @@ impl ImapProvider {
 
     /// Open [folder] read-only (EXAMINE): its counters, nothing marked as seen.
     pub async fn examine(&mut self, folder: &str) -> Result<FolderState> {
+        self.open("EXAMINE", folder).await
+    }
+
+    /// SELECT or EXAMINE [folder]. async-imap's own select() gives up at an untagged NO,
+    /// though the server has opened the folder and ends with OK: a server that warns in
+    /// every SELECT of a folder (Cyrus about the quota) would then fail every sync and
+    /// every action there. Here the tagged reply decides, and a warning is only logged.
+    async fn open(&mut self, verb: &str, folder: &str) -> Result<FolderState> {
         // Until the answer is in, no folder counts as open: a SELECT that fails half way may
         // already have closed the last one on the server.
         self.selected = None;
         let r: Result<FolderState> = async {
+            if folder.contains(['\r', '\n']) {
+                return Err(Error::Imap(format!(
+                    "a folder name with a line break: {folder:?}"
+                )));
+            }
             let s = self.s()?;
-            let mb = s.examine(folder).await?;
-            let Some(uidvalidity) = mb.uid_validity else {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!("no answer to EXAMINE {folder}"),
+            let mut opening = Opening::default();
+            checked(s, &format!("{verb} {}", quoted(folder)), |r| {
+                opening.read(r);
+                None::<()>
+            })
+            .await?;
+            for w in &opening.warnings {
+                log::warn!(
+                    "{verb} {}: the server warns {w}",
+                    decode_folder_name(folder)
+                );
+            }
+            // Every SELECT answer carries UIDVALIDITY (RFC 3501 6.3.1); without it a UID
+            // could name any message.
+            let Some(uidvalidity) = opening.uidvalidity else {
+                return Err(Error::Imap(format!(
+                    "{verb} {folder} came back without UIDVALIDITY"
                 )));
             };
             self.selected = Some(folder.to_string());
             Ok(FolderState {
                 uidvalidity,
-                uidnext: mb.uid_next.unwrap_or(1),
-                exists: mb.exists,
-                highest_modseq: mb.highest_modseq,
+                uidnext: opening.uidnext.unwrap_or(1),
+                exists: opening.exists,
+                highest_modseq: opening.highest_modseq,
             })
         }
         .await;
@@ -886,31 +952,7 @@ impl Provider for ImapProvider {
     }
 
     async fn select(&mut self, folder: &str) -> Result<FolderState> {
-        // Until the answer is in, no folder counts as open: a SELECT that fails half way may
-        // already have closed the last one on the server.
-        self.selected = None;
-        let r: Result<FolderState> = async {
-            let s = self.s()?;
-            let mb = s.select(folder).await?;
-            // Every SELECT answer carries UIDVALIDITY. Without it the stream ended (async-imap
-            // then returns an empty mailbox as if all went well): a dead connection, not a
-            // folder whose UIDs changed.
-            let Some(uidvalidity) = mb.uid_validity else {
-                return Err(Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!("no answer to SELECT {folder}"),
-                )));
-            };
-            self.selected = Some(folder.to_string());
-            Ok(FolderState {
-                uidvalidity,
-                uidnext: mb.uid_next.unwrap_or(1),
-                exists: mb.exists,
-                highest_modseq: mb.highest_modseq,
-            })
-        }
-        .await;
-        self.after(r)
+        self.open("SELECT", folder).await
     }
 
     async fn search(&mut self, criteria: &str) -> Result<Vec<u32>> {
@@ -1254,6 +1296,31 @@ mod tests {
             .into_iter()
             .map(|d| (d.folder.name, d.folder.role, d.folder.selectable))
             .collect()
+    }
+
+    #[test]
+    fn a_warning_in_a_select_answer_is_only_a_warning() {
+        let mut opening = Opening::default();
+        for l in [
+            "* NO [ALERT] Mailbox is at 95% of quota",
+            "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)",
+            "* 172 EXISTS",
+            "* NO [UIDNOTSTICKY] Non-persistent UIDs",
+            "* OK [UIDVALIDITY 3857529045] UIDs valid",
+            "* BAD Something odd",
+            "* OK [UIDNEXT 4392] Predicted next UID",
+            "* OK [HIGHESTMODSEQ 715194045007] Highest",
+        ] {
+            let raw = format!("{l}\r\n");
+            let (_, resp) = async_imap::imap_proto::parser::parse_response(raw.as_bytes())
+                .unwrap_or_else(|e| panic!("{l}: {e:?}"));
+            opening.read(&resp);
+        }
+        assert_eq!(opening.uidvalidity, Some(3857529045));
+        assert_eq!(opening.uidnext, Some(4392));
+        assert_eq!(opening.exists, 172);
+        assert_eq!(opening.highest_modseq, Some(715194045007));
+        assert_eq!(opening.warnings.len(), 3, "{:?}", opening.warnings);
     }
 
     fn role_of(list: &[(String, FolderRole, bool)], name: &str) -> FolderRole {

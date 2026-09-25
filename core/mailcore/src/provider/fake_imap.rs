@@ -54,6 +54,9 @@ pub struct FakeState {
     /// A SELECT of this folder carries an untagged `* NO [ALERT]` warning and still
     /// succeeds, as RFC 3501 allows (Cyrus says how full the quota is).
     pub alert_on_select: Option<String>,
+    /// A SELECT of this folder sends the folder's data, then a tagged NO; the folder is
+    /// open all the same (the worst a server can do: RFC 3501 wants none open then).
+    pub refuse_select: Option<String>,
     /// Answer UID SEARCH with NO.
     pub refuse_search: bool,
     /// Send part of a SEARCH answer, then close the connection.
@@ -685,8 +688,13 @@ where
                             } else {
                                 ""
                             };
+                            let done = if st.refuse_select.as_deref() == Some(name.as_str()) {
+                                "NO [UNAVAILABLE] try again later"
+                            } else {
+                                "OK [READ-WRITE] SELECT completed"
+                            };
                             format!(
-                                "{alert}* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* {} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] next\r\n{modseq}{tag} OK [READ-WRITE] SELECT completed\r\n",
+                                "{alert}* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* {} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] next\r\n{modseq}{tag} {done}\r\n",
                                 b.msgs.len(),
                                 b.uidvalidity,
                                 b.next_uid
@@ -2675,22 +2683,71 @@ mod tests {
         actions.mark_read(invoice, true).unwrap();
         empty(&store, trash.id).unwrap();
         let inbox_before = fake.with(|s| s.msgs("INBOX").len());
-        // Selecting INBOX answers with a warning the client takes for a failure, while
-        // the server has switched to INBOX all the same.
-        fake.with(|s| s.alert_on_select = Some("INBOX".into()));
+        // Selecting INBOX is refused, while the server has switched to INBOX all the same.
+        fake.with(|s| s.refuse_select = Some("INBOX".into()));
         engine
             .sync_account(&account, &mut p, &SyncOptions::default())
             .await
             .ok();
+        // The provider on its own: after the refused SELECT no folder is open, so emptying
+        // Trash is refused rather than run in INBOX.
+        p.select("Trash").await.unwrap();
+        assert!(p.select("INBOX").await.is_err());
+        let none = std::collections::HashSet::new();
+        assert!(p.delete_below("Trash", u32::MAX, &none).await.is_err());
         fake.with(|s| {
             assert_eq!(
                 s.msgs("INBOX").len(),
                 inbox_before,
                 "nothing deleted in INBOX"
             );
+            let invoice = s.msgs("INBOX").iter().find(|m| m.raw == INVOICE_EML);
+            assert!(
+                !invoice.unwrap().flags.contains(&"\\Seen".to_string()),
+                "the INBOX op waits"
+            );
             assert!(s.msgs("Trash").is_empty(), "Trash emptied");
         });
         p.logout().await.ok();
+    }
+
+    #[tokio::test]
+    async fn a_select_that_carries_a_warning_still_opens_the_folder() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let invoice = store
+            .messages_by_message_id(account.id, "inv@studio.dev")
+            .unwrap()[0]
+            .thread_id;
+        Actions { store: &store }.mark_read(invoice, true).unwrap();
+        // Every SELECT of INBOX now warns about the quota and still ends with OK.
+        fake.with(|s| {
+            s.alert_on_select = Some("INBOX".into());
+            s.deliver("INBOX", LATER, &[]);
+        });
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.ops_replayed, 1);
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+        fake.with(|s| {
+            let invoice = s.msgs("INBOX").iter().find(|m| m.raw == INVOICE_EML);
+            assert!(invoice.unwrap().flags.contains(&"\\Seen".to_string()));
+        });
+        // The new mail came in with the same sync.
+        assert_eq!(
+            store
+                .messages_by_message_id(account.id, "ci@github.com")
+                .unwrap()
+                .len(),
+            1
+        );
+        // EXAMINE reads the same answer the same way.
+        let state = p.examine("INBOX").await.unwrap();
+        assert_eq!((state.uidvalidity, state.exists), (1, 3));
+        p.logout().await.unwrap();
     }
 
     #[tokio::test]
