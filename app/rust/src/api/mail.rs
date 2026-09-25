@@ -556,6 +556,125 @@ pub fn trash_thread(thread_id: i64) -> Result<FiledDto> {
     filed(core()?.actions().trash(thread_id))
 }
 
+/// One message in Trash or Spam, as the server knows it.
+pub struct BinCopyDto {
+    pub folder_id: i64,
+    pub uidvalidity: u32,
+    pub uid: u32,
+}
+
+/// The conversation's messages in Trash and Spam: what Delete forever asks about, and all
+/// it deletes (empty: nothing of it is in Trash or Spam).
+pub fn bin_copies(thread_id: i64) -> Result<Vec<BinCopyDto>> {
+    Ok(core()?
+        .actions()
+        .bin_copies(thread_id)?
+        .into_iter()
+        .map(|c| BinCopyDto {
+            folder_id: c.folder_id,
+            uidvalidity: c.uidvalidity,
+            uid: c.uid,
+        })
+        .collect())
+}
+
+/// Delete forever the copies [bin_copies] named, those still in Trash or Spam: they leave
+/// the server for good. Mail that joined the conversation since stays. Returns how many.
+pub fn delete_forever(copies: Vec<BinCopyDto>) -> Result<u32> {
+    let copies: Vec<mailcore::BinCopy> = copies
+        .into_iter()
+        .map(|c| mailcore::BinCopy {
+            folder_id: c.folder_id,
+            uidvalidity: c.uidvalidity,
+            uid: c.uid,
+        })
+        .collect();
+    Ok(core()?.actions().delete_forever(&copies)? as u32)
+}
+
+fn bin_role(role: &str) -> Result<FolderRole> {
+    match role {
+        "trash" => Ok(FolderRole::Trash),
+        "junk" => Ok(FolderRole::Junk),
+        other => Err(anyhow!("cannot empty {other}")),
+    }
+}
+
+/// What a fresh read of Trash or Spam showed; [empty_folder] deletes exactly that.
+pub struct BinCheckDto {
+    pub folder_id: i64,
+    pub uidvalidity: u32,
+    pub below: u32,
+    pub seen: Vec<u32>,
+    /// When it was read (Unix seconds).
+    pub read_at: i64,
+    /// What went wrong on the way, such as a restore the server refused (its message is
+    /// back in the folder): said in the question.
+    pub notes: Vec<String>,
+}
+
+/// Read one account's Trash (`trash`) or Spam (`junk`) from the server again, its queued
+/// changes first, and say what it holds. None when the account has no such folder. Fails
+/// when the folder could not be read: nothing is emptied from what is not known.
+pub async fn sync_bin(account_id: i64, role: String) -> Result<Option<BinCheckDto>> {
+    let role = bin_role(&role)?;
+    let c = core()?;
+    let started = chrono::Utc::now().timestamp();
+    let opts = SyncOptions {
+        roles: vec![role],
+        ..SyncOptions::default()
+    };
+    let report = c.sync_account(account_id, &opts).await?;
+    let Some(bin) = c.store().folder_by_role(account_id, role)? else {
+        return Ok(None);
+    };
+    if !bin.last_sync_at.is_some_and(|t| t.timestamp() >= started) {
+        let why = report
+            .errors
+            .iter()
+            .find(|e| e.starts_with(&format!("{}: ", bin.remote_name)))
+            .cloned()
+            .unwrap_or_else(|| format!("{} could not be read from the server", role_name(role)));
+        return Err(anyhow!(why));
+    }
+    let Some(check) = c.actions().check_bin(bin.id)? else {
+        return Err(anyhow!("{} could not be read from the server", role_name(role)));
+    };
+    Ok(Some(BinCheckDto {
+        folder_id: check.folder_id,
+        uidvalidity: check.uidvalidity,
+        below: check.below,
+        seen: check.seen,
+        read_at: chrono::Utc::now().timestamp(),
+        notes: report.errors,
+    }))
+}
+
+fn role_name(role: FolderRole) -> &'static str {
+    if role == FolderRole::Trash {
+        "Trash"
+    } else {
+        "Spam"
+    }
+}
+
+/// Empty the Trash or Spam that [sync_bin] read: all of it leaves the server for good,
+/// but for mail a queued restore takes out and mail that came into view after the check.
+/// Refused when the check is more than 15 minutes old. Returns how many messages went from
+/// this device.
+pub fn empty_folder(check: BinCheckDto) -> Result<u32> {
+    if chrono::Utc::now().timestamp() - check.read_at > 15 * 60 {
+        return Err(anyhow!("that check is too old; check again"));
+    }
+    let check = mailcore::BinCheck {
+        folder_id: check.folder_id,
+        uidvalidity: check.uidvalidity,
+        below: check.below,
+        seen: check.seen,
+    };
+    Ok(core()?.actions().empty_folder(&check)? as u32)
+}
+
 pub struct OlderDto {
     pub fetched: u32,
     /// The server has older mail still.

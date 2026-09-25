@@ -175,10 +175,8 @@ class _PhoneThreadScreenState extends ConsumerState<PhoneThreadScreen> {
             BarItem(
               icon: AppIcons.delete,
               label: 'Delete',
-              // Already in Trash: there is nowhere further to put it.
-              onTap: ready && role != FolderRole.trash
-                  ? () => _actions().trashSelected()
-                  : null,
+              // In Trash, after asking, for good: there is nowhere further to put it.
+              onTap: ready ? () => _actions().trashSelected() : null,
             ),
             BarItem(
               icon: AppIcons.reply,
@@ -227,6 +225,17 @@ class _PhoneThreadScreenState extends ConsumerState<PhoneThreadScreen> {
                           title: 'Snooze…',
                           leading: Icon(AppIcons.snooze, size: 20),
                           onPressed: () => _actions().snoozeSelected(),
+                        ),
+                      if (role == FolderRole.junk)
+                        PhoneMenuItem(
+                          title: 'Delete forever',
+                          danger: true,
+                          leading: Icon(
+                            AppIcons.delete,
+                            size: 20,
+                            color: context.s.red,
+                          ),
+                          onPressed: () => _actions().deleteForeverSelected(),
                         ),
                       if (blocked.isNotEmpty)
                         PhoneMenuItem(

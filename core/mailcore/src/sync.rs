@@ -135,6 +135,9 @@ impl SyncEngine {
         let given_up = self.store.given_up_ops(account.id)?;
         let mut undo: HashMap<String, Undo> = HashMap::new();
         for item in &given_up {
+            // The op's own folder is read again even when no single copy is named (an
+            // emptied Trash: its mail is above the floor and comes back by itself).
+            undo.entry(item.op.folder().to_string()).or_default();
             let removes = item.op.removes();
             for copy in item.op.touched() {
                 let u = undo.entry(copy.folder).or_default();
@@ -204,11 +207,9 @@ impl SyncEngine {
         // A given-up op is done with once every folder it touched came back from the
         // server (or no longer exists there); only then is it reported, once.
         for item in given_up {
-            let settled = item
-                .op
-                .touched()
-                .iter()
-                .all(|c| synced.contains(&c.folder) || !on_server.contains(c.folder.as_str()));
+            let settled = std::iter::once(item.op.folder().to_string())
+                .chain(item.op.touched().into_iter().map(|c| c.folder))
+                .all(|f| synced.contains(&f) || !on_server.contains(f.as_str()));
             if settled {
                 self.store.mark_undone(item.id)?;
                 report.errors.push(format!(
@@ -249,7 +250,7 @@ impl SyncEngine {
 
         // Moves still waiting for the server: that mail stays out (checked again when each
         // message is stored, in case one is made while this sync runs).
-        let (_, moves_waiting) = self.store.pending_uids(account.id, &folder.remote_name)?;
+        let waiting = self.store.pending_uids(account.id, &folder.remote_name)?;
 
         // Reconcile UID set: what's gone remotely goes locally too. A SEARCH that lists fewer
         // messages than SELECT counted is not trusted to delete anything (a server that
@@ -384,7 +385,7 @@ impl SyncEngine {
             .into_iter()
             .filter(|u| {
                 !local.contains(u)
-                    && !moves_waiting.contains(u)
+                    && !waiting.leaving(*u)
                     && (floor.is_none_or(|f| *u >= f) || restore.contains(u) || holes.contains(u))
             })
             .collect();
@@ -448,7 +449,7 @@ impl SyncEngine {
         else {
             return Ok((0, false));
         };
-        let (_, moves_waiting) = self.store.pending_uids(account.id, &folder.remote_name)?;
+        let waiting = self.store.pending_uids(account.id, &folder.remote_name)?;
         // [only]: the part of the folder the list shows (Gmail's archive: not in the inbox).
         let all = match only {
             Some(criteria) => provider.search(criteria).await?,
@@ -456,7 +457,7 @@ impl SyncEngine {
         };
         let older: Vec<u32> = all
             .into_iter()
-            .filter(|u| *u < floor && !moves_waiting.contains(u))
+            .filter(|u| *u < floor && !waiting.leaving(*u))
             .collect();
         let take = &older[older.len().saturating_sub(count)..];
         let wanted: Vec<u32> = take
@@ -493,12 +494,12 @@ impl SyncEngine {
             return Ok(0);
         }
         let local: HashSet<u32> = self.store.uids(folder.id)?.into_iter().collect();
-        let (_, moves_waiting) = self.store.pending_uids(account.id, &folder.remote_name)?;
+        let waiting = self.store.pending_uids(account.id, &folder.remote_name)?;
         let found: Vec<u32> = provider
             .search(&criteria)
             .await?
             .into_iter()
-            .filter(|u| !local.contains(u) && !moves_waiting.contains(u))
+            .filter(|u| !local.contains(u) && !waiting.leaving(*u))
             .collect();
         let newest = &found[found.len().saturating_sub(limit)..];
         self.fetch_into(account, provider, folder, newest, opts)
@@ -593,6 +594,9 @@ impl SyncEngine {
                 let validity = match &selected {
                     Some((name, v)) if *name == folder => *v,
                     _ => {
+                        // Forgotten first: a SELECT that fails may still have closed the
+                        // folder that was open.
+                        selected = None;
                         let state = provider.select(&folder).await?;
                         selected = Some((folder.clone(), state.uidvalidity));
                         state.uidvalidity
@@ -606,6 +610,30 @@ impl SyncEngine {
                     Op::SetFlags {
                         uid, add, remove, ..
                     } => provider.store_flags(*uid, *add, *remove).await,
+                    // A MOVE of a UID the server no longer has answers OK and does nothing.
+                    // Taken as done only where that is the truth: the last try's answer was
+                    // lost on a dropped connection (it went through), or it is a Gmail
+                    // archive (out of the inbox is where it is). Anything else is said, so a
+                    // restore that did not happen is not taken as done.
+                    Op::Move { uid, dest, .. }
+                        if !provider.search(&format!("UID {uid}")).await?.contains(uid) =>
+                    {
+                        let lost_answer = item.attempts > 0
+                            && item
+                                .last_error
+                                .as_deref()
+                                .is_some_and(|e| e.starts_with("io"));
+                        let archived = self
+                            .store
+                            .folders(account.id)?
+                            .iter()
+                            .any(|f| f.remote_name == *dest && f.role == FolderRole::All);
+                        if lost_answer || archived {
+                            Ok(())
+                        } else {
+                            Err(crate::Error::Other(GONE.into()))
+                        }
+                    }
                     Op::Move {
                         folder,
                         uid,
@@ -625,10 +653,33 @@ impl SyncEngine {
                                 also: also.clone(),
                             },
                         )?;
-                        provider.delete(*uid).await
+                        provider.delete(folder, *uid).await
                     }
                     Op::Move { uid, dest, .. } => provider.move_to(*uid, dest).await,
-                    Op::Delete { uid, .. } => provider.delete(*uid).await,
+                    Op::Delete { folder, uid, .. } => provider.delete(folder, *uid).await,
+                    Op::Empty {
+                        folder,
+                        below,
+                        uidvalidity,
+                        keep,
+                    } => {
+                        // Only ever Trash or Spam at the top, checked again here: a folder
+                        // the server has since given another role keeps its mail. Without
+                        // a UIDVALIDITY the UIDs could name other mail: nothing goes.
+                        let bin = self
+                            .store
+                            .folders(account.id)?
+                            .into_iter()
+                            .find(|f| f.remote_name == *folder);
+                        if uidvalidity.is_none() || !bin.as_ref().is_some_and(emptiable) {
+                            return Err(crate::Error::Other(NOT_BIN.into()));
+                        }
+                        // Mail another op takes out of the folder stays: what was on its
+                        // way when the user emptied (keep), and anything queued since.
+                        let mut spare: HashSet<u32> = keep.iter().copied().collect();
+                        spare.extend(self.store.removing(account.id, folder, Some(item.id))?);
+                        provider.delete_below(folder, *below, &spare).await
+                    }
                 }
             }
             .await;
@@ -928,6 +979,153 @@ impl<'a> Actions<'a> {
         Ok(moved)
     }
 
+    /// The thread's copies in Trash and Spam, as the server knows them: what Delete forever
+    /// asks about, and all it deletes.
+    pub fn bin_copies(&self, thread_id: i64) -> Result<Vec<BinCopy>> {
+        let mut out = Vec::new();
+        for group in self.groups(thread_id)? {
+            let Some(first) = group.first() else { continue };
+            let folders = self.store.folders(first.account_id)?;
+            for m in &group {
+                let Some(f) = Self::folder_of(&folders, m) else {
+                    continue;
+                };
+                let Some(uidvalidity) = f.uidvalidity else {
+                    continue;
+                };
+                if emptiable(f) {
+                    out.push(BinCopy {
+                        folder_id: f.id,
+                        uidvalidity,
+                        uid: m.uid,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Delete forever the copies [Actions::bin_copies] named: each still in Trash or Spam,
+    /// under the same UIDVALIDITY, goes from the server for good. Mail that joined the
+    /// conversation since stays. Returns how many messages went.
+    pub fn delete_forever(&self, copies: &[BinCopy]) -> Result<usize> {
+        self.store.batch(|b| {
+            let mut deleted = 0;
+            for c in copies {
+                let folder = b.folder(c.folder_id)?;
+                if !emptiable(&folder) || folder.uidvalidity != Some(c.uidvalidity) {
+                    continue;
+                }
+                if !b.uids(folder.id)?.contains(&c.uid) {
+                    continue;
+                }
+                b.delete(folder.id, c.uid)?;
+                b.enqueue(
+                    folder.account_id,
+                    &Op::Delete {
+                        folder: folder.remote_name.clone(),
+                        uid: c.uid,
+                        uidvalidity: Some(c.uidvalidity),
+                        also: Vec::new(),
+                    },
+                )?;
+                deleted += 1;
+            }
+            Ok(deleted)
+        })
+    }
+
+    /// What Trash or Spam holds right after it was read from the server: the question
+    /// Empty asks is about this, and Empty deletes no more. None when the folder was never
+    /// read (no UIDVALIDITY to hold the server to).
+    pub fn check_bin(&self, folder_id: i64) -> Result<Option<BinCheck>> {
+        self.store.batch(|b| {
+            let folder = b.folder(folder_id)?;
+            if !emptiable(&folder) {
+                return Err(crate::Error::Other(NOT_BIN.into()));
+            }
+            let Some(uidvalidity) = folder.uidvalidity else {
+                return Ok(None);
+            };
+            let mut seen = b.uids(folder.id)?;
+            seen.sort_unstable();
+            // Everything there when it was read: under its UIDNEXT, and every cached message
+            // whatever the counter says.
+            let below = seen
+                .iter()
+                .map(|u| u.saturating_add(1))
+                .chain(folder.uidnext)
+                .max()
+                .unwrap_or(0);
+            Ok(Some(BinCheck {
+                folder_id,
+                uidvalidity,
+                below,
+                seen,
+            }))
+        })
+    }
+
+    /// Empty the Trash or Spam that `check` saw: everything in it goes for good, cached
+    /// here or not, but for mail a queued restore or "not spam" takes out and mail that
+    /// came into view after the check (a restore the server refused, taken back since):
+    /// the user was not asked about those. Returns how many cached messages went.
+    pub fn empty_folder(&self, check: &BinCheck) -> Result<usize> {
+        // Read and changed under one lock: a sync cannot slip a message in between.
+        self.store.batch(|b| {
+            let folder = b.folder(check.folder_id)?;
+            if !emptiable(&folder) {
+                return Err(crate::Error::Other(NOT_BIN.into()));
+            }
+            // Rebuilt on the server since: the UIDs name other mail now.
+            if folder.uidvalidity != Some(check.uidvalidity) {
+                return Err(crate::Error::Other(BIN_CHANGED.into()));
+            }
+            let below = check.below;
+            if below <= 1 {
+                return Ok(0);
+            }
+            let seen: HashSet<u32> = check.seen.iter().copied().collect();
+            let cached: HashSet<u32> = b.uids(folder.id)?.into_iter().collect();
+            let arrived = cached.iter().filter(|u| !seen.contains(u));
+            // A given-up restore whose message was back in view at the check is the user's
+            // to empty with the rest; any other queued one keeps its message.
+            let queued = b
+                .removing(folder.account_id, &folder.remote_name)?
+                .into_iter()
+                .filter(|u| !(cached.contains(u) && seen.contains(u)))
+                .collect::<Vec<u32>>();
+            // Asked for and never received: mail on the server this device could not show.
+            let holes = b.fetch_holes(folder.id)?;
+            let keep: Vec<u32> = arrived
+                .copied()
+                .chain(queued)
+                .chain(holes)
+                .filter(|u| *u < below)
+                .collect::<std::collections::BTreeSet<u32>>()
+                .into_iter()
+                .collect();
+            let gone: Vec<u32> = cached
+                .iter()
+                .copied()
+                .filter(|u| *u < below && seen.contains(u))
+                .collect();
+            for u in &gone {
+                b.delete(folder.id, *u)?;
+            }
+            b.enqueue(
+                folder.account_id,
+                &Op::Empty {
+                    folder: folder.remote_name.clone(),
+                    below,
+                    uidvalidity: Some(check.uidvalidity),
+                    keep,
+                },
+            )?;
+            Ok(gone.len())
+        })
+    }
+
     /// Gmail: one MOVE into Trash or Spam removes the message from all labels, so every local
     /// copy goes; the copy in `dest` arrives with the next sync.
     fn gmail_leave_everything(
@@ -1058,13 +1256,44 @@ struct Undo {
 }
 
 const REBUILT: &str = "the folder was rebuilt on the server, so this change no longer applies";
+const NOT_BIN: &str = "only Trash and Spam can be emptied";
+const GONE: &str = "the message is no longer in that folder on the server";
+const BIN_CHANGED: &str = "the folder was rebuilt on the server since it was checked; check again";
+
+/// One message in Trash or Spam, as the server knows it (see [Actions::bin_copies]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BinCopy {
+    pub folder_id: i64,
+    pub uidvalidity: u32,
+    pub uid: u32,
+}
+
+/// What a read of Trash or Spam from the server showed (see [Actions::check_bin]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinCheck {
+    pub folder_id: i64,
+    pub uidvalidity: u32,
+    /// Every message on the server under this UID was there when the folder was read.
+    pub below: u32,
+    /// The messages cached then: the ones the user was shown.
+    pub seen: Vec<u32>,
+}
+
+/// Trash or Spam. Roles come from the server's special-use attributes, or are guessed
+/// only for folders where system folders sit (see `assign_roles`): never a folder of the
+/// user's own further down.
+fn emptiable(f: &Folder) -> bool {
+    matches!(f.role, FolderRole::Trash | FolderRole::Junk)
+}
 
 /// A refusal that will not change on a retry: the folder was rebuilt, or the server says
 /// the target does not exist. (async-imap prints known response codes as `Some(TryCreate)`
 /// and keeps unknown ones in the text as `[NONEXISTENT]`.)
 fn refused(e: &crate::Error) -> bool {
     let m = e.to_string().to_ascii_lowercase();
-    m.contains(REBUILT) || m.contains("trycreate") || m.contains("[nonexistent]")
+    [REBUILT, NOT_BIN, GONE, "trycreate", "[nonexistent]"]
+        .iter()
+        .any(|s| m.contains(&s.to_ascii_lowercase()))
 }
 
 fn describe(op: &Op) -> String {
@@ -1077,7 +1306,11 @@ fn describe(op: &Op) -> String {
         }
         Op::SetFlags { .. } => "changing a message's flags".into(),
         Op::Delete { folder, .. } => format!(
-            "moving a message out of {}",
+            "removing a message from {}",
+            crate::provider::imap::decode_folder_name(folder)
+        ),
+        Op::Empty { folder, .. } => format!(
+            "emptying {}",
             crate::provider::imap::decode_folder_name(folder)
         ),
     }

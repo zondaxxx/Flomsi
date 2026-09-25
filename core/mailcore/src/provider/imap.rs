@@ -460,9 +460,11 @@ fn selectable(attrs: &[async_imap::imap_proto::NameAttribute<'_>]) -> bool {
 
 /// Settle roles over the whole list: INBOX is the inbox; a special-use attribute beats a
 /// guess from the name; each role goes to one folder only (the first that claims it), so
-/// "Sent" next to "Sent Messages" marked \Sent does not get Sent twice. On Gmail names
-/// are never guessed: every system folder there carries its attribute, and a label called
-/// "Archives" or "Bin" is only a label.
+/// "Sent" next to "Sent Messages" marked \Sent does not get Sent twice. Names are guessed
+/// only where system folders sit (the top, or right under INBOX): "Clients/Acme/Junk" is
+/// the user's own folder, and Delete must not file mail there nor Empty delete it. On
+/// Gmail names are never guessed: every system folder there carries its attribute, and a
+/// label called "Archives" or "Bin" is only a label.
 fn assign_roles(listed: Vec<ListedFolder>, gmail: bool) -> Vec<ListedDetail> {
     let by_attribute: HashSet<FolderRole> = listed.iter().filter_map(|f| f.role).collect();
     let mut taken: HashSet<FolderRole> = HashSet::new();
@@ -473,7 +475,7 @@ fn assign_roles(listed: Vec<ListedFolder>, gmail: bool) -> Vec<ListedDetail> {
                 Some(FolderRole::Inbox)
             } else if let Some(r) = f.role {
                 Some(r)
-            } else if gmail {
+            } else if gmail || folder_depth(&f.name, f.delimiter.as_deref()) > 0 {
                 None
             } else {
                 let guess = role_from_name(&decode_folder_name(&f.name), f.delimiter.as_deref());
@@ -494,6 +496,47 @@ fn assign_roles(listed: Vec<ListedFolder>, gmail: bool) -> Vec<ListedDetail> {
             }
         })
         .collect()
+}
+
+/// How many levels below where system folders sit a folder is: 0 at the top, and right
+/// under INBOX or Gmail's `[Gmail]` (servers that keep every folder in INBOX).
+pub(crate) fn folder_depth(name: &str, delimiter: Option<&str>) -> usize {
+    // No delimiter known: read levels as the role guess does, on both `/` and `.`.
+    let (depth, parent) = match delimiter.filter(|d| !d.is_empty()) {
+        Some(d) => (name.matches(d).count(), name.split(d).next().unwrap_or("")),
+        None => (
+            name.matches(['/', '.']).count(),
+            name.split(['/', '.']).next().unwrap_or(""),
+        ),
+    };
+    let system = ["INBOX", "[Gmail]", "[Google Mail]"]
+        .iter()
+        .any(|p| parent.eq_ignore_ascii_case(p));
+    if depth > 0 && system {
+        depth - 1
+    } else {
+        depth
+    }
+}
+
+/// `1:below-1` without the UIDs in `keep`, as an IMAP set (`1:4,6:9`); None when that
+/// leaves nothing.
+fn uids_below(below: u32, keep: &HashSet<u32>) -> Option<String> {
+    let mut skip: Vec<u32> = keep.iter().copied().filter(|u| *u < below).collect();
+    skip.sort_unstable();
+    let mut parts = Vec::new();
+    let mut start = 1u32;
+    for k in skip.into_iter().chain(std::iter::once(below)) {
+        if k > start {
+            parts.push(if k - 1 == start {
+                start.to_string()
+            } else {
+                format!("{start}:{}", k - 1)
+            });
+        }
+        start = k.saturating_add(1);
+    }
+    (!parts.is_empty()).then(|| parts.join(","))
 }
 
 /// A guess from the (decoded) name's last level, for servers without special-use.
@@ -687,6 +730,19 @@ impl ImapProvider {
             .ok_or_else(|| Error::Imap("session closed".into()))
     }
 
+    /// Nothing is deleted anywhere but in the folder the op names: it has to be the one
+    /// open right now.
+    fn open_for_deleting(&self, folder: &str) -> Result<()> {
+        if self.selected.as_deref() == Some(folder) {
+            Ok(())
+        } else {
+            Err(Error::Imap(format!(
+                "{} is not the open folder, so nothing was deleted",
+                decode_folder_name(folder)
+            )))
+        }
+    }
+
     pub fn host(&self) -> &str {
         &self.host
     }
@@ -739,6 +795,9 @@ impl ImapProvider {
 
     /// Open [folder] read-only (EXAMINE): its counters, nothing marked as seen.
     pub async fn examine(&mut self, folder: &str) -> Result<FolderState> {
+        // Until the answer is in, no folder counts as open: a SELECT that fails half way may
+        // already have closed the last one on the server.
+        self.selected = None;
         let r: Result<FolderState> = async {
             let s = self.s()?;
             let mb = s.examine(folder).await?;
@@ -827,6 +886,9 @@ impl Provider for ImapProvider {
     }
 
     async fn select(&mut self, folder: &str) -> Result<FolderState> {
+        // Until the answer is in, no folder counts as open: a SELECT that fails half way may
+        // already have closed the last one on the server.
+        self.selected = None;
         let r: Result<FolderState> = async {
             let s = self.s()?;
             let mb = s.select(folder).await?;
@@ -1019,7 +1081,9 @@ impl Provider for ImapProvider {
     async fn move_to(&mut self, uid: u32, dest: &str) -> Result<()> {
         if !self.can_move {
             self.copy_to(uid, dest).await?;
-            return self.delete(uid).await;
+            // The original is in the folder that is open (none known: nothing is deleted).
+            let open = self.selected.clone().unwrap_or_default();
+            return self.delete(&open, uid).await;
         }
         let r: Result<()> = async {
             self.s()?.uid_mv(uid.to_string(), dest).await?;
@@ -1042,7 +1106,8 @@ impl Provider for ImapProvider {
         self.after(r)
     }
 
-    async fn delete(&mut self, uid: u32) -> Result<()> {
+    async fn delete(&mut self, folder: &str, uid: u32) -> Result<()> {
+        self.open_for_deleting(folder)?;
         let uidplus = self.uidplus;
         let r: Result<()> = async {
             let s = self.s()?;
@@ -1065,6 +1130,30 @@ impl Provider for ImapProvider {
             if marked.iter().all(|u| *u == uid) {
                 s.run_command_and_check_ok("EXPUNGE").await?;
             }
+            Ok(())
+        }
+        .await;
+        self.after(r)
+    }
+
+    async fn delete_below(&mut self, folder: &str, below: u32, keep: &HashSet<u32>) -> Result<()> {
+        self.open_for_deleting(folder)?;
+        let Some(set) = uids_below(below, keep) else {
+            return Ok(());
+        };
+        let uidplus = self.uidplus;
+        let r: Result<()> = async {
+            let s = self.s()?;
+            s.run_command_and_check_ok(format!("UID STORE {set} +FLAGS.SILENT (\\Deleted)"))
+                .await?;
+            // Without UIDPLUS, EXPUNGE also takes what other clients marked deleted in Trash
+            // or Spam since: in a folder being emptied that is what the user asked for.
+            let expunge = if uidplus {
+                format!("UID EXPUNGE {set}")
+            } else {
+                "EXPUNGE".to_string()
+            };
+            s.run_command_and_check_ok(expunge).await?;
             Ok(())
         }
         .await;
@@ -1169,6 +1258,48 @@ mod tests {
 
     fn role_of(list: &[(String, FolderRole, bool)], name: &str) -> FolderRole {
         list.iter().find(|f| f.0 == name).unwrap().1
+    }
+
+    #[test]
+    fn a_role_is_guessed_only_where_system_folders_sit() {
+        let list = roles(&[
+            r#"* LIST () "/" "INBOX""#,
+            r#"* LIST () "/" "Clients""#,
+            r#"* LIST () "/" "Clients/Acme/Junk""#,
+            r#"* LIST () "/" "Junk""#,
+            r#"* LIST () "/" "Projects/Trash""#,
+            r#"* LIST (\Sent) "/" "Mail/Sent""#,
+        ]);
+        assert_eq!(role_of(&list, "Junk"), FolderRole::Junk);
+        assert_eq!(role_of(&list, "Clients/Acme/Junk"), FolderRole::Other);
+        assert_eq!(role_of(&list, "Projects/Trash"), FolderRole::Other);
+        // The server's own word counts at any depth.
+        assert_eq!(role_of(&list, "Mail/Sent"), FolderRole::Sent);
+        let nil = roles(&[
+            r#"* LIST () NIL "INBOX""#,
+            r#"* LIST () NIL "Clients.Acme.Junk""#,
+        ]);
+        assert_eq!(role_of(&nil, "Clients.Acme.Junk"), FolderRole::Other);
+        assert_eq!(folder_depth("INBOX.Junk", Some(".")), 0);
+        assert_eq!(folder_depth("[Gmail]/Spam", Some("/")), 0);
+        assert_eq!(folder_depth("Junk", None), 0);
+        assert_eq!(folder_depth("Clients.Acme.Junk", None), 2);
+        assert_eq!(folder_depth("Clients/Acme/Junk", Some("/")), 2);
+        assert_eq!(folder_depth("INBOX.Clients.Junk", Some(".")), 1);
+    }
+
+    #[test]
+    fn emptying_names_every_uid_below_but_the_kept_ones() {
+        let keep = |v: &[u32]| v.iter().copied().collect::<HashSet<u32>>();
+        assert_eq!(uids_below(4, &keep(&[])).as_deref(), Some("1:3"));
+        assert_eq!(uids_below(2, &keep(&[])).as_deref(), Some("1"));
+        assert_eq!(uids_below(1, &keep(&[])), None);
+        assert_eq!(
+            uids_below(10, &keep(&[1, 5, 6, 9, 12])).as_deref(),
+            Some("2:4,7:8")
+        );
+        assert_eq!(uids_below(4, &keep(&[1, 2, 3])), None);
+        assert_eq!(uids_below(4, &keep(&[2])).as_deref(), Some("1,3"));
     }
 
     #[test]

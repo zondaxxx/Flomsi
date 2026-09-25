@@ -121,14 +121,13 @@ jobs:
         working-directory: app
       - run: flutter build macos --release
         working-directory: app
+      # A disk image to drag Flomsi into Applications from.
       - name: package
-        run: |
-          cd app/build/macos/Build/Products/Release
-          ditto -c -k --keepParent Flomsi.app Flomsi-macOS.zip
+        run: scripts/make_dmg.sh app/build/macos/Build/Products/Release/Flomsi.app Flomsi-macOS.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: Flomsi-macOS
-          path: app/build/macos/Build/Products/Release/Flomsi-macOS.zip
+          path: Flomsi-macOS.dmg
 
   ios:
     name: build iOS (device, no codesign)
@@ -261,7 +260,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir out
-          cp dist/Flomsi-macOS/Flomsi-macOS.zip out/
+          cp dist/Flomsi-macOS/Flomsi-macOS.dmg out/
           cp dist/Flomsi-windows/Flomsi-windows.zip out/
           cp dist/Flomsi-android/app-release.apk out/Flomsi-android.apk
           cp dist/Flomsi-iOS-unsigned/Flomsi-iOS-unsigned.ipa out/

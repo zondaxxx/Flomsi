@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/models.dart';
 import '../../platform.dart';
@@ -35,6 +36,9 @@ const _microsoft =
 /// Google has not reviewed Flomsi (a mail app needs a security audit for that), so its
 /// page warns first. Builds for a reviewed client pass --dart-define=FLOMSI_GOOGLE_VERIFIED=true.
 const _googleVerified = bool.fromEnvironment('FLOMSI_GOOGLE_VERIFIED');
+
+/// What Flomsi does with mail, Google's data included.
+final _privacy = Uri.parse('https://flomsi.nz/privacy.html');
 
 /// The ways in: the providers this build signs in with on their own page, then any other
 /// mail account with a password. Shared by the start screen and "Add account".
@@ -168,14 +172,32 @@ class _SignInPanelState extends ConsumerState<SignInPanel> {
             ),
             onTap: () => _signIn('google'),
           ),
-          if (!_googleVerified && _busy == null)
+          if (_busy == null) ...[
             Padding(
               padding: const EdgeInsets.fromLTRB(4, 8, 4, 0),
               child: Text(
-                'Google will warn that it hasn’t verified Flomsi. Tap Advanced, then Go to Flomsi.',
+                'Flomsi connects this device straight to Gmail to read, send, file and '
+                'delete your mail. Nothing goes to a Flomsi server.',
                 style: ui(context, size: 13, color: s.fg2, height: 1.4),
               ),
             ),
+            if (!_googleVerified)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+                child: Text(
+                  'Google will warn that it hasn’t verified Flomsi. Tap Advanced, then Go to Flomsi.',
+                  style: ui(context, size: 13, color: s.fg2, height: 1.4),
+                ),
+              ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: () =>
+                    launchUrl(_privacy, mode: LaunchMode.externalApplication),
+                child: const Text('Privacy policy'),
+              ),
+            ),
+          ],
           if (_googleClosed && _busy == null)
             Align(
               alignment: Alignment.centerLeft,

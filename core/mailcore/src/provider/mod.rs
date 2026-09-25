@@ -79,8 +79,17 @@ pub trait Provider {
         false
     }
     async fn copy_to(&mut self, uid: u32, dest: &str) -> Result<()>;
-    /// Mark the message deleted and expunge it, and only it.
-    async fn delete(&mut self, uid: u32) -> Result<()>;
+    /// Mark the message deleted and expunge it, and only it. Refused unless `folder` is the
+    /// folder open on the server.
+    async fn delete(&mut self, folder: &str, uid: u32) -> Result<()>;
+    /// Delete for good every message of `folder` (the one open) with a UID under `below`,
+    /// but those in `keep` (emptying Trash or Spam).
+    async fn delete_below(
+        &mut self,
+        folder: &str,
+        below: u32,
+        keep: &std::collections::HashSet<u32>,
+    ) -> Result<()>;
     /// Store a raw RFC 822 message in `folder` (used to keep a copy of sent mail).
     async fn append(&mut self, folder: &str, raw: &[u8], flags: Flags) -> Result<()>;
     /// Block until the selected folder changes or the timeout passes.

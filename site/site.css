@@ -3,7 +3,7 @@
 
 /* IBM Plex, served from this site (SIL OFL 1.1, fonts/OFL.txt): no third-party requests.
    Plex has no ⌘ ⇧ ↵, so both stacks keep system fonts behind it. The URLs resolve against
-   this file, so they hold on 404.html too, which GitHub Pages serves at any depth. */
+   this file, so they hold on 404.html too, which the server sends at any depth. */
 @font-face{font-family:"IBM Plex Sans";src:url(fonts/IBMPlexSans-Variable.woff2) format("woff2");font-weight:400 700;font-style:normal;font-display:swap}
 @font-face{font-family:"IBM Plex Mono";src:url(fonts/IBMPlexMono-Regular.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
 @font-face{font-family:"IBM Plex Mono";src:url(fonts/IBMPlexMono-Medium.woff2) format("woff2");font-weight:500;font-style:normal;font-display:swap}

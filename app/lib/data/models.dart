@@ -395,6 +395,30 @@ class SyncStarted extends RepoEvent {
   const SyncStarted();
 }
 
+/// A conversation's messages in Trash and Spam, as Delete forever will name them to the
+/// server: taken before the question, so nothing that joins it meanwhile goes too.
+class ForeverCheck {
+  const ForeverCheck({required this.count, this.token});
+  final int count;
+
+  /// The repository's own record, handed back to [MailRepository.deleteForever].
+  final Object? token;
+}
+
+/// What a fresh read of Trash or Spam showed: Empty deletes exactly that.
+class BinCheck {
+  const BinCheck({required this.accountId, this.notes = const [], this.token});
+  final int accountId;
+
+  /// What went wrong on the way, such as a restore the server refused (its message is
+  /// back in the folder).
+  final List<String> notes;
+
+  /// The repository's own record of the read, handed back to
+  /// [MailRepository.emptyFolder].
+  final Object? token;
+}
+
 class SyncFinished extends RepoEvent {
   const SyncFinished({required this.fetched, this.errors = const []});
   final int fetched;

@@ -72,6 +72,12 @@ void main() {
     expect(find.byType(WelcomeScreen), findsOneWidget);
     expect(find.text('Continue with Google'), findsOneWidget);
     expect(find.text('Other email account'), findsOneWidget);
+    // What happens to the Gmail data is said before the Google page opens.
+    expect(
+      find.textContaining('Nothing goes to a Flomsi server'),
+      findsOneWidget,
+    );
+    expect(find.text('Privacy policy'), findsOneWidget);
     await tester.tap(find.text('Continue with Google'));
     await tester.pumpAndSettle();
     expect(repo.signedIn, ['you@gmail.com']);

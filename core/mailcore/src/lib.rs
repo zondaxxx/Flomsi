@@ -33,7 +33,7 @@ pub use error::{Error, Result};
 pub use model::*;
 pub use search::Query;
 pub use storage::Store;
-pub use sync::{SyncEvent, SyncOptions, SyncReport};
+pub use sync::{BinCheck, BinCopy, SyncEvent, SyncOptions, SyncReport};
 
 use compose::{quote, AttachmentSource, Draft, DraftAttachment, OutgoingFile};
 pub use provider::imap::Transport;

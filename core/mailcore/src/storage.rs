@@ -698,7 +698,7 @@ impl Store {
                 )
                 .optional()?;
             if let Some(folder) = folder {
-                if Self::pending_in(&tx, account_id, &folder)?.1.contains(&uid) {
+                if Self::pending_in(&tx, account_id, &folder)?.leaving(uid) {
                     return Ok(None);
                 }
             }
@@ -1010,12 +1010,12 @@ impl Store {
         self.with(|c| {
             let tx =
                 rusqlite::Transaction::new_unchecked(c, rusqlite::TransactionBehavior::Immediate)?;
-            let (flags_waiting, moves_waiting) = Self::pending_in(&tx, account_id, folder)?;
+            let waiting = Self::pending_in(&tx, account_id, folder)?;
             let mut outcome = FlagsApplied::default();
             let mut current =
                 tx.prepare_cached("SELECT flags FROM messages WHERE folder_id=?1 AND uid=?2")?;
             for (uid, flags) in changes {
-                if flags_waiting.contains(uid) || moves_waiting.contains(uid) {
+                if waiting.flags.contains(uid) || waiting.leaving(*uid) {
                     outcome.held += 1;
                 } else if flags.contains(Flags::DELETED) {
                     // Marked for deletion (another client, or our own move on a server
@@ -1705,21 +1705,57 @@ impl Store {
 
     /// UIDs in [folder] with an op still waiting: (flag changes, moves out). A sync must not
     /// undo them with the server's older state while they wait.
-    pub fn pending_uids(
-        &self,
-        account_id: i64,
-        folder: &str,
-    ) -> Result<(HashSet<u32>, HashSet<u32>)> {
+    pub fn pending_uids(&self, account_id: i64, folder: &str) -> Result<Waiting> {
         self.with(|c| Self::pending_in(c, account_id, folder))
     }
 
-    fn pending_in(
+    /// UIDs of `folder` that waiting ops take out of it (a restore from Trash, "not
+    /// spam"); `except` leaves one op out.
+    pub fn removing(
+        &self,
+        account_id: i64,
+        folder: &str,
+        except: Option<i64>,
+    ) -> Result<HashSet<u32>> {
+        self.with(|c| Self::removing_in(c, account_id, folder, except, OUTBOX_PENDING))
+    }
+
+    /// With `also`, ops in that state count too (given up, still to be taken back).
+    fn removing_in(
         c: &Connection,
         account_id: i64,
         folder: &str,
-    ) -> Result<(HashSet<u32>, HashSet<u32>)> {
-        let mut flags = HashSet::new();
-        let mut moves = HashSet::new();
+        except: Option<i64>,
+        also: i64,
+    ) -> Result<HashSet<u32>> {
+        let mut out = HashSet::new();
+        let mut st = c.prepare_cached(
+            "SELECT id, op_json FROM outbox WHERE account_id=?1 AND done IN (?2, ?3)",
+        )?;
+        let rows = st.query_map(params![account_id, OUTBOX_PENDING, also], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, json) = row?;
+            if Some(id) == except {
+                continue;
+            }
+            let op: Op = serde_json::from_str(&json)?;
+            if !op.removes() {
+                continue;
+            }
+            out.extend(
+                op.touched()
+                    .into_iter()
+                    .filter(|c| c.folder == folder)
+                    .map(|c| c.uid),
+            );
+        }
+        Ok(out)
+    }
+
+    fn pending_in(c: &Connection, account_id: i64, folder: &str) -> Result<Waiting> {
+        let mut w = Waiting::default();
         let mut st =
             c.prepare_cached("SELECT op_json FROM outbox WHERE account_id=?1 AND done=?2")?;
         let rows = st.query_map(params![account_id, OUTBOX_PENDING], |r| {
@@ -1727,19 +1763,43 @@ impl Store {
         })?;
         for row in rows {
             let op: Op = serde_json::from_str(&row?)?;
+            if op.folder() == folder {
+                w.below = w.below.max(op.below());
+                w.keep.extend(op.keep());
+            }
             let removes = op.removes();
             for copy in op.touched() {
                 if copy.folder != folder {
                     continue;
                 }
                 if removes {
-                    moves.insert(copy.uid);
+                    w.moves.insert(copy.uid);
                 } else {
-                    flags.insert(copy.uid);
+                    w.flags.insert(copy.uid);
                 }
             }
         }
-        Ok((flags, moves))
+        Ok(w)
+    }
+}
+
+/// What queued ops are about to do to one folder's messages.
+#[derive(Debug, Default, Clone)]
+pub struct Waiting {
+    /// Flags about to change.
+    pub flags: HashSet<u32>,
+    /// About to leave the folder: moved or deleted.
+    pub moves: HashSet<u32>,
+    /// Every UID under this one is about to be deleted (the folder is being emptied)...
+    pub below: u32,
+    /// ...but these, which the emptying leaves.
+    pub keep: HashSet<u32>,
+}
+
+impl Waiting {
+    /// The message is on its way out of the folder: a sync must not bring it back.
+    pub fn leaving(&self, uid: u32) -> bool {
+        (uid < self.below && !self.keep.contains(&uid)) || self.moves.contains(&uid)
     }
 }
 
@@ -1766,6 +1826,34 @@ impl Batch<'_> {
     }
     pub fn enqueue(&self, account_id: i64, op: &Op) -> Result<i64> {
         Store::enqueue_in(self.c, account_id, op)
+    }
+    /// One folder as it is now, read under the batch's lock.
+    pub fn folder(&self, id: i64) -> Result<Folder> {
+        self.c
+            .query_row("SELECT * FROM folders WHERE id=?1", [id], Store::row_folder)
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("folder {id}")))
+    }
+    /// The folder's cached UIDs, read under the batch's lock.
+    pub fn uids(&self, folder_id: i64) -> Result<Vec<u32>> {
+        let mut st = self
+            .c
+            .prepare_cached("SELECT uid FROM messages WHERE folder_id=?1")?;
+        let rows = st.query_map([folder_id], |r| r.get::<_, i64>(0).map(|v| v as u32))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    /// UIDs of the folder asked for and never received.
+    pub fn fetch_holes(&self, folder_id: i64) -> Result<HashSet<u32>> {
+        let mut st = self
+            .c
+            .prepare_cached("SELECT uid FROM fetch_holes WHERE folder_id=?1")?;
+        let rows = st.query_map([folder_id], |r| r.get::<_, u32>(0))?;
+        Ok(rows.collect::<rusqlite::Result<HashSet<u32>>>()?)
+    }
+    /// UIDs of `folder` that queued ops take out of it, waiting or given up and not yet
+    /// taken back (see [Store::removing]).
+    pub fn removing(&self, account_id: i64, folder: &str) -> Result<HashSet<u32>> {
+        Store::removing_in(self.c, account_id, folder, None, OUTBOX_GIVEN_UP)
     }
 }
 
@@ -2432,7 +2520,7 @@ mod tests {
         };
         let id = s.enqueue(a.id, &op).unwrap();
         assert_eq!(
-            s.pending_uids(a.id, "[Gmail]/All Mail").unwrap().1,
+            s.pending_uids(a.id, "[Gmail]/All Mail").unwrap().moves,
             HashSet::from([9])
         );
         for _ in 0..MAX_ATTEMPTS - 1 {

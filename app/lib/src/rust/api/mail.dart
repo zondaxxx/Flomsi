@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `filed`, `fmt_addr`, `new`, `parse_addr`, `security`, `server`, `thread_dto`
+// These functions are ignored because they are not marked as `pub`: `account_dto`, `attachment_to_dto`, `bin_role`, `core`, `draft_to_dto`, `dto_to_attachment`, `dto_to_draft`, `filed`, `fmt_addr`, `new`, `parse_addr`, `role_name`, `security`, `server`, `thread_dto`
 
 /// Open (or create) the profile database under `data_dir`. Idempotent.
 Future<void> openCore({required String dataDir}) =>
@@ -155,6 +155,32 @@ Future<FiledDto> archiveThread({required PlatformInt64 threadId}) =>
 /// To Trash; `moved` is 0 when it was there already (or only in Sent elsewhere).
 Future<FiledDto> trashThread({required PlatformInt64 threadId}) =>
     RustLib.instance.api.crateApiMailTrashThread(threadId: threadId);
+
+/// The conversation's messages in Trash and Spam: what Delete forever asks about, and all
+/// it deletes (empty: nothing of it is in Trash or Spam).
+Future<List<BinCopyDto>> binCopies({required PlatformInt64 threadId}) =>
+    RustLib.instance.api.crateApiMailBinCopies(threadId: threadId);
+
+/// Delete forever the copies [bin_copies] named, those still in Trash or Spam: they leave
+/// the server for good. Mail that joined the conversation since stays. Returns how many.
+Future<int> deleteForever({required List<BinCopyDto> copies}) =>
+    RustLib.instance.api.crateApiMailDeleteForever(copies: copies);
+
+/// Read one account's Trash (`trash`) or Spam (`junk`) from the server again, its queued
+/// changes first, and say what it holds. None when the account has no such folder. Fails
+/// when the folder could not be read: nothing is emptied from what is not known.
+Future<BinCheckDto?> syncBin({
+  required PlatformInt64 accountId,
+  required String role,
+}) =>
+    RustLib.instance.api.crateApiMailSyncBin(accountId: accountId, role: role);
+
+/// Empty the Trash or Spam that [sync_bin] read: all of it leaves the server for good,
+/// but for mail a queued restore takes out and mail that came into view after the check.
+/// Refused when the check is more than 15 minutes old. Returns how many messages went from
+/// this device.
+Future<int> emptyFolder({required BinCheckDto check}) =>
+    RustLib.instance.api.crateApiMailEmptyFolder(check: check);
 
 /// The next 200 older messages of each folder the list `query` shows, on one account.
 Future<OlderDto> loadOlder({
@@ -411,6 +437,76 @@ class AttachmentDto {
           name == other.name &&
           mime == other.mime &&
           size == other.size;
+}
+
+/// What a fresh read of Trash or Spam showed; [empty_folder] deletes exactly that.
+class BinCheckDto {
+  final PlatformInt64 folderId;
+  final int uidvalidity;
+  final int below;
+  final Uint32List seen;
+
+  /// When it was read (Unix seconds).
+  final PlatformInt64 readAt;
+
+  /// What went wrong on the way, such as a restore the server refused (its message is
+  /// back in the folder): said in the question.
+  final List<String> notes;
+
+  const BinCheckDto({
+    required this.folderId,
+    required this.uidvalidity,
+    required this.below,
+    required this.seen,
+    required this.readAt,
+    required this.notes,
+  });
+
+  @override
+  int get hashCode =>
+      folderId.hashCode ^
+      uidvalidity.hashCode ^
+      below.hashCode ^
+      seen.hashCode ^
+      readAt.hashCode ^
+      notes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BinCheckDto &&
+          runtimeType == other.runtimeType &&
+          folderId == other.folderId &&
+          uidvalidity == other.uidvalidity &&
+          below == other.below &&
+          seen == other.seen &&
+          readAt == other.readAt &&
+          notes == other.notes;
+}
+
+/// One message in Trash or Spam, as the server knows it.
+class BinCopyDto {
+  final PlatformInt64 folderId;
+  final int uidvalidity;
+  final int uid;
+
+  const BinCopyDto({
+    required this.folderId,
+    required this.uidvalidity,
+    required this.uid,
+  });
+
+  @override
+  int get hashCode => folderId.hashCode ^ uidvalidity.hashCode ^ uid.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BinCopyDto &&
+          runtimeType == other.runtimeType &&
+          folderId == other.folderId &&
+          uidvalidity == other.uidvalidity &&
+          uid == other.uid;
 }
 
 /// What went wrong, for people: `kind` is auth, network, tls, server or local.

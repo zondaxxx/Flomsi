@@ -32,6 +32,9 @@ class ThreadBody extends ConsumerWidget {
     final thread = loaded?.id == selectedId ? loaded : null;
     final threads = ref.watch(threadsProvider).value ?? const <Thread>[];
     final actions = ShellActions(ref: ref, context: context);
+    // Delete in Trash deletes for good: the button says so.
+    ref.watch(queryProvider);
+    final forever = actions.shownBin == FolderRole.trash;
     final pos = thread == null
         ? -1
         : threads.indexWhere((t) => t.id == thread.id);
@@ -108,7 +111,7 @@ class ThreadBody extends ConsumerWidget {
                   ),
                   _Tool(
                     icon: CupertinoIcons.trash,
-                    label: 'Delete',
+                    label: forever ? 'Delete Forever' : 'Delete',
                     keyHint: keyHintFor(ref, 'thread.delete'),
                     enabled: enabled,
                     showLabel: labels,

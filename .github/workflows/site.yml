@@ -7,33 +7,40 @@ on:
       - '.github/workflows/site.yml'
   workflow_dispatch:
 
-# The site is static files in site/: no build step, the folder is published as it is.
-# Pages must be set to "GitHub Actions" as its source, and the custom domain (flomsi.nz)
-# is set in the repository's Pages settings; site/CNAME only records it.
+# The site is static files in site/: no build step, the folder goes to flomsi.nz as it is.
+# The server (168.222.247.31) serves it with Caddy from /var/www/flomsi/current. The deploy
+# key in FLOMSI_DEPLOY_KEY can do one thing there: run /usr/local/bin/flomsi-deploy, which
+# takes the site as a .tar.gz on stdin, unpacks it beside the last releases and switches
+# `current` to it in one step. A broken upload changes nothing.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 # One deployment at a time, and a running one is allowed to finish.
 concurrency:
-  group: pages
+  group: site
   cancel-in-progress: false
 
 jobs:
   deploy:
-    name: publish to GitHub Pages
+    name: publish to flomsi.nz
     runs-on: ubuntu-latest
     environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    # Current majors, on Node 24. upload-pages-artifact leaves dotfiles out, which is why site/ has no
-    # .nojekyll: a deployment from Actions does not run Jekyll anyway.
+      name: flomsi.nz
+      url: https://flomsi.nz
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site
-      - id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Upload
+        env:
+          DEPLOY_KEY: ${{ secrets.FLOMSI_DEPLOY_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy
+          chmod 600 ~/.ssh/deploy
+          # The server's host key, pinned: the upload goes to this machine or nowhere.
+          echo '168.222.247.31 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDahinA2q88Lt9yaziSxTtYZBSRoRymedoNCY4bZBFpSQkBai6TE4RFTwqLUW4djIGPbtK7YTgvEbjVdVUZBQr6Fu7CHWCqqvt7l7thYXofHu8ySePYHa1KNmKhr6VXpiIO0RleQvLj7g6LZ1T9L6fC5uOAsHm+B4IAMkfw3P34h5PUsY2bRhyEghsxIGAq1xoV7/8iQzLcLJn+smnWtrCAVqqVKhDRWL03nL2mg9QQACzFKvOdtYkdCk7bkHoCcFqfB7iphuZ8HmwWI+My0PgYlgwlgKNjK4okojT7uuutpAAhahZmT/L7U1CitYmQnQz14nBD4N9Ul38HqgDE/4codFdehbMq93kOjovGN6ICvNnZ8kGZsidaV/EFys91FrxLoeTMV0pVkAE8fpaEk/+E+ByoFyMRzxlFSksJaCo6tlu0WguZ5mg/Ka+ZO9bt37uyM33Du0TWY2pXoY4/ZX8XXabs93J2Qt5btJ1Ngyz3t9+oFOoQdI6FUBeAENNvb/0=' > ~/.ssh/known_hosts
+          tar -czf - -C site . |
+            ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o BatchMode=yes root@168.222.247.31
+      - name: Check
+        run: |
+          curl -fsS --retry 3 https://flomsi.nz/ | grep -q '<title>Flomsi'
+          curl -fsS https://flomsi.nz/privacy.html | grep -q 'Limited Use'

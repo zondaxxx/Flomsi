@@ -42,6 +42,23 @@ abstract class MailRepository {
 
   /// How many messages went to Trash (0: nothing to delete). Throws [MissingFolder].
   Future<int> trash(int threadId);
+
+  /// The conversation's messages in Trash and Spam, for Delete forever to ask about.
+  Future<ForeverCheck> checkDeleteForever(int threadId);
+
+  /// Delete forever the messages [check] named, those still in Trash or Spam: they leave
+  /// the server for good; anything else stays. Returns how many went.
+  Future<int> deleteForever(ForeverCheck check);
+
+  /// Read Trash or Spam ([role] trash or junk) of [accountId] from the server again, its
+  /// queued changes first, and say what it holds. Null when the account has no such
+  /// folder. Throws a [Problem] when the folder could not be read.
+  Future<BinCheck?> refreshBin(FolderRole role, int accountId);
+
+  /// Empty the Trash or Spam [check] read: all of it leaves the server for good, but for
+  /// mail a queued restore takes out and mail that came into view after the check.
+  /// Returns how many messages went from this device. Throws a [Problem].
+  Future<int> emptyFolder(BinCheck check);
   Future<void> markRead(int threadId, bool read);
   Future<void> star(int threadId, bool on);
 

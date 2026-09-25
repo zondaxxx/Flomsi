@@ -24,61 +24,70 @@ class WelcomeScreen extends StatelessWidget {
                 ),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
-                  child: IntrinsicHeight(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        const Spacer(flex: 2),
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          // The mark is a dark tile: on the dark page a hairline
-                          // keeps its edge.
-                          child: DecoratedBox(
-                            position: DecorationPosition.foreground,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: s.isDark
-                                    ? s.fg3.withValues(alpha: 0.5)
-                                    : Colors.transparent,
+                  // Spare height goes one part above the name and two under it. Spread
+                  // by the column, not by intrinsic sizes: those lag a frame behind a
+                  // sign-in problem as it slides open, and the page would overflow.
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox.shrink(),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            // The mark is a dark tile: on the dark page a hairline
+                            // keeps its edge.
+                            child: DecoratedBox(
+                              position: DecorationPosition.foreground,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: s.isDark
+                                      ? s.fg3.withValues(alpha: 0.5)
+                                      : Colors.transparent,
+                                ),
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(12),
+                                child: Image.asset(
+                                  'assets/brand/flomsi_mark.png',
+                                  width: 56,
+                                  height: 56,
+                                ),
                               ),
                             ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(12),
-                              child: Image.asset(
-                                'assets/brand/flomsi_mark.png',
-                                width: 56,
-                                height: 56,
-                              ),
+                          ),
+                          const SizedBox(height: 20),
+                          Text(
+                            'Flomsi',
+                            style: ui(
+                              context,
+                              size: 30,
+                              weight: FontWeight.w600,
+                              letterSpacing: -0.4,
+                              height: 1.2,
                             ),
                           ),
-                        ),
-                        const SizedBox(height: 20),
-                        Text(
-                          'Flomsi',
-                          style: ui(
-                            context,
-                            size: 30,
-                            weight: FontWeight.w600,
-                            letterSpacing: -0.4,
-                            height: 1.2,
+                          const SizedBox(height: 8),
+                          Text(
+                            'Your mail, straight from your provider. No Flomsi server in between.',
+                            style: ui(
+                              context,
+                              size: 16,
+                              color: s.fg2,
+                              height: 1.4,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Your mail, straight from your provider. No Flomsi server in between.',
-                          style: ui(
-                            context,
-                            size: 16,
-                            color: s.fg2,
-                            height: 1.4,
-                          ),
-                        ),
-                        const Spacer(flex: 3),
-                        const SizedBox(height: 32),
-                        const SignInPanel(),
-                      ],
-                    ),
+                        ],
+                      ),
+                      const SizedBox.shrink(),
+                      const Padding(
+                        padding: EdgeInsets.only(top: 32),
+                        child: SignInPanel(),
+                      ),
+                    ],
                   ),
                 ),
               ),

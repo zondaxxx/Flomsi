@@ -591,6 +591,53 @@ class RustRepository implements MailRepository {
   @override
   Future<int> trash(int threadId) =>
       _after(rust.trashThread(threadId: threadId)).then(_filed);
+  @override
+  Future<ForeverCheck> checkDeleteForever(int threadId) async {
+    final copies = await rust.binCopies(threadId: threadId);
+    return ForeverCheck(count: copies.length, token: copies);
+  }
+
+  @override
+  Future<int> deleteForever(ForeverCheck check) =>
+      _after(rust.deleteForever(copies: check.token! as List<rust.BinCopyDto>));
+
+  @override
+  Future<BinCheck?> refreshBin(FolderRole role, int accountId) async {
+    final parked = _problems[accountId];
+    if (parked != null && parked.isAuth) throw parked;
+    try {
+      // In the account's queue, like any sync: never two replays of one outbox at once.
+      final c = await _serial(
+        accountId,
+        () => rust.syncBin(accountId: accountId, role: role.name),
+        deadline: const Duration(minutes: 1),
+      );
+      _events.add(const ThreadsChanged());
+      if (c == null) return null;
+      return BinCheck(accountId: accountId, notes: c.notes, token: c);
+    } on TimeoutException {
+      throw const Problem(
+        kind: 'busy',
+        title:
+            'The account is busy or its server is slow; try again in a moment',
+      );
+    } catch (e) {
+      final p = problemFrom(e, (await _account(accountId))?.imapHost ?? '');
+      if (p.isAuth) await _stop(accountId, p);
+      throw p;
+    }
+  }
+
+  @override
+  Future<int> emptyFolder(BinCheck check) async {
+    try {
+      return await _after(
+        rust.emptyFolder(check: check.token! as rust.BinCheckDto),
+      );
+    } catch (e) {
+      throw problemFrom(e, (await _account(check.accountId))?.imapHost ?? '');
+    }
+  }
 
   /// The accounts a query covers: the one `account:` names, or all.
   Future<List<Account>> _accountsFor(String query) async {

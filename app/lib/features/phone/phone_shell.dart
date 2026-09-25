@@ -233,6 +233,9 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
       if (_deleteHere)
         const CustomSemanticsAction(label: 'Delete'): () =>
             filings.start(t.id, FilingKind.trash),
+      if (_bin != null)
+        const CustomSemanticsAction(label: 'Delete forever'): () =>
+            _on(t, (a) => a.deleteForeverSelected()),
       const CustomSemanticsAction(label: 'Reply'): () =>
           _on(t, (a) => a.openReply()),
     };
@@ -242,6 +245,17 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
   void _on(Thread t, Future<void> Function(ShellActions a) f) {
     ref.read(selectedThreadIdProvider.notifier).select(t.id);
     f(_actions(context));
+  }
+
+  /// Trash or Junk when the list shows one (not a search in it): its mail can be
+  /// deleted forever, and the whole of it emptied.
+  FolderRole? get _bin {
+    if (_searching) return null;
+    final m = parseMailbox(_base);
+    if (m == null || m.snoozed || m.label != null) return null;
+    return m.role == FolderRole.trash || m.role == FolderRole.junk
+        ? m.role
+        : null;
   }
 
   /// Where swiping right archives: the Inbox (any account, Unread or not).
@@ -322,6 +336,7 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
     final notice = ref.read(noticeProvider.notifier);
     // Every item acts on the row that was pressed, not on whatever is selected by then.
     void on(Future<void> Function(ShellActions a) f) => _on(t, f);
+    final bin = _bin;
     return [
       PhoneMenuItem(
         title: 'Reply',
@@ -346,12 +361,21 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
           leading: Icon(AppIcons.archive, size: 20),
           onPressed: () => on((a) => a.archiveSelected()),
         ),
-      PhoneMenuItem(
-        title: 'Delete',
-        danger: true,
-        leading: Icon(AppIcons.delete, size: 20, color: s.red),
-        onPressed: () => on((a) => a.trashSelected()),
-      ),
+      // In Trash there is nowhere further to put it: Delete is Delete forever.
+      if (bin != FolderRole.trash)
+        PhoneMenuItem(
+          title: 'Delete',
+          danger: true,
+          leading: Icon(AppIcons.delete, size: 20, color: s.red),
+          onPressed: () => on((a) => a.trashSelected()),
+        ),
+      if (bin != null)
+        PhoneMenuItem(
+          title: 'Delete forever',
+          danger: true,
+          leading: Icon(AppIcons.delete, size: 20, color: s.red),
+          onPressed: () => on((a) => a.deleteForeverSelected()),
+        ),
       PhoneMenuItem(
         title: 'Move to…',
         leading: Icon(AppIcons.move, size: 20),
@@ -435,6 +459,9 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
                 onAddAccount: _addAccount,
                 onSettings: _settings,
                 onCheck: () => _refreshKey.currentState?.show(),
+                emptyRole: _bin,
+                onEmpty: (role) =>
+                    _actions(context).emptyBin(role, scope: _scope),
               ),
         body: NotificationListener<ScrollNotification>(
           onNotification: (n) {
@@ -542,6 +569,8 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
     required this.onAddAccount,
     required this.onSettings,
     required this.onCheck,
+    this.emptyRole,
+    this.onEmpty,
   });
 
   /// The list is scrolled: a hairline sets the bar off from it.
@@ -555,6 +584,10 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
   final VoidCallback onAddAccount;
   final VoidCallback onSettings;
   final VoidCallback onCheck;
+
+  /// Trash or Junk on screen: More offers to empty it.
+  final FolderRole? emptyRole;
+  final void Function(FolderRole role)? onEmpty;
 
   @override
   Size get preferredSize => const Size.fromHeight(Touch.appBar);
@@ -695,6 +728,13 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
                     ),
               onPressed: sync.syncing ? null : onCheck,
             ),
+            if (emptyRole != null && onEmpty != null)
+              PhoneMenuItem(
+                title: 'Empty ${labelForRole(emptyRole!)}',
+                danger: true,
+                leading: Icon(AppIcons.delete, size: 20, color: s.red),
+                onPressed: () => onEmpty!(emptyRole!),
+              ),
             PhoneMenuItem(
               title: 'Add account',
               leading: Icon(AppIcons.addAccount, size: 20),

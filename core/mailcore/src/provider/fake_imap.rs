@@ -49,6 +49,11 @@ pub struct FakeState {
     pub old_server: bool,
     /// Answer every UID STORE with a NO that may pass (a flaky server).
     pub refuse_store: bool,
+    /// Answer every UID MOVE and UID COPY with `NO [OVERQUOTA]` (a full mailbox).
+    pub refuse_move: bool,
+    /// A SELECT of this folder carries an untagged `* NO [ALERT]` warning and still
+    /// succeeds, as RFC 3501 allows (Cyrus says how full the quota is).
+    pub alert_on_select: Option<String>,
     /// Answer UID SEARCH with NO.
     pub refuse_search: bool,
     /// Send part of a SEARCH answer, then close the connection.
@@ -198,6 +203,23 @@ impl FakeState {
             self.put(l, raw, flags.clone(), gm);
         }
         gm
+    }
+
+    /// Gmail message `gm` deleted on the web: out of every label, into Trash.
+    pub fn gmail_trash(&mut self, gm: u64) {
+        let Some(m) = self
+            .boxes
+            .values()
+            .flat_map(|b| b.msgs.iter())
+            .find(|m| m.gm == gm)
+            .cloned()
+        else {
+            return;
+        };
+        for b in self.boxes.values_mut() {
+            b.msgs.retain(|x| x.gm != gm);
+        }
+        self.put(GMAIL_TRASH, &m.raw, m.flags.clone(), gm);
     }
 
     /// Boxes holding a copy of Gmail message `gm`.
@@ -658,8 +680,13 @@ where
                         None => format!("{tag} NO no such mailbox\r\n"),
                         Some(b) => {
                             selected = Some(name.clone());
+                            let alert = if st.alert_on_select.as_deref() == Some(name.as_str()) {
+                                "* NO [ALERT] Mailbox is at 95% of quota\r\n"
+                            } else {
+                                ""
+                            };
                             format!(
-                                "* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* {} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] next\r\n{modseq}{tag} OK [READ-WRITE] SELECT completed\r\n",
+                                "{alert}* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* {} EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY {}] UIDs valid\r\n* OK [UIDNEXT {}] next\r\n{modseq}{tag} OK [READ-WRITE] SELECT completed\r\n",
                                 b.msgs.len(),
                                 b.uidvalidity,
                                 b.next_uid
@@ -693,6 +720,7 @@ where
                     let mut st = state.lock().unwrap();
                     let old_server = st.old_server;
                     let refuse_store = st.refuse_store;
+                    let refuse_move = st.refuse_move;
                     let refuse_search = st.refuse_search;
                     let close_mid_search = st.close_mid_search;
                     let unsolicited = st.unsolicited_fetch;
@@ -754,6 +782,12 @@ where
                                 .position(|a| a.eq_ignore_ascii_case("Message-ID"))
                                 .and_then(|i| args.get(i + 1))
                                 .map(|v| unquote(v).to_ascii_lowercase());
+                            // `UID <set>`: only those.
+                            let uid_set = args
+                                .get(2)
+                                .filter(|a| a.eq_ignore_ascii_case("UID"))
+                                .and_then(|_| args.get(3))
+                                .cloned();
                             let deleted_only =
                                 args.iter().any(|a| a.eq_ignore_ascii_case("DELETED"));
                             let unseen_only = args.iter().any(|a| a.eq_ignore_ascii_case("UNSEEN"));
@@ -781,6 +815,7 @@ where
                                     !deleted_only || m.flags.iter().any(|f| f == "\\Deleted")
                                 })
                                 .filter(|m| hidden != Some(m.uid))
+                                .filter(|m| uid_set.as_ref().is_none_or(|s| in_set(s, m.uid, max)))
                                 .filter(|m| !unseen_only || !m.flags.iter().any(|f| f == "\\Seen"))
                                 .filter(|m| !not_inbox || !in_inbox.contains(&m.gm))
                                 .filter(|m| {
@@ -927,6 +962,9 @@ where
                             st.version += 1;
                             out.extend_from_slice(ok("STORE").as_bytes());
                             out
+                        }
+                        "MOVE" | "COPY" if refuse_move => {
+                            format!("{tag} NO [OVERQUOTA] mailbox is full\r\n").into_bytes()
                         }
                         "MOVE" if old_server => {
                             format!("{tag} BAD unknown command MOVE\r\n").into_bytes()
@@ -2364,6 +2402,638 @@ mod tests {
             assert_eq!(at, vec!["INBOX".to_string()]);
         });
         assert!(g.subjects("").contains(&"Statement".to_string()));
+    }
+
+    /// Delete forever as the app does: the copies named first, then those deleted.
+    fn forever(store: &Store, thread_id: i64) -> usize {
+        let actions = Actions { store };
+        let copies = actions.bin_copies(thread_id).unwrap();
+        actions.delete_forever(&copies).unwrap()
+    }
+
+    #[tokio::test]
+    async fn delete_forever_takes_only_the_trash_copy_off_the_server() {
+        let g = gmail().await;
+        let actions = Actions { store: &g.store };
+        // Outside Trash and Spam there is nothing to delete for good.
+        assert_eq!(forever(&g.store, g.thread_of("inv@studio.dev")), 0);
+        actions.trash(g.thread_of("inv@studio.dev")).unwrap();
+        g.sync().await;
+        assert_eq!(g.subjects("in:trash"), vec!["Invoice for September"]);
+        assert_eq!(forever(&g.store, g.thread_of("inv@studio.dev")), 1);
+        assert!(g.subjects("in:trash").is_empty(), "gone here at once");
+        let report = g.sync().await;
+        assert_eq!(report.ops_replayed, 1, "{:?}", report.errors);
+        g.fake.with(|s| assert!(s.where_is(g.invoice).is_empty()));
+        assert!(g.subjects("in:trash").is_empty());
+        // The rest of the mailbox is untouched.
+        g.fake
+            .with(|s| assert_eq!(s.where_is(g.statement), vec![GMAIL_ALL.to_string()]));
+    }
+
+    #[tokio::test]
+    async fn delete_forever_leaves_mail_that_joined_the_conversation_after_the_question() {
+        let g = gmail().await;
+        let actions = Actions { store: &g.store };
+        // The first message of the conversation is in Trash; the question names it.
+        let first = g.fake.with(|s| {
+            s.msgs(GMAIL_ALL)
+                .iter()
+                .find(|m| String::from_utf8_lossy(&m.raw).contains("<review@studio.dev>"))
+                .map(|m| m.gm)
+                .unwrap()
+        });
+        g.fake.with(|s| s.gmail_trash(first));
+        g.sync().await;
+        let review = g.thread_of("review@studio.dev");
+        let copies = actions.bin_copies(review).unwrap();
+        assert_eq!(copies.len(), 1);
+        // While it is asked, the reply is deleted on the web too and synced in.
+        let reply = g.fake.with(|s| {
+            s.msgs(GMAIL_ALL)
+                .iter()
+                .find(|m| String::from_utf8_lossy(&m.raw).contains("In-Reply-To"))
+                .map(|m| m.gm)
+                .unwrap()
+        });
+        g.fake.with(|s| s.gmail_trash(reply));
+        g.sync().await;
+        assert_eq!(actions.delete_forever(&copies).unwrap(), 1);
+        g.sync().await;
+        g.fake.with(|s| {
+            assert!(s.where_is(first).is_empty());
+            assert_eq!(s.where_is(reply), vec![GMAIL_TRASH.to_string()]);
+        });
+    }
+
+    #[tokio::test]
+    async fn moving_an_out_of_date_gmail_copy_is_reported_not_taken_as_done() {
+        let g = gmail().await;
+        // Archived, then deleted on the web; only Trash is read again (as Empty's check does),
+        // so the archived copy this device shows is out of date.
+        g.fake.with(|s| s.gmail_trash(g.statement));
+        let mut p = ImapProvider::connect_trusting(
+            "localhost",
+            g.fake.port,
+            "z@gmail.com",
+            Credential::Password("secret".into()),
+            std::slice::from_ref(&g.fake.cert),
+        )
+        .await
+        .unwrap();
+        let trash_only = SyncOptions {
+            roles: vec![FolderRole::Trash],
+            ..SyncOptions::default()
+        };
+        g.engine
+            .sync_account(&g.account, &mut p, &trash_only)
+            .await
+            .unwrap();
+        p.logout().await.unwrap();
+        let receipts = g
+            .store
+            .folders(g.account.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Receipts")
+            .unwrap();
+        Actions { store: &g.store }
+            .move_to_folder(g.thread_of("stmt@bank.example"), receipts.id)
+            .unwrap();
+        let report = g.sync().await;
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("no longer in that folder")),
+            "{:?}",
+            report.errors
+        );
+        g.fake
+            .with(|s| assert_eq!(s.where_is(g.statement), vec![GMAIL_TRASH.to_string()]));
+    }
+
+    #[tokio::test]
+    async fn a_gmail_archive_of_mail_archived_elsewhere_is_done_quietly() {
+        let g = gmail().await;
+        // Archived on the phone; this device has not read the inbox since.
+        g.fake.with(|s| {
+            let uid = s
+                .msgs("INBOX")
+                .iter()
+                .find(|m| m.gm == g.invoice)
+                .unwrap()
+                .uid;
+            s.remove("INBOX", uid);
+        });
+        Actions { store: &g.store }
+            .archive(g.thread_of("inv@studio.dev"))
+            .unwrap();
+        let report = g.sync().await;
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        g.fake
+            .with(|s| assert_eq!(s.where_is(g.invoice), vec![GMAIL_ALL.to_string()]));
+    }
+
+    fn binned(n: usize) -> impl Fn(&mut FakeState) {
+        move |s| {
+            for i in 0..n {
+                let raw = format!(
+                    "From: a@x.dev\r\nSubject: binned {i}\r\nMessage-ID: <bin{i}@x.dev>\r\nDate: Mon, 21 Sep 2026 10:00:00 +0300\r\n\r\nx\r\n"
+                );
+                s.deliver("Trash", raw.as_bytes(), &["\\Seen"]);
+            }
+        }
+    }
+
+    const LATE_TRASH: &[u8] = b"From: b@x.dev\r\nSubject: trashed on the phone\r\nMessage-ID: <late@x.dev>\r\nDate: Tue, 22 Sep 2026 10:00:00 +0300\r\n\r\ny\r\n";
+
+    #[tokio::test]
+    async fn emptying_trash_deletes_everything_before_and_nothing_after() {
+        for old_server in [false, true] {
+            let fake = server().await;
+            fake.with(|s| s.old_server = old_server);
+            // More than the first sync of Trash takes: the uncached ones go too.
+            fake.with(binned(60));
+            let (store, engine, account, mut p, _) = synced(&fake).await;
+            let trash = store
+                .folder_by_role(account.id, FolderRole::Trash)
+                .unwrap()
+                .unwrap();
+            assert_eq!(store.uids(trash.id).unwrap().len(), 50);
+            let inbox = store
+                .folder_by_role(account.id, FolderRole::Inbox)
+                .unwrap()
+                .unwrap();
+            assert!(empty(&store, inbox.id).is_err(), "only Trash and Spam");
+            assert_eq!(empty(&store, trash.id).unwrap(), 50);
+            assert!(store.uids(trash.id).unwrap().is_empty());
+            // Trashed on another device before this one reaches the server.
+            fake.with(|s| {
+                s.deliver("Trash", LATE_TRASH, &[]);
+            });
+            let report = engine
+                .sync_account(&account, &mut p, &SyncOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(report.ops_replayed, 1, "{:?}", report.errors);
+            fake.with(|s| {
+                let left: Vec<&[u8]> = s.msgs("Trash").iter().map(|m| m.raw.as_slice()).collect();
+                assert_eq!(left, vec![LATE_TRASH], "old server: {old_server}");
+                assert_eq!(s.msgs("INBOX").len(), 2);
+            });
+            let cached: Vec<String> = store
+                .threads(&crate::search::Query::parse("in:trash"), 100)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.subject)
+                .collect();
+            assert_eq!(cached, vec!["trashed on the phone"]);
+            p.logout().await.unwrap();
+        }
+    }
+
+    /// Empty Trash or Spam as the app does once the folder was read: check, then empty.
+    fn empty(store: &Store, folder_id: i64) -> crate::Result<usize> {
+        let actions = Actions { store };
+        match actions.check_bin(folder_id)? {
+            Some(check) => actions.empty_folder(&check),
+            None => Ok(0),
+        }
+    }
+
+    fn trash_of(store: &Store, account: &crate::model::Account) -> crate::model::Folder {
+        store
+            .folder_by_role(account.id, FolderRole::Trash)
+            .unwrap()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn emptying_spares_what_the_user_took_back_even_when_that_move_fails() {
+        for old_server in [false, true] {
+            let fake = server().await;
+            fake.with(|s| s.old_server = old_server);
+            fake.with(binned(3));
+            let (store, engine, account, mut p, _) = synced(&fake).await;
+            let trash = trash_of(&store, &account);
+            let inbox = store
+                .folder_by_role(account.id, FolderRole::Inbox)
+                .unwrap()
+                .unwrap();
+            let rescued = store
+                .messages_by_message_id(account.id, "bin0@x.dev")
+                .unwrap()[0]
+                .thread_id;
+            let actions = Actions { store: &store };
+            assert_eq!(actions.move_to_folder(rescued, inbox.id).unwrap(), 1);
+            empty(&store, trash.id).unwrap();
+            // The mailbox is full: the restore is refused, the emptying goes through.
+            fake.with(|s| s.refuse_move = true);
+            let opts = SyncOptions::default();
+            engine.sync_account(&account, &mut p, &opts).await.unwrap();
+            fake.with(|s| {
+                let left: Vec<String> = s
+                    .msgs("Trash")
+                    .iter()
+                    .map(|m| String::from_utf8_lossy(&m.raw).into_owned())
+                    .collect();
+                assert_eq!(left.len(), 1, "old server: {old_server}");
+                assert!(left[0].contains("bin0@x.dev"));
+            });
+            // Room again: the restore finishes.
+            fake.with(|s| s.refuse_move = false);
+            engine.sync_account(&account, &mut p, &opts).await.unwrap();
+            fake.with(|s| {
+                assert!(s.msgs("Trash").is_empty(), "old server: {old_server}");
+                assert!(s
+                    .msgs("INBOX")
+                    .iter()
+                    .any(|m| String::from_utf8_lossy(&m.raw).contains("bin0@x.dev")));
+            });
+            p.logout().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_select_that_fails_never_leaves_the_last_folder_open_for_deleting() {
+        let fake = server().await;
+        fake.with(binned(3));
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let trash = trash_of(&store, &account);
+        let binned0 = store
+            .messages_by_message_id(account.id, "bin0@x.dev")
+            .unwrap()[0]
+            .thread_id;
+        let invoice = store
+            .messages_by_message_id(account.id, "inv@studio.dev")
+            .unwrap()[0]
+            .thread_id;
+        let actions = Actions { store: &store };
+        // Queued in this order: a change in Trash, one in INBOX only, then Empty Trash.
+        actions.mark_read(binned0, false).unwrap();
+        actions.mark_read(invoice, true).unwrap();
+        empty(&store, trash.id).unwrap();
+        let inbox_before = fake.with(|s| s.msgs("INBOX").len());
+        // Selecting INBOX answers with a warning the client takes for a failure, while
+        // the server has switched to INBOX all the same.
+        fake.with(|s| s.alert_on_select = Some("INBOX".into()));
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .ok();
+        fake.with(|s| {
+            assert_eq!(
+                s.msgs("INBOX").len(),
+                inbox_before,
+                "nothing deleted in INBOX"
+            );
+            assert!(s.msgs("Trash").is_empty(), "Trash emptied");
+        });
+        p.logout().await.ok();
+    }
+
+    #[tokio::test]
+    async fn mail_deleted_just_before_emptying_goes_too_once_trash_is_read_again() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let trash = trash_of(&store, &account);
+        let invoice = store
+            .messages_by_message_id(account.id, "inv@studio.dev")
+            .unwrap()[0]
+            .thread_id;
+        Actions { store: &store }.trash(invoice).unwrap();
+        // The push after an action only syncs the inbox: Trash's counter is old.
+        let inbox_only = SyncOptions {
+            roles: vec![FolderRole::Inbox],
+            ..SyncOptions::default()
+        };
+        engine
+            .sync_account(&account, &mut p, &inbox_only)
+            .await
+            .unwrap();
+        fake.with(|s| assert_eq!(s.msgs("Trash").len(), 1));
+        // What Empty Trash does first: read Trash again.
+        let trash_only = SyncOptions {
+            roles: vec![FolderRole::Trash],
+            ..SyncOptions::default()
+        };
+        engine
+            .sync_account(&account, &mut p, &trash_only)
+            .await
+            .unwrap();
+        assert_eq!(empty(&store, trash_of(&store, &account).id).unwrap(), 1);
+        let _ = trash;
+        engine
+            .sync_account(&account, &mut p, &inbox_only)
+            .await
+            .unwrap();
+        fake.with(|s| assert!(s.msgs("Trash").is_empty()));
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_restore_given_up_after_the_check_is_spared_by_the_empty() {
+        let fake = server().await;
+        fake.with(binned(3));
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let trash = trash_of(&store, &account);
+        let inbox = store
+            .folder_by_role(account.id, FolderRole::Inbox)
+            .unwrap()
+            .unwrap();
+        let rescued = store
+            .messages_by_message_id(account.id, "bin0@x.dev")
+            .unwrap()[0]
+            .thread_id;
+        let actions = Actions { store: &store };
+        actions.move_to_folder(rescued, inbox.id).unwrap();
+        // The mailbox is full: the restore fails again and again.
+        fake.with(|s| s.refuse_move = true);
+        let only = |role| SyncOptions {
+            roles: vec![role],
+            ..SyncOptions::default()
+        };
+        for _ in 0..crate::storage::MAX_ATTEMPTS - 2 {
+            engine
+                .sync_account(&account, &mut p, &only(FolderRole::Inbox))
+                .await
+                .unwrap();
+        }
+        // Empty Trash reads Trash (one more try) and asks.
+        engine
+            .sync_account(&account, &mut p, &only(FolderRole::Trash))
+            .await
+            .unwrap();
+        let check = actions.check_bin(trash.id).unwrap().unwrap();
+        assert_eq!(check.seen.len(), 2);
+        // While the question is open a sync makes the last try: given up, taken back.
+        engine
+            .sync_account(&account, &mut p, &only(FolderRole::Inbox))
+            .await
+            .unwrap();
+        assert_eq!(store.uids(trash.id).unwrap().len(), 3);
+        actions.empty_folder(&check).unwrap();
+        fake.with(|s| s.refuse_move = false);
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        fake.with(|s| {
+            let left: Vec<String> = s
+                .msgs("Trash")
+                .iter()
+                .map(|m| String::from_utf8_lossy(&m.raw).into_owned())
+                .collect();
+            assert_eq!(left.len(), 1, "{left:?}");
+            assert!(
+                left[0].contains("bin0@x.dev"),
+                "the message asked back survives"
+            );
+        });
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_bin_rebuilt_after_the_check_is_not_emptied() {
+        let fake = server().await;
+        fake.with(binned(3));
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let trash = trash_of(&store, &account);
+        let actions = Actions { store: &store };
+        let check = actions.check_bin(trash.id).unwrap().unwrap();
+        fake.with(|s| s.renumber("Trash"));
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(actions.empty_folder(&check).is_err());
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mail_the_server_would_not_hand_over_is_not_emptied() {
+        let fake = server().await;
+        fake.with(binned(3));
+        // Trash UID 3 cannot be read back: it stays a hole this device never showed.
+        fake.with(|s| s.broken_uid = Some(3));
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let trash = trash_of(&store, &account);
+        assert_eq!(store.uids(trash.id).unwrap().len(), 2);
+        empty(&store, trash.id).unwrap();
+        fake.with(|s| s.broken_uid = None);
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        fake.with(|s| {
+            let left: Vec<u32> = s.msgs("Trash").iter().map(|m| m.uid).collect();
+            assert_eq!(left, vec![3]);
+        });
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn moving_mail_that_is_gone_from_the_server_says_so() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let invoice = store
+            .messages_by_message_id(account.id, "inv@studio.dev")
+            .unwrap()[0]
+            .clone();
+        // Deleted elsewhere; this device has not synced since.
+        fake.with(|s| s.remove("INBOX", invoice.uid));
+        Actions { store: &store }
+            .archive(invoice.thread_id)
+            .unwrap();
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(report.ops_replayed, 0);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("no longer in that folder")),
+            "{:?}",
+            report.errors
+        );
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_move_whose_answer_was_lost_counts_as_done() {
+        let fake = server().await;
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let invoice = store
+            .messages_by_message_id(account.id, "inv@studio.dev")
+            .unwrap()[0]
+            .clone();
+        Actions { store: &store }
+            .archive(invoice.thread_id)
+            .unwrap();
+        // The MOVE reached the server, then the connection dropped before its answer.
+        let op = store.pending_ops(account.id).unwrap()[0].id;
+        store
+            .mark_failed(
+                op,
+                "io: connection reset by peer",
+                crate::storage::Failure::Retry,
+            )
+            .unwrap();
+        fake.with(|s| {
+            let m = s
+                .msgs("INBOX")
+                .iter()
+                .find(|m| m.uid == invoice.uid)
+                .cloned()
+                .unwrap();
+            s.remove("INBOX", invoice.uid);
+            s.deliver("Archive", &m.raw, &[]);
+        });
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(report.ops_replayed, 1);
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_folder_of_the_users_named_junk_is_never_a_bin() {
+        let fake = FakeImap::start("z@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.add_box("Clients", None);
+            s.add_box("Clients/Acme/Junk", None);
+            s.deliver("Clients/Acme/Junk", PLAIN, &[]);
+        });
+        let (store, engine, account) = setup(&fake);
+        let mut p = connect(&fake, "secret").await.unwrap();
+        engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        p.logout().await.unwrap();
+        assert!(store
+            .folder_by_role(account.id, FolderRole::Junk)
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_restore_refused_while_trash_is_read_again_comes_back_and_says_so() {
+        let fake = server().await;
+        fake.with(|s| s.add_box("Keep", None));
+        fake.with(binned(3));
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let keep = store
+            .folders(account.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Keep")
+            .unwrap();
+        let rescued = store
+            .messages_by_message_id(account.id, "bin0@x.dev")
+            .unwrap()[0]
+            .thread_id;
+        let actions = Actions { store: &store };
+        actions.move_to_folder(rescued, keep.id).unwrap();
+        let trash = trash_of(&store, &account);
+        // Queued but not sent yet: kept.
+        assert_eq!(store.uids(trash.id).unwrap().len(), 2);
+        // Keep is gone on the web; Empty Trash reads Trash again first.
+        fake.with(|s| {
+            s.boxes.remove("Keep");
+        });
+        let trash_only = SyncOptions {
+            roles: vec![FolderRole::Trash],
+            ..SyncOptions::default()
+        };
+        let report = engine
+            .sync_account(&account, &mut p, &trash_only)
+            .await
+            .unwrap();
+        // Back in Trash where the user sees it, and the reason goes with the question.
+        assert_eq!(store.uids(trash.id).unwrap().len(), 3);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.starts_with("Could not finish moving a message to Keep")),
+            "{:?}",
+            report.errors
+        );
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_trash_never_synced_is_not_emptied() {
+        let fake = server().await;
+        fake.with(binned(3));
+        let (store, _engine, account) = setup(&fake);
+        let trash = store
+            .upsert_remote_folder(account.id, "Trash", FolderRole::Trash, true, Some("/"))
+            .unwrap();
+        assert_eq!(empty(&store, trash.id).unwrap(), 0);
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn emptied_mail_stays_away_while_the_server_says_no() {
+        let fake = server().await;
+        fake.with(binned(3));
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let trash = store
+            .folder_by_role(account.id, FolderRole::Trash)
+            .unwrap()
+            .unwrap();
+        empty(&store, trash.id).unwrap();
+        fake.with(|s| s.refuse_store = true);
+        let opts = SyncOptions::default();
+        let report = engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        assert_eq!(report.ops_replayed, 0);
+        assert!(
+            store.uids(trash.id).unwrap().is_empty(),
+            "a sync while the op waits does not bring the mail back"
+        );
+        fake.with(|s| s.refuse_store = false);
+        let report = engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        assert_eq!(report.ops_replayed, 1, "{:?}", report.errors);
+        fake.with(|s| assert!(s.msgs("Trash").is_empty()));
+        p.logout().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_emptying_of_a_rebuilt_trash_is_given_up_and_the_mail_returns() {
+        let fake = server().await;
+        fake.with(binned(3));
+        let (store, engine, account, mut p, _) = synced(&fake).await;
+        let trash = store
+            .folder_by_role(account.id, FolderRole::Trash)
+            .unwrap()
+            .unwrap();
+        empty(&store, trash.id).unwrap();
+        // The server rebuilt Trash: the old UIDs mean other messages now.
+        fake.with(|s| s.renumber("Trash"));
+        let report = engine
+            .sync_account(&account, &mut p, &SyncOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(report.ops_replayed, 0);
+        assert!(
+            report.errors.iter().any(|e| e.contains("emptying Trash")),
+            "{:?}",
+            report.errors
+        );
+        fake.with(|s| assert_eq!(s.msgs("Trash").len(), 3));
+        assert_eq!(store.uids(trash.id).unwrap().len(), 3);
+        assert!(store.pending_ops(account.id).unwrap().is_empty());
+        p.logout().await.unwrap();
     }
 
     #[tokio::test]

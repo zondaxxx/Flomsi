@@ -6,6 +6,7 @@ import '../../keymap/key_scope.dart';
 import '../../platform.dart';
 import '../../state/appearance.dart';
 import '../../state/providers.dart';
+import '../../theme/surfaces.dart';
 import '../accounts/add_account_sheet.dart';
 import '../list/thread_list.dart';
 import '../palette/command_palette.dart';
@@ -50,6 +51,12 @@ class ShellActions {
       withoutFilter(ref.read(queryProvider), ref.read(listFilterProvider)),
     );
     return m == null || m.label != null || m.snoozed ? null : m.role;
+  }
+
+  /// Trash or Junk when the list shows one of them (one account's or all), else null.
+  FolderRole? get shownBin {
+    final r = _shownRole;
+    return r == FolderRole.trash || r == FolderRole.junk ? r : null;
   }
 
   Future<void> move(int delta) async {
@@ -213,7 +220,184 @@ class ShellActions {
   });
 
   Future<void> archiveSelected() => _fileSelected(archive: true);
-  Future<void> trashSelected() => _fileSelected(archive: false);
+
+  /// Delete: to Trash, or out of Trash for good (there is nowhere further to put it).
+  Future<void> trashSelected() => shownBin == FolderRole.trash
+      ? deleteForeverSelected()
+      : _fileSelected(archive: false);
+
+  /// Delete forever, after asking: the selected conversation's messages in Trash and
+  /// Junk, as they were when asked about, leave the server. No Undo, so no waiting either.
+  Future<void> deleteForeverSelected() async {
+    final id = ref.read(selectedThreadIdProvider);
+    if (id == null) return;
+    final notice = ref.read(noticeProvider.notifier);
+    final repo = ref.read(repositoryProvider);
+    final ForeverCheck check;
+    try {
+      check = await repo.checkDeleteForever(id);
+    } catch (e) {
+      notice.show(e is Problem ? e.title : e.toString(), error: true);
+      return;
+    }
+    if (check.count == 0) {
+      notice.show('Only mail in Trash or Junk can be deleted forever');
+      return;
+    }
+    if (!context.mounted) return;
+    final sure = await confirmDialog(
+      context,
+      title: 'Delete forever?',
+      body: check.count == 1
+          ? 'This conversation’s message in Trash or Junk is deleted from the server '
+                'for good. This can’t be undone.'
+          : 'This conversation’s ${check.count} messages in Trash and Junk are deleted '
+                'from the server for good. This can’t be undone.',
+      action: 'Delete Forever',
+      danger: true,
+    );
+    if (!sure || !context.mounted) return;
+    final next = phone ? null : _neighbour(id);
+    if (phone) onLeave?.call();
+    try {
+      final n = await repo.deleteForever(check);
+      if (next != null && ref.read(selectedThreadIdProvider) == id) {
+        ref.read(selectedThreadIdProvider.notifier).select(next);
+      }
+      notice.show(
+        n > 0 ? 'Deleted forever' : 'Already gone from Trash and Junk',
+      );
+    } catch (e) {
+      notice.show(e is Problem ? e.title : e.toString(), error: true);
+    }
+  }
+
+  /// One Empty at a time: a second tap while the first is under way does nothing.
+  static bool _emptying = false;
+
+  /// Empty Trash or Junk of the accounts [scope] names (part of an address, as `account:`
+  /// matches it), or of every account when it is null; each entry point passes the scope
+  /// of the mailbox it belongs to. First the phone's filing still waiting for Undo goes,
+  /// then each account's folder is read from the server again, its queued changes first,
+  /// while nothing can be touched; then the question, with whatever that turned up. Only
+  /// on yes is anything deleted, and only what the question was about.
+  Future<void> emptyBin(FolderRole role, {required String? scope}) async {
+    if (_emptying) return;
+    _emptying = true;
+    try {
+      await _emptyBin(role, scope?.toLowerCase());
+    } finally {
+      _emptying = false;
+    }
+  }
+
+  /// The mailbox's own scope for [emptyBin] from where the list is (the palette).
+  String? get shownScope => parseMailbox(
+    withoutFilter(ref.read(queryProvider), ref.read(listFilterProvider)),
+  )?.scope;
+
+  Future<void> _emptyBin(FolderRole role, String? scope) async {
+    final notice = ref.read(noticeProvider.notifier);
+    final repo = ref.read(repositoryProvider);
+    final filings = ref.read(pendingFilingProvider.notifier);
+    final name = labelForRole(role);
+    // A restore or "not spam" held for Undo reaches the queue first, so the emptying
+    // leaves its message.
+    await filings.commit();
+    final accounts = [
+      for (final a in await repo.accounts())
+        if (scope == null || a.email.toLowerCase().contains(scope)) a,
+    ];
+    if (accounts.isEmpty) {
+      notice.show('No account matches $scope');
+      return;
+    }
+    if (!context.mounted) return;
+    final results = await waitDialog(
+      context,
+      text: 'Checking $name with the server…',
+      work: Future.wait([
+        for (final a in accounts)
+          repo
+              .refreshBin(role, a.id)
+              .then<Object?>((c) => c, onError: (Object e) => e),
+      ]),
+    );
+    final checks = <BinCheck>[];
+    final notes = <String>[];
+    final failed = <String>[];
+    for (final (i, r) in results.indexed) {
+      final email = accounts[i].email;
+      if (r is BinCheck) {
+        checks.add(r);
+        notes.addAll(r.notes.map((n) => '$email: $n'));
+      } else if (r != null) {
+        failed.add('$email: ${r is Problem ? r.title : r}');
+      }
+    }
+    String emails(Iterable<BinCheck> cs) => cs
+        .map((c) => accounts.firstWhere((a) => a.id == c.accountId).email)
+        .join(', ');
+    if (!context.mounted) return;
+    if (checks.isEmpty) {
+      notice.show(
+        failed.isEmpty
+            ? 'No $name to empty'
+            : 'Could not check $name. ${failed.join('; ')}',
+        error: failed.isNotEmpty,
+      );
+      return;
+    }
+    final sure = await confirmDialog(
+      context,
+      title: 'Empty $name?',
+      body: [
+        'Everything in $name on ${emails(checks)} is deleted from the server for good, '
+            'including mail older than this device shows. This can’t be undone.',
+        if (notes.isNotEmpty) 'Checking $name turned up: ${notes.join('; ')}.',
+        if (failed.isNotEmpty) 'Not emptied: ${failed.join('; ')}.',
+      ].join('\n\n'),
+      action: 'Empty $name',
+      danger: true,
+    );
+    if (!sure) return;
+    // Anything filed meanwhile reaches the queue before the emptying, and is kept.
+    await filings.commit();
+    final emptied = <BinCheck>[];
+    final errors = <String>[];
+    for (final c in checks) {
+      try {
+        await repo.emptyFolder(c);
+        emptied.add(c);
+      } catch (e) {
+        errors.add('${emails([c])}: ${e is Problem ? e.title : e}');
+      }
+    }
+    ref.read(selectedThreadIdProvider.notifier).select(null);
+    notice.show(
+      errors.isEmpty
+          ? '$name emptied'
+          : [
+              if (emptied.isNotEmpty) '$name emptied on ${emails(emptied)}.',
+              'Not emptied: ${errors.join('; ')}',
+            ].join(' '),
+      error: errors.isNotEmpty,
+    );
+  }
+
+  /// The conversation to select once [id] leaves the list: the next one, or the one
+  /// before at the end.
+  int? _neighbour(int id) {
+    final threads = ref.read(threadsProvider).value ?? const <Thread>[];
+    final i = threads.indexWhere((t) => t.id == id);
+    return i < 0
+        ? null
+        : i + 1 < threads.length
+        ? threads[i + 1].id
+        : i > 0
+        ? threads[i - 1].id
+        : null;
+  }
 
   /// Archive or delete the selected thread, go on to the next one, and say what really
   /// happened: from a view outside the inbox there may be nothing to archive. When the
@@ -227,15 +411,7 @@ class ShellActions {
       return;
     }
     final notice = ref.read(noticeProvider.notifier);
-    final threads = ref.read(threadsProvider).value ?? const <Thread>[];
-    final i = threads.indexWhere((t) => t.id == id);
-    final next = i < 0
-        ? null
-        : i + 1 < threads.length
-        ? threads[i + 1].id
-        : i > 0
-        ? threads[i - 1].id
-        : null;
+    final next = _neighbour(id);
     final n = await fileAway(
       context,
       ref.read(repositoryProvider),
@@ -315,6 +491,21 @@ class ShellActions {
         hint: key('thread.delete'),
         run: trashSelected,
       ),
+      Command(
+        id: 'delete-forever',
+        title: 'Delete Forever',
+        group: 'Message',
+        detail: 'From Trash or Junk',
+        run: deleteForeverSelected,
+      ),
+      for (final role in const [FolderRole.trash, FolderRole.junk])
+        Command(
+          id: 'empty-${role.name}',
+          title: 'Empty ${labelForRole(role)}',
+          group: 'Mailbox',
+          detail: 'Deletes it all for good',
+          run: () => emptyBin(role, scope: shownScope),
+        ),
       Command(
         id: 'reply-all',
         title: 'Reply All',

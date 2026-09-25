@@ -10,6 +10,7 @@ import '../../state/providers.dart';
 import '../accounts/add_account_sheet.dart';
 import '../settings/settings_sheet.dart';
 import '../shell/file_away.dart';
+import '../shell/shell_actions.dart';
 import '../sidebar/sidebar_model.dart';
 import '../phone/phone_list_parts.dart';
 import '../phone/phone_thread_row.dart';
@@ -272,6 +273,14 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
     }
     // Counts only where they mean what they say: over a filtered list they would not.
     final unread = filter == 'all' ? list?.where((t) => t.unread).length : null;
+    final shown = parseMailbox(_base);
+    final bin =
+        shown != null &&
+            shown.label == null &&
+            !shown.snoozed &&
+            (shown.role == FolderRole.trash || shown.role == FolderRole.junk)
+        ? shown.role
+        : null;
     final starred = filter == 'all'
         ? list?.where((t) => t.starred).length
         : null;
@@ -328,6 +337,37 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
             ],
           ),
         ),
+        // Over the bin itself, not over a search typed in it.
+        if (!draftsView &&
+            bin != null &&
+            searchController.text.trim().isEmpty &&
+            (list?.isNotEmpty ?? false))
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 6, 10, 6),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: s.border)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Emptying ${labelForRole(bin)} deletes all of it from the server.',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: ui(context, size: 12, color: s.fg2),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                SmallButton(
+                  label: 'Empty ${labelForRole(bin)}',
+                  onPressed: () => ShellActions(
+                    ref: ref,
+                    context: context,
+                  ).emptyBin(bin, scope: shown?.scope),
+                ),
+              ],
+            ),
+          ),
         for (final a in locked)
           _SignInBanner(key: ValueKey('signin-${a.id}'), account: a),
         if (syncError != null && (accounts?.isNotEmpty ?? true))

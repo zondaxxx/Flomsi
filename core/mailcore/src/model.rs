@@ -393,6 +393,17 @@ pub enum Op {
         #[serde(default)]
         also: Vec<LocalCopy>,
     },
+    /// Empty Trash or Spam: every message under `below` (the folder's UIDNEXT when the user
+    /// asked) is deleted for good, but those in `keep`: mail a queued restore or "not spam"
+    /// takes out. Mail that arrived since stays.
+    Empty {
+        folder: String,
+        below: u32,
+        #[serde(default)]
+        uidvalidity: Option<u32>,
+        #[serde(default)]
+        keep: Vec<u32>,
+    },
 }
 
 /// A message copy in the local cache: folder (remote name) and UID.
@@ -405,34 +416,50 @@ pub struct LocalCopy {
 impl Op {
     pub fn folder(&self) -> &str {
         match self {
-            Op::SetFlags { folder, .. } | Op::Move { folder, .. } | Op::Delete { folder, .. } => {
-                folder
-            }
-        }
-    }
-    pub fn uid(&self) -> u32 {
-        match self {
-            Op::SetFlags { uid, .. } | Op::Move { uid, .. } | Op::Delete { uid, .. } => *uid,
+            Op::SetFlags { folder, .. }
+            | Op::Move { folder, .. }
+            | Op::Delete { folder, .. }
+            | Op::Empty { folder, .. } => folder,
         }
     }
     pub fn uidvalidity(&self) -> Option<u32> {
         match self {
             Op::SetFlags { uidvalidity, .. }
             | Op::Move { uidvalidity, .. }
-            | Op::Delete { uidvalidity, .. } => *uidvalidity,
+            | Op::Delete { uidvalidity, .. }
+            | Op::Empty { uidvalidity, .. } => *uidvalidity,
         }
     }
-    /// Every local copy the op changed: its own, then the others.
+    /// Every local copy the op changed: its own, then the others. None for emptying a
+    /// folder, which names no message (see [Op::below]).
     pub fn touched(&self) -> Vec<LocalCopy> {
-        let also = match self {
-            Op::SetFlags { also, .. } | Op::Move { also, .. } | Op::Delete { also, .. } => also,
+        let (uid, also) = match self {
+            Op::SetFlags { uid, also, .. }
+            | Op::Move { uid, also, .. }
+            | Op::Delete { uid, also, .. } => (*uid, also),
+            Op::Empty { .. } => return Vec::new(),
         };
         let mut v = vec![LocalCopy {
             folder: self.folder().to_string(),
-            uid: self.uid(),
+            uid,
         }];
         v.extend(also.iter().cloned());
         v
+    }
+    /// Every UID of [Op::folder] under this one is on its way out, but those in [Op::keep];
+    /// 0 for all but emptying.
+    pub fn below(&self) -> u32 {
+        match self {
+            Op::Empty { below, .. } => *below,
+            _ => 0,
+        }
+    }
+    /// The UIDs under [Op::below] that emptying leaves.
+    pub fn keep(&self) -> &[u32] {
+        match self {
+            Op::Empty { keep, .. } => keep,
+            _ => &[],
+        }
     }
     /// True for ops that took a message out of its folder locally.
     pub fn removes(&self) -> bool {

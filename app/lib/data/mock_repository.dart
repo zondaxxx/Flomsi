@@ -395,9 +395,10 @@ class MockRepository implements MailRepository {
         out = out.where((t) => t.labels.any((l) => l.name == v));
       } else if (tok.startsWith('account:')) {
         final email = tok.substring(8);
+        // Part of an address is enough, as in the core's query.
         final ids = {
           for (final (id, e, _, _, _) in _accountRows)
-            if (e.toLowerCase() == email) id,
+            if (e.toLowerCase().contains(email)) id,
         };
         out = out.where((t) => ids.contains(t.accountId));
       } else if (tok.startsWith('in:')) {
@@ -580,6 +581,64 @@ class MockRepository implements MailRepository {
     return before - _threads.length;
   }
 
+  /// Threads deleted forever, bins read again and emptied (role, account), and what
+  /// happened in order (`refresh 1`, `empty 1`, `move 5`).
+  final List<int> deletedForever = [];
+  final List<(FolderRole, int)> refreshed = [];
+  final List<(FolderRole, int)> emptied = [];
+  final List<String> calls = [];
+
+  /// Accounts whose bin cannot be read, and notes a bin's reading brings back. While
+  /// [binGate] is set, reading waits for it; [emptyFails] refuse the emptying.
+  final Map<int, Problem> binFails = {};
+  final Map<int, List<String>> binNotes = {};
+  Completer<void>? binGate;
+
+  /// How many messages of a conversation are in Trash and Junk (the mock keeps no
+  /// folders): one for any conversation unless set.
+  int? foreverCount;
+  final Map<int, Problem> emptyFails = {};
+
+  @override
+  Future<ForeverCheck> checkDeleteForever(int threadId) async {
+    final there = _threads.any((t) => t.id == threadId);
+    return ForeverCheck(
+      count: foreverCount ?? (there ? 1 : 0),
+      token: threadId,
+    );
+  }
+
+  @override
+  Future<int> deleteForever(ForeverCheck check) async {
+    final id = check.token! as int;
+    deletedForever.add(id);
+    return trash(id);
+  }
+
+  @override
+  Future<BinCheck?> refreshBin(FolderRole role, int accountId) async {
+    calls.add('refresh $accountId');
+    refreshed.add((role, accountId));
+    await binGate?.future;
+    final fail = binFails[accountId];
+    if (fail != null) throw fail;
+    return BinCheck(
+      accountId: accountId,
+      notes: binNotes[accountId] ?? const [],
+      token: role,
+    );
+  }
+
+  @override
+  Future<int> emptyFolder(BinCheck check) async {
+    calls.add('empty ${check.accountId}');
+    final fail = emptyFails[check.accountId];
+    if (fail != null) throw fail;
+    emptied.add((check.token! as FolderRole, check.accountId));
+    _events.add(const ThreadsChanged());
+    return 0;
+  }
+
   final Map<int, DateTime> _snoozes = {};
 
   @override
@@ -614,7 +673,10 @@ class MockRepository implements MailRepository {
   ];
 
   @override
-  Future<int> moveThread(int threadId, int folderId) => archive(threadId);
+  Future<int> moveThread(int threadId, int folderId) {
+    calls.add('move $threadId');
+    return archive(threadId);
+  }
 
   @override
   Future<void> markRead(int threadId, bool read) async =>

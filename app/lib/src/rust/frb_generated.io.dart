@@ -40,7 +40,16 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AttachmentDto dco_decode_attachment_dto(dynamic raw);
 
   @protected
+  BinCheckDto dco_decode_bin_check_dto(dynamic raw);
+
+  @protected
+  BinCopyDto dco_decode_bin_copy_dto(dynamic raw);
+
+  @protected
   bool dco_decode_bool(dynamic raw);
+
+  @protected
+  BinCheckDto dco_decode_box_autoadd_bin_check_dto(dynamic raw);
 
   @protected
   DraftDto dco_decode_box_autoadd_draft_dto(dynamic raw);
@@ -88,6 +97,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<AttachmentDto> dco_decode_list_attachment_dto(dynamic raw);
 
   @protected
+  List<BinCopyDto> dco_decode_list_bin_copy_dto(dynamic raw);
+
+  @protected
   List<DraftAttachmentDto> dco_decode_list_draft_attachment_dto(dynamic raw);
 
   @protected
@@ -95,6 +107,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<MessageDto> dco_decode_list_message_dto(dynamic raw);
+
+  @protected
+  Uint32List dco_decode_list_prim_u_32_strict(dynamic raw);
 
   @protected
   Uint8List dco_decode_list_prim_u_8_strict(dynamic raw);
@@ -122,6 +137,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? dco_decode_opt_String(dynamic raw);
+
+  @protected
+  BinCheckDto? dco_decode_opt_box_autoadd_bin_check_dto(dynamic raw);
 
   @protected
   PlatformInt64? dco_decode_opt_box_autoadd_i_64(dynamic raw);
@@ -183,7 +201,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   AttachmentDto sse_decode_attachment_dto(SseDeserializer deserializer);
 
   @protected
+  BinCheckDto sse_decode_bin_check_dto(SseDeserializer deserializer);
+
+  @protected
+  BinCopyDto sse_decode_bin_copy_dto(SseDeserializer deserializer);
+
+  @protected
   bool sse_decode_bool(SseDeserializer deserializer);
+
+  @protected
+  BinCheckDto sse_decode_box_autoadd_bin_check_dto(
+    SseDeserializer deserializer,
+  );
 
   @protected
   DraftDto sse_decode_box_autoadd_draft_dto(SseDeserializer deserializer);
@@ -237,6 +266,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  List<BinCopyDto> sse_decode_list_bin_copy_dto(SseDeserializer deserializer);
+
+  @protected
   List<DraftAttachmentDto> sse_decode_list_draft_attachment_dto(
     SseDeserializer deserializer,
   );
@@ -246,6 +278,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   List<MessageDto> sse_decode_list_message_dto(SseDeserializer deserializer);
+
+  @protected
+  Uint32List sse_decode_list_prim_u_32_strict(SseDeserializer deserializer);
 
   @protected
   Uint8List sse_decode_list_prim_u_8_strict(SseDeserializer deserializer);
@@ -275,6 +310,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   String? sse_decode_opt_String(SseDeserializer deserializer);
+
+  @protected
+  BinCheckDto? sse_decode_opt_box_autoadd_bin_check_dto(
+    SseDeserializer deserializer,
+  );
 
   @protected
   PlatformInt64? sse_decode_opt_box_autoadd_i_64(SseDeserializer deserializer);
@@ -349,7 +389,19 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void sse_encode_attachment_dto(AttachmentDto self, SseSerializer serializer);
 
   @protected
+  void sse_encode_bin_check_dto(BinCheckDto self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_bin_copy_dto(BinCopyDto self, SseSerializer serializer);
+
+  @protected
   void sse_encode_bool(bool self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_box_autoadd_bin_check_dto(
+    BinCheckDto self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_box_autoadd_draft_dto(
@@ -421,6 +473,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_bin_copy_dto(
+    List<BinCopyDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_list_draft_attachment_dto(
     List<DraftAttachmentDto> self,
     SseSerializer serializer,
@@ -435,6 +493,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_list_message_dto(
     List<MessageDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_list_prim_u_32_strict(
+    Uint32List self,
     SseSerializer serializer,
   );
 
@@ -479,6 +543,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_opt_String(String? self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_opt_box_autoadd_bin_check_dto(
+    BinCheckDto? self,
+    SseSerializer serializer,
+  );
 
   @protected
   void sse_encode_opt_box_autoadd_i_64(

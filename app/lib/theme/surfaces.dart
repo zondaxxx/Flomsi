@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../platform.dart';
@@ -541,6 +543,57 @@ class _RevealOnSelectState extends State<RevealOnSelect> {
 
 /// A small question in the editor style: a title, a line of explanation, Cancel and one
 /// action. Returns true when the action was chosen. Esc and a click outside cancel.
+/// A modal note while [work] runs: nothing under it can be touched meanwhile. When [work]
+/// ends, this note goes, and only it, whatever was opened over it since. Returns what
+/// [work] returned, or rethrows.
+Future<T> waitDialog<T>(
+  BuildContext context, {
+  required String text,
+  required Future<T> work,
+}) async {
+  final navigator = Navigator.of(context);
+  final route = RawDialogRoute<void>(
+    barrierDismissible: false,
+    barrierColor: Colors.black.withValues(alpha: 0.25),
+    transitionDuration: Motion.of(context, Motion.fast),
+    pageBuilder: (context, _, _) =>
+        PopScope(canPop: false, child: _Waiting(text: text)),
+  );
+  unawaited(navigator.push(route));
+  try {
+    return await work;
+  } finally {
+    if (route.isActive) navigator.removeRoute(route);
+  }
+}
+
+class _Waiting extends StatelessWidget {
+  const _Waiting({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = context.s;
+    return Center(
+      child: Material(
+        type: MaterialType.transparency,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          decoration: BoxDecoration(
+            color: s.bg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: s.border),
+          ),
+          child: Text(
+            text,
+            style: ui(context, size: kTouch ? 15 : 12.5, color: s.fg2),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 Future<bool> confirmDialog(
   BuildContext context, {
   required String title,

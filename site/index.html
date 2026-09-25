@@ -739,6 +739,18 @@ kbd.changed{animation:flash 1.4s var(--ease)}
   </div>
 </section>
 
+<section class="band" id="google-data" data-tone="light" aria-labelledby="h-google-data">
+  <div class="wrap">
+    <div class="head">
+      <h2 id="h-google-data">How Flomsi uses your Google data</h2>
+      <div>
+        <p>When you choose Continue with Google, Flomsi asks for access to your Gmail (<code>https://mail.google.com/</code>, the one scope Google's IMAP and SMTP accept) and your email address (<code>openid</code>, <code>email</code>). It uses that access only to show, search, send, organise and permanently delete your mail from the app, over IMAP and SMTP, directly between your device and Google.</p>
+        <p style="margin-top:14px">Your mail is kept only on your device, and your sign-in token in its keychain. Flomsi has no server: your data never reaches us or anyone else, and it is never used for ads or to train AI models. Read the <a href="https://flomsi.nz/privacy.html">privacy policy</a>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="band" id="updates" data-tone="light" aria-labelledby="h-updates">
   <div class="wrap">
     <div class="log-head">
@@ -746,6 +758,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       <a href="https://github.com/zondaxxx/Flomsi/commits/main">Full history on GitHub</a>
     </div>
     <div class="log">
+      <article class="entry"><time class="mono" datetime="2026-09-24T21:00+03:00">Sep 24</time><h3>0.2.4: Delete forever and Empty Trash</h3><p>In Trash, Delete removes a conversation from the server for good, after asking. Empty Trash and Empty Junk clear the whole folder, older mail on the server included. The start screen says what Flomsi does with your Gmail, with a link to the privacy policy.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-24">Sep 24</time><h3>0.2.1 to 0.2.3: Google sign-in and a new icon</h3><p>Continue with Google works in every download; 0.2.2 and 0.2.3 fix the return from the Google page on Android and behind some proxies. A new mark, an fl ligature whose l is the text cursor, on all four platforms and on this site. Android builds now use one permanent key.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T15:57+03:00">Sep 23</time><h3>Undo on phones</h3><p>Archive, delete and move wait five seconds with Undo before they reach the server. A conversation, a new message and settings each get a screen of their own.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T14:38+03:00">Sep 23</time><h3>A phone layout</h3><p>A bottom bar with Mailboxes, Search, Unread and Compose, and dropdown menus for accounts and the rest. Swipe right to archive, left to delete, long press for everything else.</p></article>
@@ -757,14 +770,14 @@ kbd.changed{animation:flash 1.4s var(--ease)}
     <div class="stand">
       <div>
         <h3>Where Flomsi stands</h3>
-        <p class="sub">Version 0.2.3, an early build. Here is what works and what comes next.</p>
+        <p class="sub">Version 0.2.4, an early build. Here is what works and what comes next.</p>
       </div>
       <div>
         <h4>Works today</h4>
         <ul>
           <li>App passwords for Gmail, iCloud, Yandex, Mail.ru, Fastmail and any IMAP server, with step-by-step guides</li>
           <li>Several accounts in one inbox, or one at a time</li>
-          <li>Search, stars, snooze, and move to any folder</li>
+          <li>Search, stars, snooze, move to any folder, delete forever and empty Trash</li>
           <li>Attachments, and drafts saved on the device</li>
           <li>New-mail notifications on macOS, Windows and Android while Flomsi runs</li>
           <li>A phone layout with swipes and Undo</li>
@@ -777,7 +790,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
           <li>Microsoft sign-in, which Outlook, Hotmail and Microsoft 365 need.</li>
           <li>Drafts synced with the server's Drafts folder</li>
           <li>Gmail labels and your own folders in the sidebar</li>
-          <li>Gmail API, JMAP and Microsoft Graph</li>
+          <li>JMAP, for Fastmail and other providers that offer it</li>
           <li>New mail on phones while the app is closed</li>
           <li>Signed builds, and a macOS build for Intel Macs</li>
         </ul>
@@ -790,7 +803,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
   <div class="wrap">
     <div class="get-head">
       <div>
-        <p class="ver mono">Version 0.2.3 · 24 Sep 2026</p>
+        <p class="ver mono">Version 0.2.4 · 24 Sep 2026</p>
         <h2 id="h-get">Get Flomsi</h2>
         <p>Builds for macOS, Windows, Android and iOS. They are not signed by Apple, Microsoft or Google yet: macOS, Windows and Android ask once before they open them, and on iOS you sign the app yourself with AltStore or Sideloadly.</p>
       </div>
@@ -891,7 +904,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
 <div class="wrap">
   <div class="wordmark" aria-hidden="true">Flomsi<i class="dot"></i></div>
   <footer class="foot mono">
-    <span>Flomsi 0.2.3 · GPL-3.0</span>
+    <span>Flomsi 0.2.4 · GPL-3.0</span>
     <span>Rust core · Flutter interface · IBM Plex</span>
     <nav aria-label="Legal"><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a></nav>
     <a href="https://github.com/zondaxxx/Flomsi">github.com/zondaxxx/Flomsi</a>
