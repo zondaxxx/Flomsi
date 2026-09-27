@@ -409,6 +409,12 @@ class ThreadListBodyState extends ConsumerState<ThreadListBody> {
                   data: (_) => _items.isEmpty
                       ? (accounts != null && accounts.isEmpty
                             ? const FirstRun()
+                            : folderIdOf(query) != null &&
+                                  ref.watch(openingFolderProvider) ==
+                                      folderIdOf(query)
+                            ? EmptyNote(
+                                'Reading ${titleForQuery(query, folderNames: folderNames(ref))} from the server…',
+                              )
                             : const EmptyNote('No mail'))
                       : _pullToRefresh(
                           AnimatedList(
@@ -1234,7 +1240,7 @@ class MoreFromServer extends ConsumerStatefulWidget {
   static bool searching(String query) => _tokens(query).any(
     (t) =>
         !t.startsWith('#') &&
-        !RegExp(r'^(in|is|has|account|label):').hasMatch(t),
+        !RegExp(r'^(in|is|has|account|label|folder):').hasMatch(t),
   );
 
   /// A folder as it is (optionally one account's): older mail of it can be fetched.
@@ -1242,8 +1248,9 @@ class MoreFromServer extends ConsumerStatefulWidget {
     final t = _tokens(query).where((t) => !t.startsWith('account:')).toList();
     return t.isEmpty ||
         (t.length == 1 &&
-            RegExp(r'^in:(inbox|sent|archive|all|spam|junk|trash)$')
-                .hasMatch(t.first));
+            RegExp(
+              r'^(in:(inbox|sent|archive|all|spam|junk|trash)|folder:\d+)$',
+            ).hasMatch(t.first));
   }
 
   static bool offered(String query) => searching(query) || folderView(query);

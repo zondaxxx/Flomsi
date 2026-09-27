@@ -120,15 +120,20 @@ void main() {
       await openThread(tester, 'Your invoice for September');
       await tester.tap(find.byTooltip('Move  l'));
       await tester.pumpAndSettle();
-      expect(find.text('Receipts'), findsOneWidget);
       final picker = find.byType(CommandPalette);
+      // The sidebar lists the folder too; the picker's own row is the one.
+      final receipts = find.descendant(
+        of: picker,
+        matching: find.text('Receipts'),
+      );
+      expect(receipts, findsOneWidget);
       // Sent copies never move; the sidebar's own "Sent" does not count.
       expect(
         find.descendant(of: picker, matching: find.text('Sent')),
         findsNothing,
       );
 
-      await tester.tap(find.text('Receipts'));
+      await tester.tap(receipts);
       await tester.pumpAndSettle();
       expect(await inbox(), isNot(contains('Your invoice for September')));
       expect(c.read(noticeProvider), 'Moved to Receipts');

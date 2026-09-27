@@ -112,6 +112,34 @@ final foldersProvider = FutureProvider<List<Folder>>((ref) async {
   return ref.watch(repositoryProvider).folders();
 });
 
+/// The accounts' own folders (Gmail labels too), for the sidebar.
+final userFoldersProvider = FutureProvider<List<Folder>>((ref) async {
+  ref.watch(repoTickProvider);
+  return ref.watch(repositoryProvider).userFolders();
+});
+
+/// Names of the accounts' own folders by id, for titles.
+Map<int, String> folderNames(WidgetRef ref) => {
+  for (final f in ref.watch(userFoldersProvider).value ?? const <Folder>[])
+    f.id: f.name,
+};
+
+/// The folder of the user's own being read from the server for the first time, if any.
+final openingFolderProvider = NotifierProvider<OpeningFolder, int?>(
+  OpeningFolder.new,
+);
+
+class OpeningFolder extends Notifier<int?> {
+  @override
+  int? build() => null;
+  void set(int? id) => state = id;
+
+  /// [id] is read: no longer opening (another folder opened since stays).
+  void clear(int id) {
+    if (state == id) state = null;
+  }
+}
+
 final labelsProvider = FutureProvider<List<Label>>(
   (ref) => ref.watch(repositoryProvider).labels(),
 );

@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA_VERSION: i32 = 11;
+const SCHEMA_VERSION: i32 = 12;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE accounts (
@@ -223,6 +223,12 @@ UPDATE folders SET floor_uid = COALESCE(
 WHERE uidvalidity IS NOT NULL;
 "#;
 
+/// v12: folders of the user's own that the app follows (synced with the system folders
+/// since the user first opened them).
+const SCHEMA_V12: &str = r#"
+ALTER TABLE folders ADD COLUMN follow INTEGER NOT NULL DEFAULT 0;
+"#;
+
 const RESET_MESSAGE_CACHE: &str = r#"
 DELETE FROM messages_fts;
 DELETE FROM message_labels;
@@ -317,6 +323,9 @@ impl Store {
             }
             if version < 11 {
                 tx.execute_batch(SCHEMA_V11)?;
+            }
+            if version < 12 {
+                tx.execute_batch(SCHEMA_V12)?;
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -470,6 +479,29 @@ impl Store {
             selectable: r.get::<_, i64>("selectable")? != 0,
             delimiter: r.get("delimiter")?,
             floor_uid: r.get::<_, Option<i64>>("floor_uid")?.map(|v| v as u32),
+            follow: r.get::<_, i64>("follow")? != 0,
+        })
+    }
+
+    /// Follow a folder of the user's own (sync it with the system folders), or stop.
+    pub fn set_follow(&self, folder_id: i64, on: bool) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE folders SET follow=?2 WHERE id=?1",
+                params![folder_id, on as i64],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Unread messages per folder, for the sidebar.
+    pub fn unread_by_folder(&self) -> Result<HashMap<i64, u32>> {
+        self.with(|c| {
+            let mut st = c.prepare(
+                "SELECT folder_id, COUNT(*) FROM messages WHERE (flags & 1) = 0 GROUP BY folder_id",
+            )?;
+            let rows = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u32>(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
         })
     }
 
@@ -1357,6 +1389,7 @@ impl Store {
         // Looking for something (words, a sender, a date, a star, a label) without naming a
         // folder searches every folder but Spam and Trash, the way mail apps do.
         let searching = q.folder.is_none()
+            && q.folder_id.is_none()
             && !q.snoozed
             && (!q.text.is_empty()
                 || q.from.is_some()
@@ -1367,7 +1400,11 @@ impl Store {
                 || q.after.is_some()
                 || q.starred
                 || q.label.is_some());
-        if searching {
+        if let Some(id) = q.folder_id {
+            // One folder of the user's own, or a Gmail label.
+            conds.push("m.folder_id = ?".into());
+            p.push(id.into());
+        } else if searching {
             conds.push("f.role NOT IN ('junk', 'trash')".into());
         } else if role == FolderRole::Starred {
             conds.push("(m.flags & 2) != 0".into());
@@ -1434,7 +1471,11 @@ impl Store {
         // A thread that woke up sorts by its wake time, so it comes back on top.
         let snooze_filter = if q.snoozed {
             "AND EXISTS (SELECT 1 FROM snoozes s WHERE s.thread_id = t.id AND s.until > ?)"
-        } else if role == FolderRole::Inbox && q.folder.is_none() && !searching {
+        } else if role == FolderRole::Inbox
+            && q.folder.is_none()
+            && q.folder_id.is_none()
+            && !searching
+        {
             "AND NOT EXISTS (SELECT 1 FROM snoozes s WHERE s.thread_id = t.id AND s.until > ?)"
         } else {
             "AND ? IS NOT NULL"

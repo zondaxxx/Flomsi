@@ -155,8 +155,13 @@ class PhoneEmptyMailbox extends ConsumerWidget {
     if (m.label != null) {
       return PhoneEmpty(title: 'Nothing labelled ${m.label}');
     }
-    final title = mailboxTitle(query);
+    final title = mailboxTitle(query, folderNames: folderNames(ref));
     final updated = sync.lastOk;
+    // A folder of the user's own on its first opening: it is being read.
+    final folder = folderIdOf(query);
+    if (folder != null && ref.watch(openingFolderProvider) == folder) {
+      return PhoneEmpty(title: 'Reading $title from the server…');
+    }
     return switch (m.role) {
       FolderRole.starred => const PhoneEmpty(title: 'No starred mail'),
       FolderRole.inbox || null => PhoneEmpty(

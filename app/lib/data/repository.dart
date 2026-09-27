@@ -32,9 +32,17 @@ abstract class MailRepository {
   /// Folders of one account, for "Move to…".
   Future<List<Folder>> accountFolders(int accountId);
 
-  /// Move the thread to any folder of its account (local first, replayed on sync).
-  /// Returns how many messages moved: 0 when it is all there already.
-  Future<int> moveThread(int threadId, int folderId);
+  /// The accounts' own folders (on Gmail, the labels), account by account, by name.
+  Future<List<Folder>> userFolders();
+
+  /// Open a folder of the user's own: it is read from the server now, and syncs with the
+  /// system folders from then on. Throws a [Problem] when it could not be read.
+  Future<void> openFolder(Folder folder);
+
+  /// Move the thread to any folder of its account (local first, replayed on sync), from
+  /// [fromFolder] when the list shows one of the user's own folders (on Gmail: out of that
+  /// label). Returns how many messages moved: 0 when it is all there already.
+  Future<int> moveThread(int threadId, int folderId, {int? fromFolder});
 
   /// Hide the thread from the inbox until [until] (kept on this device).
   Future<void> snooze(int threadId, DateTime until);

@@ -545,7 +545,7 @@ async fn main() -> Result<()> {
         } => {
             let mut opts = SyncOptions::default();
             if inbox_only {
-                opts.roles = vec![FolderRole::Inbox];
+                opts = SyncOptions::only(vec![FolderRole::Inbox]);
             }
             let mut rx = core.subscribe();
             let printer = tokio::spawn(async move {
@@ -754,13 +754,7 @@ async fn main() -> Result<()> {
                 .await?;
             println!("idle: {outcome:?}");
             let rep = core
-                .sync_account(
-                    account,
-                    &SyncOptions {
-                        roles: vec![FolderRole::Inbox],
-                        ..SyncOptions::default()
-                    },
-                )
+                .sync_account(account, &SyncOptions::only(vec![FolderRole::Inbox]))
                 .await?;
             println!("+{} messages", rep.fetched);
         }

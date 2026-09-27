@@ -13,8 +13,12 @@ class SidebarEntry {
     this.count = 0,
     this.section = false,
     this.warning,
+    this.folder,
   });
   final String label;
+
+  /// A folder of the user's own: opening it may read it from the server first.
+  final Folder? folder;
 
   /// Something needs the user (an account whose password was refused).
   final String? warning;
@@ -67,10 +71,21 @@ String labelForRole(FolderRole r) => switch (r) {
   FolderRole.other => 'Folder',
 };
 
+/// The query that shows one folder of the user's own.
+String folderQuery(Folder f) => 'folder:${f.id}';
+
+/// The folder a `folder:<id>` query shows, or null.
+int? folderIdOf(String q) {
+  final t = q.trim();
+  if (!t.startsWith('folder:') || t.contains(' ')) return null;
+  return int.tryParse(t.substring(7));
+}
+
 List<SidebarEntry> buildSidebar({
   required List<Folder> folders,
   required List<Account> accounts,
   required List<Label> labels,
+  List<Folder> userFolders = const [],
 }) => [
   const SidebarEntry(label: 'Mailboxes', section: true),
   for (final f in folders) ...[
@@ -108,7 +123,42 @@ List<SidebarEntry> buildSidebar({
       icon: CupertinoIcons.tag,
       color: l.color,
     ),
+  ...folderSections(
+    userFolders,
+    accounts,
+    (f) => SidebarEntry(
+      label: f.name,
+      query: folderQuery(f),
+      icon: CupertinoIcons.folder,
+      count: f.unread,
+      folder: f,
+    ),
+    (title) => SidebarEntry(label: title, section: true),
+  ),
 ];
+
+/// The accounts' own folders under one "Folders" heading, or one heading per account
+/// when several accounts have some.
+List<T> folderSections<T>(
+  List<Folder> userFolders,
+  List<Account> accounts,
+  T Function(Folder f) row,
+  T Function(String title) heading,
+) {
+  final owners = {for (final f in userFolders) f.accountId};
+  if (owners.isEmpty) return const [];
+  if (owners.length == 1) {
+    return [heading('Folders'), for (final f in userFolders) row(f)];
+  }
+  return [
+    for (final a in accounts)
+      if (owners.contains(a.id)) ...[
+        heading('Folders · ${a.email}'),
+        for (final f in userFolders)
+          if (f.accountId == a.id) row(f),
+      ],
+  ];
+}
 
 /// A mailbox: its role (Inbox when none), the account it is scoped to (all when null),
 /// or a label, or the snoozed list.
@@ -127,11 +177,14 @@ String mailboxQuery(
   String? label,
   bool snoozed = false,
 }) {
+  // One folder of the user's own is one account's: another account starts at its Inbox.
   final base = label != null
       ? '#$label'
       : snoozed
       ? 'in:snoozed'
-      : queryForRole(role ?? FolderRole.inbox);
+      : queryForRole(
+          role == null || role == FolderRole.other ? FolderRole.inbox : role,
+        );
   if (scope == null) return base;
   return base.isEmpty ? 'account:$scope' : 'account:$scope $base';
 }
@@ -164,6 +217,9 @@ Mailbox? parseMailbox(String q) {
   if (t == 'in:snoozed') {
     return (role: null, scope: scope, label: null, snoozed: true);
   }
+  if (folderIdOf(t) != null) {
+    return (role: FolderRole.other, scope: scope, label: null, snoozed: false);
+  }
   if (t.startsWith('#')) {
     return (role: null, scope: scope, label: t.substring(1), snoozed: false);
   }
@@ -194,8 +250,11 @@ String withoutFilter(String query, String filter) {
   return parts.join(' ');
 }
 
-/// The mailbox's name for a title: Inbox, Sent, a label… (the account shown apart).
-String mailboxTitle(String q) {
+/// The mailbox's name for a title: Inbox, Sent, a label, a folder by its name in
+/// [folderNames]… (the account shown apart).
+String mailboxTitle(String q, {Map<int, String> folderNames = const {}}) {
+  final folder = folderIdOf(q.trim());
+  if (folder != null) return folderNames[folder] ?? 'Folder';
   final m = parseMailbox(q);
   if (m == null) return 'Search';
   if (m.snoozed) return 'Snoozed';
@@ -204,9 +263,11 @@ String mailboxTitle(String q) {
 }
 
 /// Title for the toolbar / list header, from the active query.
-String titleForQuery(String q) {
+String titleForQuery(String q, {Map<int, String> folderNames = const {}}) {
   final t = q.trim();
   if (t.isEmpty) return 'Inbox';
+  final folder = folderIdOf(t);
+  if (folder != null) return folderNames[folder] ?? 'Folder';
   if (t == 'is:starred') return 'Starred';
   if (t == 'in:snoozed') return 'Snoozed';
   if (t == 'is:unread') return 'Unread';

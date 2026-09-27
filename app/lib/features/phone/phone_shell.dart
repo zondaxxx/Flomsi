@@ -150,6 +150,11 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
     showMailboxSheet(
       context,
       onPick: _goTo,
+      onFolder: (f) {
+        if (_searching) _leaveSearch();
+        _actions(context).showFolder(f);
+        _listKey.currentState?.scrollToTop();
+      },
       onAddAccount: _addAccount,
       onSettings: _settings,
     );
@@ -278,6 +283,7 @@ class _PhoneShellState extends ConsumerState<PhoneShell> {
       FolderRole.starred,
       FolderRole.archive,
       FolderRole.all,
+      FolderRole.other,
     }.contains(m.role);
   }
 
@@ -643,7 +649,7 @@ class PhoneAppBar extends ConsumerWidget implements PreferredSizeWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            mailboxTitle(base),
+            mailboxTitle(base, folderNames: folderNames(ref)),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: ui(context, size: 20, weight: FontWeight.w600, height: 1.25),

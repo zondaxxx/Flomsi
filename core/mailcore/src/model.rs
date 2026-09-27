@@ -176,6 +176,9 @@ pub struct Folder {
     pub delimiter: Option<String>,
     /// The oldest UID the sync covers; older cached mail came from a search.
     pub floor_uid: Option<u32>,
+    /// A folder of the user's own (or a Gmail label) opened in the app: synced with the
+    /// system folders from then on.
+    pub follow: bool,
 }
 
 impl Folder {
@@ -393,6 +396,16 @@ pub enum Op {
         #[serde(default)]
         also: Vec<LocalCopy>,
     },
+    /// Gmail: give the message the `dest` label too, keeping the one this copy is in (UID
+    /// COPY). For a message whose only cached copy is in a label the user did not act on:
+    /// a MOVE from there would drop that label.
+    Copy {
+        folder: String,
+        uid: u32,
+        dest: String,
+        #[serde(default)]
+        uidvalidity: Option<u32>,
+    },
     /// Empty Trash or Spam: every message under `below` (the folder's UIDNEXT when the user
     /// asked) is deleted for good, but those in `keep`: mail a queued restore or "not spam"
     /// takes out. Mail that arrived since stays.
@@ -419,6 +432,7 @@ impl Op {
             Op::SetFlags { folder, .. }
             | Op::Move { folder, .. }
             | Op::Delete { folder, .. }
+            | Op::Copy { folder, .. }
             | Op::Empty { folder, .. } => folder,
         }
     }
@@ -427,6 +441,7 @@ impl Op {
             Op::SetFlags { uidvalidity, .. }
             | Op::Move { uidvalidity, .. }
             | Op::Delete { uidvalidity, .. }
+            | Op::Copy { uidvalidity, .. }
             | Op::Empty { uidvalidity, .. } => *uidvalidity,
         }
     }
@@ -437,7 +452,8 @@ impl Op {
             Op::SetFlags { uid, also, .. }
             | Op::Move { uid, also, .. }
             | Op::Delete { uid, also, .. } => (*uid, also),
-            Op::Empty { .. } => return Vec::new(),
+            // A copy changes nothing here; emptying names no single message.
+            Op::Copy { .. } | Op::Empty { .. } => return Vec::new(),
         };
         let mut v = vec![LocalCopy {
             folder: self.folder().to_string(),
@@ -463,7 +479,7 @@ impl Op {
     }
     /// True for ops that took a message out of its folder locally.
     pub fn removes(&self) -> bool {
-        !matches!(self, Op::SetFlags { .. })
+        !matches!(self, Op::SetFlags { .. } | Op::Copy { .. })
     }
 }
 

@@ -53,6 +53,30 @@ class ShellActions {
     return m == null || m.label != null || m.snoozed ? null : m.role;
   }
 
+  /// Show a folder of the user's own (a Gmail label). The list switches to it at once;
+  /// the first time, the folder is read from the server meanwhile, and from then on it
+  /// syncs with the system folders.
+  Future<void> showFolder(Folder folder) async {
+    ref.read(queryProvider.notifier).set(folderQuery(folder));
+    if (folder.follow) return;
+    // Taken now: the sidebar this may run from is gone (a drawer) by the time the folder
+    // has been read, and its ref with it.
+    final opening = ref.read(openingFolderProvider.notifier);
+    final notice = ref.read(noticeProvider.notifier);
+    final repo = ref.read(repositoryProvider);
+    opening.set(folder.id);
+    try {
+      await repo.openFolder(folder);
+    } catch (e) {
+      notice.show(
+        'Could not read ${folder.name}: ${e is Problem ? e.title : e}',
+        error: true,
+      );
+    } finally {
+      opening.clear(folder.id);
+    }
+  }
+
   /// Trash or Junk when the list shows one of them (one account's or all), else null.
   FolderRole? get shownBin {
     final r = _shownRole;
@@ -124,20 +148,24 @@ class ShellActions {
     final thread = await repo.thread(id);
     if (thread == null) return;
     final folders = await repo.accountFolders(thread.accountId);
+    // A folder of the user's own on screen: every other folder is still a place to go.
+    final shownFolder = folderIdOf(
+      withoutFilter(ref.read(queryProvider), ref.read(listFilterProvider)),
+    );
     final skip = {
       FolderRole.sent,
       FolderRole.drafts,
       FolderRole.all,
       // Already there: the mailbox on screen (one account's or all of them, Unread
       // or not).
-      ?_shownRole,
+      if (shownFolder == null) ?_shownRole,
     };
     presentPicker(
       Picker(
         hint: 'Move to…',
         items: [
           for (final f in folders)
-            if (!skip.contains(f.role))
+            if (!skip.contains(f.role) && f.id != shownFolder)
               Command(
                 id: 'move-${f.id}',
                 title: f.role == FolderRole.other
@@ -156,11 +184,16 @@ class ShellActions {
                       FilingKind.move,
                       folderId: f.id,
                       folderName: name,
+                      fromFolder: shownFolder,
                     );
                     return;
                   }
                   await move(1);
-                  final n = await repo.moveThread(id, f.id);
+                  final n = await repo.moveThread(
+                    id,
+                    f.id,
+                    fromFolder: shownFolder,
+                  );
                   ref
                       .read(noticeProvider.notifier)
                       .show(n > 0 ? 'Moved to $name' : 'Already in $name');

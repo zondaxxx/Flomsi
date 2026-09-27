@@ -123,6 +123,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<ThreadDto> dco_decode_list_thread_dto(dynamic raw);
 
   @protected
+  List<UserFolderDto> dco_decode_list_user_folder_dto(dynamic raw);
+
+  @protected
   MessageDto dco_decode_message_dto(dynamic raw);
 
   @protected
@@ -184,6 +187,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void dco_decode_unit(dynamic raw);
+
+  @protected
+  UserFolderDto dco_decode_user_folder_dto(dynamic raw);
 
   @protected
   AnyhowException sse_decode_AnyhowException(SseDeserializer deserializer);
@@ -296,6 +302,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   List<ThreadDto> sse_decode_list_thread_dto(SseDeserializer deserializer);
 
   @protected
+  List<UserFolderDto> sse_decode_list_user_folder_dto(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   MessageDto sse_decode_message_dto(SseDeserializer deserializer);
 
   @protected
@@ -365,6 +376,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_decode_unit(SseDeserializer deserializer);
+
+  @protected
+  UserFolderDto sse_decode_user_folder_dto(SseDeserializer deserializer);
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
@@ -523,6 +537,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_list_user_folder_dto(
+    List<UserFolderDto> self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_message_dto(MessageDto self, SseSerializer serializer);
 
   @protected
@@ -608,6 +628,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_unit(void self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_user_folder_dto(UserFolderDto self, SseSerializer serializer);
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);

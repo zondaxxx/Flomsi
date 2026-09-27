@@ -402,8 +402,14 @@ class RustRepository implements MailRepository {
   ];
 
   @override
-  Future<int> moveThread(int threadId, int folderId) =>
-      _after(rust.moveThread(threadId: threadId, folderId: folderId));
+  Future<int> moveThread(int threadId, int folderId, {int? fromFolder}) =>
+      _after(
+        rust.moveThread(
+          threadId: threadId,
+          folderId: folderId,
+          fromFolder: fromFolder,
+        ),
+      );
 
   @override
   Future<void> snooze(int threadId, DateTime until) async {
@@ -600,6 +606,55 @@ class RustRepository implements MailRepository {
   @override
   Future<int> deleteForever(ForeverCheck check) =>
       _after(rust.deleteForever(copies: check.token! as List<rust.BinCopyDto>));
+
+  @override
+  Future<List<Folder>> userFolders() async => [
+    for (final f in await rust.userFolders())
+      Folder(
+        id: f.id.toInt(),
+        accountId: f.accountId.toInt(),
+        name: f.name,
+        role: FolderRole.other,
+        unread: f.unread,
+        follow: f.follow,
+      ),
+  ];
+
+  @override
+  Future<void> openFolder(Folder folder) async {
+    final id = folder.accountId;
+    final parked = _problems[id];
+    if (parked != null && parked.isAuth) throw parked;
+    // In the account's queue, like any sync.
+    final s = await _serial(id, () => rust.openFolder(folderId: folder.id));
+    // Mail that was there already: taken in without a word, and not a check of the inbox.
+    _events.add(const MailImported());
+    _events.add(const ThreadsChanged());
+    // The rest of that sync (another folder, a given-up action) is said as any sync's is.
+    final others = <String>[];
+    await _absorb(
+      id,
+      rust.SyncSummaryDto(
+        accounts: 1,
+        fetched: 0,
+        removed: 0,
+        errors: const [],
+        folderErrors: s.folderErrors,
+      ),
+      others,
+    );
+    if (others.isNotEmpty) {
+      _events.add(SyncFinished(fetched: 0, errors: others));
+    }
+    if (s.errors.isNotEmpty) {
+      final p = problemFrom(
+        s.errors.first,
+        (await _account(id))?.imapHost ?? '',
+      );
+      if (p.isAuth) await _stop(id, p);
+      throw p;
+    }
+  }
 
   @override
   Future<BinCheck?> refreshBin(FolderRole role, int accountId) async {

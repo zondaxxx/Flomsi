@@ -15,6 +15,8 @@ pub struct Query {
     pub before: Option<NaiveDate>,
     pub after: Option<NaiveDate>,
     pub folder: Option<FolderRole>,
+    /// `folder:<id>`: one folder, as the sidebar names a folder of the user's own.
+    pub folder_id: Option<i64>,
     pub label: Option<String>,
     pub account: Option<String>,
     /// `in:snoozed`: threads whose snooze has not ended yet.
@@ -43,6 +45,7 @@ impl Query {
                 Some(("after", v)) => q.after = parse_date(v),
                 Some(("in", "snoozed")) => q.snoozed = true,
                 Some(("in", v)) => q.folder = FolderRole::parse(v),
+                Some(("folder", v)) if v.parse::<i64>().is_ok() => q.folder_id = v.parse().ok(),
                 Some(("label", v)) => q.label = Some(v.to_string()),
                 Some(("account", v)) => q.account = Some(v.to_string()),
                 _ => q.text.push(tok),
@@ -182,6 +185,15 @@ fn tokenize(input: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_is_named_by_its_id() {
+        assert_eq!(Query::parse("folder:12").folder_id, Some(12));
+        assert_eq!(Query::parse("folder:12 is:unread").unread, Some(true));
+        let words = Query::parse("folder:receipts");
+        assert_eq!(words.folder_id, None);
+        assert_eq!(words.text, vec!["folder:receipts".to_string()]);
+    }
 
     #[test]
     fn parses_operators() {

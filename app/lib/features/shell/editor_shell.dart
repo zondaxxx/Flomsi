@@ -265,7 +265,7 @@ class _TopBar extends ConsumerWidget {
       children: [
         Flexible(
           child: Text(
-            titleForQuery(query),
+            titleForQuery(query, folderNames: folderNames(ref)),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: ui(context, weight: FontWeight.w500),
@@ -474,11 +474,13 @@ class _Sidebar extends ConsumerWidget {
     final folders = ref.watch(foldersProvider).value ?? const <Folder>[];
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final labels = ref.watch(labelsProvider).value ?? const <Label>[];
+    final own = ref.watch(userFoldersProvider).value ?? const <Folder>[];
     final query = ref.watch(queryProvider);
     final entries = buildSidebar(
       folders: folders,
       accounts: accounts,
       labels: labels,
+      userFolders: own,
     );
     return ColoredBox(
       color: s.bg2,
@@ -496,7 +498,15 @@ class _Sidebar extends ConsumerWidget {
                       entry: e,
                       selected: e.query == query,
                       onTap: () {
-                        ref.read(queryProvider.notifier).set(e.query ?? '');
+                        final folder = e.folder;
+                        if (folder != null) {
+                          ShellActions(
+                            ref: ref,
+                            context: context,
+                          ).showFolder(folder);
+                        } else {
+                          ref.read(queryProvider.notifier).set(e.query ?? '');
+                        }
                         onPicked?.call();
                       },
                     ),
@@ -679,7 +689,7 @@ class _StatusBar extends ConsumerWidget {
       child: Row(
         children: [
           Text(
-            titleForQuery(query).toUpperCase(),
+            titleForQuery(query, folderNames: folderNames(ref)).toUpperCase(),
             style: mono(context, size: 11, color: s.fg),
           ),
           const SizedBox(width: 20),

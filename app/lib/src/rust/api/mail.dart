@@ -215,13 +215,17 @@ Future<void> markRead({required PlatformInt64 threadId, required bool read}) =>
 Future<void> starThread({required PlatformInt64 threadId, required bool on_}) =>
     RustLib.instance.api.crateApiMailStarThread(threadId: threadId, on_: on_);
 
-/// "Move to…" any folder of the thread's account; returns how many messages moved.
+/// "Move to…" any folder of the thread's account, from `from_folder` when the list shows
+/// one of the user's own folders (on Gmail: take it out of that label); returns how many
+/// messages moved.
 Future<int> moveThread({
   required PlatformInt64 threadId,
   required PlatformInt64 folderId,
+  PlatformInt64? fromFolder,
 }) => RustLib.instance.api.crateApiMailMoveThread(
   threadId: threadId,
   folderId: folderId,
+  fromFolder: fromFolder,
 );
 
 /// Hide the thread from the inbox until `until` (Unix seconds).
@@ -320,6 +324,16 @@ Future<SyncSummaryDto> syncAccount({
   accountId: accountId,
   inboxOnly: inboxOnly,
 );
+
+/// Every account's own folders and Gmail labels, account by account, by name.
+Future<List<UserFolderDto>> userFolders() =>
+    RustLib.instance.api.crateApiMailUserFolders();
+
+/// Open a folder of the user's own: it syncs now, and with the system folders from then on.
+/// `errors` says why the folder itself could not be read; `folder_errors` holds the rest of
+/// the same sync (another folder, a given-up action), to report like any sync's.
+Future<SyncSummaryDto> openFolder({required PlatformInt64 folderId}) =>
+    RustLib.instance.api.crateApiMailOpenFolder(folderId: folderId);
 
 /// Subscribe to sync events. The stream stays open for the life of the app.
 Stream<SyncEventDto> syncEvents() =>
@@ -1007,4 +1021,46 @@ class ThreadDto {
           hasAttachment == other.hasAttachment &&
           starred == other.starred &&
           snoozedUntil == other.snoozedUntil;
+}
+
+/// A folder of the user's own (on Gmail, a label), for the sidebar.
+class UserFolderDto {
+  final PlatformInt64 id;
+  final PlatformInt64 accountId;
+
+  /// The whole path, levels joined with " / " (`Projects / Flomsi`).
+  final String name;
+
+  /// Unread messages there, as far as this device has them (followed folders only).
+  final int unread;
+
+  /// Opened before, so synced with the system folders.
+  final bool follow;
+
+  const UserFolderDto({
+    required this.id,
+    required this.accountId,
+    required this.name,
+    required this.unread,
+    required this.follow,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      accountId.hashCode ^
+      name.hashCode ^
+      unread.hashCode ^
+      follow.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is UserFolderDto &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          accountId == other.accountId &&
+          name == other.name &&
+          unread == other.unread &&
+          follow == other.follow;
 }

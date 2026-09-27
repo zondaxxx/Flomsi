@@ -164,12 +164,16 @@ class Folder {
     required this.name,
     required this.role,
     this.unread = 0,
+    this.follow = false,
   });
   final int id;
   final int accountId;
   final String name;
   final FolderRole role;
   final int unread;
+
+  /// A folder of the user's own that was opened before, so it syncs with the others.
+  final bool follow;
 }
 
 class Label {

@@ -46,8 +46,12 @@ pub struct SyncReport {
 
 #[derive(Debug, Clone)]
 pub struct SyncOptions {
-    /// Folder roles to sync. Empty = every selectable folder.
+    /// Folder roles to sync. Empty, with `folders` empty too = every selectable folder.
     pub roles: Vec<FolderRole>,
+    /// Folders to sync besides, by name (one the user just opened).
+    pub folders: Vec<String>,
+    /// The folders the user follows go too (not in an inbox-only sync).
+    pub followed: bool,
     /// On first sync of a folder, only fetch this many most-recent messages.
     pub initial_window: usize,
     /// Smaller first window for Spam and Trash.
@@ -68,9 +72,23 @@ impl Default for SyncOptions {
                 FolderRole::Junk,
                 FolderRole::Trash,
             ],
+            folders: Vec::new(),
+            followed: true,
             initial_window: 200,
             minor_window: 50,
             keep_raw_below: 2 * 1024 * 1024,
+        }
+    }
+}
+
+impl SyncOptions {
+    /// Just these roles: an inbox-only sync after IDLE or an action, or reading a bin before
+    /// emptying it. The folders the user follows wait for the next full sync.
+    pub fn only(roles: Vec<FolderRole>) -> SyncOptions {
+        SyncOptions {
+            roles,
+            followed: false,
+            ..SyncOptions::default()
         }
     }
 }
@@ -155,8 +173,10 @@ impl SyncEngine {
         for (rf, folder) in remote.iter().zip(stored) {
             // A folder with something to take back is synced even when this run would skip
             // it (an inbox-only sync after a failed "not spam").
-            let wanted = opts.roles.is_empty()
+            let wanted = (opts.roles.is_empty() && opts.folders.is_empty())
                 || opts.roles.contains(&rf.role)
+                || opts.folders.contains(&rf.name)
+                || (opts.followed && folder.follow)
                 || undo.contains_key(&rf.name);
             if rf.selectable && wanted {
                 targets.push(folder);
@@ -615,7 +635,7 @@ impl SyncEngine {
                     // lost on a dropped connection (it went through), or it is a Gmail
                     // archive (out of the inbox is where it is). Anything else is said, so a
                     // restore that did not happen is not taken as done.
-                    Op::Move { uid, dest, .. }
+                    Op::Move { uid, dest, .. } | Op::Copy { uid, dest, .. }
                         if !provider.search(&format!("UID {uid}")).await?.contains(uid) =>
                     {
                         let lost_answer = item.attempts > 0
@@ -656,6 +676,7 @@ impl SyncEngine {
                         provider.delete(folder, *uid).await
                     }
                     Op::Move { uid, dest, .. } => provider.move_to(*uid, dest).await,
+                    Op::Copy { uid, dest, .. } => provider.copy_to(*uid, dest).await,
                     Op::Delete { folder, uid, .. } => provider.delete(folder, *uid).await,
                     Op::Empty {
                         folder,
@@ -1155,6 +1176,20 @@ impl<'a> Actions<'a> {
     /// from All Mail it only adds the label, and the All Mail copy stays. Returns how many
     /// messages moved.
     pub fn move_to_folder(&self, thread_id: i64, folder_id: i64) -> Result<usize> {
+        self.move_to_folder_from(thread_id, folder_id, None)
+    }
+
+    /// [Actions::move_to_folder] from the folder on screen, `from` (a folder of the user's
+    /// own or a Gmail label, when that is what the list shows). On Gmail the move takes the
+    /// message from there, which drops that label; without it, from the inbox, else from All
+    /// Mail, which only adds the new label. A copy cached because its label is followed is
+    /// never taken by chance: moving from it would drop a label the user did not touch.
+    pub fn move_to_folder_from(
+        &self,
+        thread_id: i64,
+        folder_id: i64,
+        from: Option<i64>,
+    ) -> Result<usize> {
         let dest = self.store.folder(folder_id)?;
         let folders = self.store.folders(dest.account_id)?;
         if dest.role != FolderRole::Inbox {
@@ -1180,18 +1215,43 @@ impl<'a> Actions<'a> {
                     moved += Self::gmail_leave_everything(&mut plan, &group, &folders, &dest)?;
                     continue;
                 }
-                let source = group.iter().find_map(|m| {
+                let usable = |m: &'_ Message| {
                     let f = Self::folder_of(&folders, m)?;
-                    let usable = !matches!(f.role, FolderRole::Sent | FolderRole::Drafts)
+                    let ok = !matches!(f.role, FolderRole::Sent | FolderRole::Drafts)
                         && (restore || !binned(m));
-                    usable.then_some((m, f))
-                });
-                let Some((m, src)) = source else { continue };
-                Self::enqueue_move(&mut plan, m, src, &dest, Vec::new());
-                if src.role != FolderRole::All {
-                    plan.push(Change::Delete(m.folder_id, m.uid));
+                    ok.then_some(f)
+                };
+                let role_of = |m: &Message| Self::folder_of(&folders, m).map(|f| f.role);
+                let pick = |want: &dyn Fn(&Message) -> bool| {
+                    group
+                        .iter()
+                        .filter(|m| want(m))
+                        .find_map(|m| usable(m).map(|f| (m, f)))
+                };
+                let source = pick(&|m| Some(m.folder_id) == from)
+                    .or_else(|| pick(&|m| role_of(m) == Some(FolderRole::Inbox)))
+                    .or_else(|| pick(&|m| restore && binned(m)))
+                    .or_else(|| pick(&|m| role_of(m) == Some(FolderRole::All)));
+                if let Some((m, src)) = source {
+                    Self::enqueue_move(&mut plan, m, src, &dest, Vec::new());
+                    if src.role != FolderRole::All {
+                        plan.push(Change::Delete(m.folder_id, m.uid));
+                    }
+                    moved += 1;
+                } else if let Some((m, src)) = pick(&|_| true) {
+                    // Cached only in a label the user did not act on (its All Mail copy is
+                    // older than the cache): add the new label, keep that one.
+                    plan.push(Change::Enqueue(
+                        m.account_id,
+                        Op::Copy {
+                            folder: src.remote_name.clone(),
+                            uid: m.uid,
+                            dest: dest.remote_name.clone(),
+                            uidvalidity: src.uidvalidity,
+                        },
+                    ));
+                    moved += 1;
                 }
-                moved += 1;
                 continue;
             }
             for m in &group {
@@ -1305,6 +1365,10 @@ fn describe(op: &Op) -> String {
             )
         }
         Op::SetFlags { .. } => "changing a message's flags".into(),
+        Op::Copy { dest, .. } => format!(
+            "adding the label {} to a message",
+            crate::provider::imap::decode_folder_name(dest)
+        ),
         Op::Delete { folder, .. } => format!(
             "removing a message from {}",
             crate::provider::imap::decode_folder_name(folder)

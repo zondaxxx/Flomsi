@@ -154,6 +154,7 @@ class _Section extends StatelessWidget {
 Future<void> showMailboxSheet(
   BuildContext context, {
   required void Function(String query) onPick,
+  required void Function(Folder folder) onFolder,
   required VoidCallback onAddAccount,
   required VoidCallback onSettings,
 }) => _sheet(
@@ -167,6 +168,7 @@ Future<void> showMailboxSheet(
     builder: (context, controller) => _MailboxSheet(
       controller: controller,
       onPick: onPick,
+      onFolder: onFolder,
       onAddAccount: onAddAccount,
       onSettings: onSettings,
     ),
@@ -177,11 +179,13 @@ class _MailboxSheet extends ConsumerWidget {
   const _MailboxSheet({
     required this.controller,
     required this.onPick,
+    required this.onFolder,
     required this.onAddAccount,
     required this.onSettings,
   });
   final ScrollController controller;
   final void Function(String query) onPick;
+  final void Function(Folder folder) onFolder;
   final VoidCallback onAddAccount;
   final VoidCallback onSettings;
 
@@ -190,6 +194,7 @@ class _MailboxSheet extends ConsumerWidget {
     final folders = ref.watch(foldersProvider).value ?? const <Folder>[];
     final accounts = ref.watch(accountsProvider).value ?? const <Account>[];
     final labels = ref.watch(labelsProvider).value ?? const <Label>[];
+    final own = ref.watch(userFoldersProvider).value ?? const <Folder>[];
     final drafts = ref.watch(draftsProvider).value?.length;
     final base = withoutFilter(
       ref.watch(queryProvider),
@@ -268,6 +273,25 @@ class _MailboxSheet extends ConsumerWidget {
               iconColor: l.color,
             ),
         ],
+        // The one account's folders when the list is narrowed to it, else everyone's.
+        ...folderSections<Widget>(
+          [
+            for (final f in own)
+              if (account == null || f.accountId == account.id) f,
+          ],
+          accounts,
+          (f) => _SheetRow(
+            title: f.name,
+            icon: AppIcons.folder,
+            count: f.unread,
+            current: folderQuery(f) == base,
+            onTap: () {
+              Navigator.of(context).pop();
+              onFolder(f);
+            },
+          ),
+          (title) => _Section(title),
+        ),
         const SizedBox(height: 8),
         Divider(height: 1, color: context.s.border),
         _SheetRow(

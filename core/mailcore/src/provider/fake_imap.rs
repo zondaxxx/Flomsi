@@ -2543,6 +2543,158 @@ mod tests {
             .with(|s| assert_eq!(s.where_is(g.invoice), vec![GMAIL_ALL.to_string()]));
     }
 
+    const LABELLED: &[u8] = b"From: Oleg <oleg@studio.dev>\r\nTo: z@gmail.com\r\nSubject: Flomsi roadmap\r\nMessage-ID: <roadmap@studio.dev>\r\nDate: Tue, 22 Sep 2026 10:00:00 +0300\r\n\r\nthe plan\r\n";
+
+    /// A Gmail message with the label Projects, which the app follows (so its copies there
+    /// are cached), and the Receipts label to move it to.
+    async fn followed_label(inbox: bool) -> (Gmail, u64, i64, i64) {
+        let g = gmail().await;
+        let gm = g.fake.with(|s| {
+            s.add_box("Projects", None);
+            let labels: &[&str] = if inbox {
+                &["INBOX", "Projects"]
+            } else {
+                &["Projects"]
+            };
+            s.deliver_gmail(labels, LABELLED, &["\\Seen"])
+        });
+        g.sync().await;
+        let folder = |name: &str| {
+            g.store
+                .folders(g.account.id)
+                .unwrap()
+                .into_iter()
+                .find(|f| f.remote_name == name)
+                .unwrap()
+                .id
+        };
+        let (projects, receipts) = (folder("Projects"), folder("Receipts"));
+        g.store.set_follow(projects, true).unwrap();
+        g.sync().await;
+        assert!(
+            !g.store.uids(projects).unwrap().is_empty(),
+            "the label is cached"
+        );
+        (g, gm, projects, receipts)
+    }
+
+    fn labels_of(g: &Gmail, gm: u64) -> Vec<String> {
+        g.fake.with(|s| {
+            let mut at = s.where_is(gm);
+            at.sort();
+            at
+        })
+    }
+
+    #[tokio::test]
+    async fn a_gmail_move_from_the_archive_keeps_a_followed_label() {
+        let (g, gm, _, receipts) = followed_label(false).await;
+        // From the Archive view: no folder on screen to take it from.
+        Actions { store: &g.store }
+            .move_to_folder_from(g.thread_of("roadmap@studio.dev"), receipts, None)
+            .unwrap();
+        g.sync().await;
+        assert_eq!(labels_of(&g, gm), vec!["Projects", "Receipts", GMAIL_ALL]);
+    }
+
+    #[tokio::test]
+    async fn a_gmail_move_from_a_label_view_takes_it_from_that_label_only() {
+        let (g, gm, projects, receipts) = followed_label(true).await;
+        Actions { store: &g.store }
+            .move_to_folder_from(g.thread_of("roadmap@studio.dev"), receipts, Some(projects))
+            .unwrap();
+        g.sync().await;
+        assert_eq!(labels_of(&g, gm), vec!["INBOX", "Receipts", GMAIL_ALL]);
+    }
+
+    #[tokio::test]
+    async fn a_gmail_move_adds_the_label_to_mail_cached_only_in_another_label() {
+        let fake = FakeImap::start("z@gmail.com", "secret").await;
+        let kickoff = b"From: Oleg <oleg@studio.dev>\r\nTo: z@gmail.com\r\nSubject: Kickoff\r\nMessage-ID: <kick@studio.dev>\r\nDate: Mon, 7 Sep 2026 10:00:00 +0300\r\n\r\nstart\r\n";
+        let reply = b"From: Oleg <oleg@studio.dev>\r\nTo: z@gmail.com\r\nSubject: Re: Kickoff\r\nMessage-ID: <kick2@studio.dev>\r\nIn-Reply-To: <kick@studio.dev>\r\nReferences: <kick@studio.dev>\r\nDate: Tue, 22 Sep 2026 10:00:00 +0300\r\n\r\nnews\r\n";
+        let gm = fake.with(|s| {
+            s.gmail_setup();
+            s.add_box("Projects", None);
+            s.add_box("Receipts", None);
+            let gm = s.deliver_gmail(&["Projects"], kickoff, &["\\Seen"]);
+            for i in 0..5 {
+                let raw = format!("From: a@x.dev\r\nSubject: newer {i}\r\nMessage-ID: <newer{i}@x.dev>\r\nDate: Wed, 9 Sep 2026 10:00:00 +0300\r\n\r\nx\r\n");
+                s.deliver_gmail(&[], raw.as_bytes(), &["\\Seen"]);
+            }
+            gm
+        });
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let account = store
+            .add_account(&NewAccount {
+                kind: ProviderKind::Gmail,
+                email: "z@gmail.com".into(),
+                display_name: String::new(),
+                imap_host: "localhost".into(),
+                imap_port: fake.port,
+                smtp_host: String::new(),
+                smtp_port: 0,
+                auth: AuthKind::Password,
+                imap_security: Default::default(),
+                smtp_security: None,
+                local_bridge: false,
+            })
+            .unwrap();
+        let engine = SyncEngine::new(store.clone());
+        let mut p = ImapProvider::connect_trusting(
+            "localhost",
+            fake.port,
+            "z@gmail.com",
+            Credential::Password("secret".into()),
+            std::slice::from_ref(&fake.cert),
+        )
+        .await
+        .unwrap();
+        // All Mail keeps only the newest few: the kickoff is older than its cache.
+        let opts = SyncOptions {
+            initial_window: 3,
+            ..SyncOptions::default()
+        };
+        engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        let folder = |name: &str| {
+            store
+                .folders(account.id)
+                .unwrap()
+                .into_iter()
+                .find(|f| f.remote_name == name)
+                .unwrap()
+                .id
+        };
+        store.set_follow(folder("Projects"), true).unwrap();
+        engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        fake.with(|s| {
+            s.deliver_gmail(&["INBOX"], reply, &[]);
+        });
+        engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        let thread = store
+            .messages_by_message_id(account.id, "kick2@studio.dev")
+            .unwrap()[0]
+            .thread_id;
+        let kick_copies = store
+            .messages_by_message_id(account.id, "kick@studio.dev")
+            .unwrap();
+        assert!(kick_copies
+            .iter()
+            .all(|m| m.folder_id == folder("Projects")));
+        assert!(kick_copies.iter().all(|m| m.thread_id == thread));
+        // From the Inbox view: the conversation to Receipts.
+        Actions { store: &store }
+            .move_to_folder_from(thread, folder("Receipts"), None)
+            .unwrap();
+        let report = engine.sync_account(&account, &mut p, &opts).await.unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        fake.with(|s| {
+            let mut at = s.where_is(gm);
+            at.sort();
+            assert_eq!(at, vec!["Projects", "Receipts", GMAIL_ALL]);
+        });
+        p.logout().await.unwrap();
+    }
+
     fn binned(n: usize) -> impl Fn(&mut FakeState) {
         move |s| {
             for i in 0..n {

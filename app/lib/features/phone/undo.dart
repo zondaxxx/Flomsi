@@ -18,11 +18,15 @@ class PendingFiling {
     this.kind, {
     this.folderId,
     this.folderName,
+    this.fromFolder,
   });
   final int threadId;
   final FilingKind kind;
   final int? folderId;
   final String? folderName;
+
+  /// A move from a folder of the user's own on screen (on Gmail: out of that label).
+  final int? fromFolder;
 
   /// What the notice says.
   String get done => switch (kind) {
@@ -84,6 +88,7 @@ class PendingFilings extends Notifier<PendingFiling?> {
     FilingKind kind, {
     int? folderId,
     String? folderName,
+    int? fromFolder,
   }) async {
     final previous = _take();
     final p = PendingFiling(
@@ -91,6 +96,7 @@ class PendingFilings extends Notifier<PendingFiling?> {
       kind,
       folderId: folderId,
       folderName: folderName,
+      fromFolder: fromFolder,
     );
     state = p;
     _hidden.hide(threadId);
@@ -140,7 +146,11 @@ class PendingFilings extends Notifier<PendingFiling?> {
     int? n;
     if (p.kind == FilingKind.move) {
       try {
-        n = await repo.moveThread(p.threadId, p.folderId!);
+        n = await repo.moveThread(
+          p.threadId,
+          p.folderId!,
+          fromFolder: p.fromFolder,
+        );
         if (n == 0) notice.show('Already in ${p.folderName}');
       } catch (e) {
         notice.show('Couldn’t move it: $e', error: true);

@@ -393,6 +393,10 @@ class MockRepository implements MailRepository {
       } else if (tok.startsWith('#') || tok.startsWith('label:')) {
         final v = tok.startsWith('#') ? tok.substring(1) : tok.substring(6);
         out = out.where((t) => t.labels.any((l) => l.name == v));
+      } else if (tok.startsWith('folder:')) {
+        // A stable part of the mail per folder.
+        final f = int.tryParse(tok.substring(7)) ?? 0;
+        out = out.where((t) => t.id % 3 == f % 3);
       } else if (tok.startsWith('account:')) {
         final email = tok.substring(8);
         // Part of an address is enough, as in the core's query.
@@ -615,6 +619,38 @@ class MockRepository implements MailRepository {
     return trash(id);
   }
 
+  /// The folders of the user's own the mock has (the same ids as [accountFolders] gives
+  /// account 1), and the ones opened (by id).
+  final List<Folder> ownFolders = [
+    const Folder(
+      id: 104,
+      accountId: 1,
+      name: 'Projects / Flomsi',
+      role: FolderRole.other,
+      unread: 2,
+      follow: true,
+    ),
+    const Folder(
+      id: 105,
+      accountId: 1,
+      name: 'Receipts',
+      role: FolderRole.other,
+    ),
+    const Folder(id: 106, accountId: 1, name: 'Travel', role: FolderRole.other),
+  ];
+  final List<int> openedFolders = [];
+
+  @override
+  Future<List<Folder>> userFolders() async => ownFolders;
+
+  @override
+  Future<void> openFolder(Folder folder) async {
+    calls.add('open ${folder.id}');
+    openedFolders.add(folder.id);
+    await binGate?.future;
+    _events.add(const ThreadsChanged());
+  }
+
   @override
   Future<BinCheck?> refreshBin(FolderRole role, int accountId) async {
     calls.add('refresh $accountId');
@@ -672,8 +708,12 @@ class MockRepository implements MailRepository {
       ),
   ];
 
+  /// The folder each move was made from (null: not from a folder of the user's own).
+  final List<int?> movedFrom = [];
+
   @override
-  Future<int> moveThread(int threadId, int folderId) {
+  Future<int> moveThread(int threadId, int folderId, {int? fromFolder}) {
+    movedFrom.add(fromFolder);
     calls.add('move $threadId');
     return archive(threadId);
   }

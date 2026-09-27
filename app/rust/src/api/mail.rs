@@ -620,10 +620,7 @@ pub async fn sync_bin(account_id: i64, role: String) -> Result<Option<BinCheckDt
     let role = bin_role(&role)?;
     let c = core()?;
     let started = chrono::Utc::now().timestamp();
-    let opts = SyncOptions {
-        roles: vec![role],
-        ..SyncOptions::default()
-    };
+    let opts = SyncOptions::only(vec![role]);
     let report = c.sync_account(account_id, &opts).await?;
     let Some(bin) = c.store().folder_by_role(account_id, role)? else {
         return Ok(None);
@@ -710,9 +707,13 @@ pub fn star_thread(thread_id: i64, on: bool) -> Result<()> {
     Ok(core()?.actions().star(thread_id, on)?)
 }
 
-/// "Move to…" any folder of the thread's account; returns how many messages moved.
-pub fn move_thread(thread_id: i64, folder_id: i64) -> Result<u32> {
-    Ok(core()?.actions().move_to_folder(thread_id, folder_id)? as u32)
+/// "Move to…" any folder of the thread's account, from `from_folder` when the list shows
+/// one of the user's own folders (on Gmail: take it out of that label); returns how many
+/// messages moved.
+pub fn move_thread(thread_id: i64, folder_id: i64, from_folder: Option<i64>) -> Result<u32> {
+    Ok(core()?
+        .actions()
+        .move_to_folder_from(thread_id, folder_id, from_folder)? as u32)
 }
 
 // ---------- snooze (on this device) ----------
@@ -814,7 +815,7 @@ pub async fn sync_all(inbox_only: bool) -> Result<SyncSummaryDto> {
     let c = core()?;
     let mut opts = SyncOptions::default();
     if inbox_only {
-        opts.roles = vec![FolderRole::Inbox];
+        opts = SyncOptions::only(vec![FolderRole::Inbox]);
     }
     let mut summary =
         SyncSummaryDto { accounts: 0, fetched: 0, removed: 0, errors: vec![], folder_errors: vec![] };
@@ -846,7 +847,7 @@ pub async fn sync_account(account_id: i64, inbox_only: bool) -> Result<SyncSumma
     let c = core()?;
     let mut opts = SyncOptions::default();
     if inbox_only {
-        opts.roles = vec![FolderRole::Inbox];
+        opts = SyncOptions::only(vec![FolderRole::Inbox]);
     }
     let mut summary =
         SyncSummaryDto { accounts: 1, fetched: 0, removed: 0, errors: vec![], folder_errors: vec![] };
@@ -855,6 +856,68 @@ pub async fn sync_account(account_id: i64, inbox_only: bool) -> Result<SyncSumma
             summary.fetched = rep.fetched as u32;
             summary.removed = rep.removed as u32;
             summary.folder_errors = rep.errors;
+        }
+        Err(e) => summary.errors.push(e.to_string()),
+    }
+    Ok(summary)
+}
+
+/// A folder of the user's own (on Gmail, a label), for the sidebar.
+pub struct UserFolderDto {
+    pub id: i64,
+    pub account_id: i64,
+    /// The whole path, levels joined with " / " (`Projects / Flomsi`).
+    pub name: String,
+    /// Unread messages there, as far as this device has them (followed folders only).
+    pub unread: u32,
+    /// Opened before, so synced with the system folders.
+    pub follow: bool,
+}
+
+/// Every account's own folders and Gmail labels, account by account, by name.
+pub fn user_folders() -> Result<Vec<UserFolderDto>> {
+    let c = core()?;
+    let unread = c.store().unread_by_folder()?;
+    let mut out = Vec::new();
+    for a in c.store().accounts()? {
+        let mut folders: Vec<_> = c
+            .store()
+            .folders(a.id)?
+            .into_iter()
+            .filter(|f| f.role == FolderRole::Other && f.selectable)
+            .collect();
+        folders.sort_by_cached_key(|f| f.display_name().to_lowercase());
+        for f in folders {
+            out.push(UserFolderDto {
+                id: f.id,
+                account_id: a.id,
+                name: f.display_name(),
+                unread: unread.get(&f.id).copied().unwrap_or(0),
+                follow: f.follow,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Open a folder of the user's own: it syncs now, and with the system folders from then on.
+/// `errors` says why the folder itself could not be read; `folder_errors` holds the rest of
+/// the same sync (another folder, a given-up action), to report like any sync's.
+pub async fn open_folder(folder_id: i64) -> Result<SyncSummaryDto> {
+    let c = core()?;
+    let mut summary = SyncSummaryDto {
+        accounts: 1,
+        fetched: 0,
+        removed: 0,
+        errors: vec![],
+        folder_errors: vec![],
+    };
+    match c.open_folder(folder_id).await {
+        Ok((rep, why)) => {
+            summary.fetched = rep.fetched as u32;
+            summary.removed = rep.removed as u32;
+            summary.folder_errors = rep.errors;
+            summary.errors.extend(why);
         }
         Err(e) => summary.errors.push(e.to_string()),
     }

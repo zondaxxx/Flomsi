@@ -469,6 +469,62 @@ impl Core {
         })
     }
 
+    /// The one folder a `folder:<id>` query names, when it is this account's and can be
+    /// opened.
+    fn named_folder(&self, account: &Account, folder_id: i64) -> Result<Vec<Folder>> {
+        let f = self.store.folder(folder_id)?;
+        Ok(if f.account_id == account.id && f.selectable {
+            vec![f]
+        } else {
+            Vec::new()
+        })
+    }
+
+    /// Open a folder of the user's own (a Gmail label is one too): from now on it syncs with
+    /// the system folders, and this first time it syncs on its own, so its list fills at
+    /// once.
+    /// Returns the sync's report and, when the folder itself could not be read, why; it is
+    /// then not followed, so the next opening tries again. The report keeps the rest of the
+    /// sync (another folder, a given-up action), which is said only once, either way.
+    pub async fn open_folder(&self, folder_id: i64) -> Result<(SyncReport, Option<String>)> {
+        let folder = self.store.folder(folder_id)?;
+        let started = chrono::Utc::now().timestamp();
+        let opts = SyncOptions {
+            roles: Vec::new(),
+            folders: vec![folder.remote_name.clone()],
+            followed: false,
+            ..SyncOptions::default()
+        };
+        let mut report = self.sync_account(folder.account_id, &opts).await?;
+        let own = format!("{}: ", folder.remote_name);
+        let failed = report
+            .errors
+            .iter()
+            .find_map(|e| e.strip_prefix(&own).map(str::to_string));
+        report.errors.retain(|e| !e.starts_with(&own));
+        let why = match self.store.folder(folder_id) {
+            // Gone from the server's list since the sidebar showed it.
+            Err(_) => Some(format!(
+                "{} is no longer on the server",
+                folder.display_name()
+            )),
+            Ok(read)
+                if read.uidvalidity.is_none()
+                    || !read.last_sync_at.is_some_and(|t| t.timestamp() >= started) =>
+            {
+                Some(
+                    failed
+                        .unwrap_or_else(|| format!("{} could not be read", folder.display_name())),
+                )
+            }
+            Ok(_) => None,
+        };
+        if why.is_none() {
+            self.store.set_follow(folder_id, true)?;
+        }
+        Ok((report, why))
+    }
+
     /// Older mail for the list [query] shows on [account_id]: the next [count] messages of
     /// each folder it covers, below what the sync holds. Returns how many arrived and
     /// whether the server has older mail still. A folder that fails is skipped (and the
@@ -482,13 +538,17 @@ impl Core {
         let account = self.store.account(account_id)?;
         let q = Query::parse(query);
         let role = q.folder.unwrap_or(FolderRole::Inbox);
-        let folders = self.folders_for(&account, role)?;
+        let folders = match q.folder_id {
+            Some(id) => self.named_folder(&account, id)?,
+            None => self.folders_for(&account, role)?,
+        };
         if folders.is_empty() {
             return Ok((0, false));
         }
         // Gmail's archive is All Mail without the inbox: older inbox mail must not come in
         // as archived.
-        let only = (role == FolderRole::Archive
+        let only = (q.folder_id.is_none()
+            && role == FolderRole::Archive
             && folders.iter().all(|f| f.role == FolderRole::All))
         .then_some("NOT X-GM-LABELS \\Inbox");
         let mut p = self.connect(&account).await?;
@@ -549,9 +609,10 @@ impl Core {
                 })
                 .collect())
         };
-        let folders: Vec<Folder> = match q.folder {
-            Some(role) => self.folders_for(&account, role)?,
-            None if gmail => {
+        let folders: Vec<Folder> = match (q.folder_id, q.folder) {
+            (Some(id), _) => self.named_folder(&account, id)?,
+            (None, Some(role)) => self.folders_for(&account, role)?,
+            (None, None) if gmail => {
                 let all = self.folders_for(&account, FolderRole::All)?;
                 if all.is_empty() {
                     // All Mail hidden from IMAP: the labels there are, then.
@@ -560,7 +621,7 @@ impl Core {
                     [all, self.folders_for(&account, FolderRole::Inbox)?].concat()
                 }
             }
-            None => everywhere()?,
+            (None, None) => everywhere()?,
         };
         if folders.is_empty() {
             return Ok(0);
@@ -1306,6 +1367,7 @@ mod tests {
             selectable: true,
             delimiter: None,
             floor_uid: None,
+            follow: false,
         };
         let state = |validity, next| provider::FolderState {
             uidvalidity: validity,
@@ -1449,6 +1511,135 @@ mod tests {
             )
             .unwrap();
         (core, dir, a.id)
+    }
+
+    #[tokio::test]
+    async fn a_folder_opened_once_syncs_from_then_on() {
+        use crate::provider::fake_imap::FakeImap;
+        let fake = FakeImap::start("folders@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.add_box("Projects", None);
+            s.deliver("INBOX", &numbered(1, "In the inbox"), &[]);
+            s.deliver("Projects", &numbered(2, "Filed away"), &[]);
+        });
+        let (core, dir, account) = core_on(&fake, "folders").await;
+        core.sync_account(account, &SyncOptions::default())
+            .await
+            .unwrap();
+        let projects = core
+            .store()
+            .folders(account)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Projects")
+            .unwrap();
+        // Not a system folder: nothing of it until it is opened.
+        assert!(core.store().uids(projects.id).unwrap().is_empty());
+        let shown = |q: &str| -> Vec<String> {
+            core.threads(q, 20)
+                .unwrap()
+                .into_iter()
+                .map(|t| t.subject)
+                .collect()
+        };
+        core.open_folder(projects.id).await.unwrap();
+        assert!(core.store().folder(projects.id).unwrap().follow);
+        assert_eq!(
+            shown(&format!("folder:{}", projects.id)),
+            vec!["Filed away"]
+        );
+        assert_eq!(shown(""), vec!["In the inbox"]);
+        // New mail filed there by the server: not with an inbox-only sync, with a full one.
+        fake.with(|s| {
+            s.deliver("Projects", &numbered(3, "Filed later"), &[]);
+        });
+        core.sync_account(account, &SyncOptions::only(vec![FolderRole::Inbox]))
+            .await
+            .unwrap();
+        assert_eq!(core.store().uids(projects.id).unwrap().len(), 1);
+        core.sync_account(account, &SyncOptions::default())
+            .await
+            .unwrap();
+        // Same Date header on both: compared as a set.
+        let mut unread = shown(&format!("folder:{} is:unread", projects.id));
+        unread.sort();
+        assert_eq!(unread, vec!["Filed away", "Filed later"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_could_not_be_read_is_tried_again_next_time() {
+        use crate::provider::fake_imap::FakeImap;
+        let fake = FakeImap::start("retry@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.add_box("Projects", None);
+            s.deliver("Projects", &numbered(2, "Filed away"), &[]);
+        });
+        let (core, dir, account) = core_on(&fake, "retry").await;
+        core.sync_account(account, &SyncOptions::default())
+            .await
+            .unwrap();
+        let projects = core
+            .store()
+            .folders(account)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Projects")
+            .unwrap();
+        fake.with(|s| s.refuse_list = true);
+        assert!(core.open_folder(projects.id).await.is_err());
+        assert!(!core.store().folder(projects.id).unwrap().follow);
+        fake.with(|s| s.refuse_list = false);
+        fake.with(|s| s.refuse_select = Some("Projects".into()));
+        let (_, why) = core.open_folder(projects.id).await.unwrap();
+        assert!(why.is_some());
+        assert!(!core.store().folder(projects.id).unwrap().follow);
+        fake.with(|s| s.refuse_select = None);
+        assert_eq!(core.open_folder(projects.id).await.unwrap().1, None);
+        assert!(core.store().folder(projects.id).unwrap().follow);
+        assert_eq!(core.store().uids(projects.id).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_fails_to_open_still_hands_on_the_rest_of_the_report() {
+        use crate::provider::fake_imap::FakeImap;
+        let fake = FakeImap::start("report@x.dev", "secret").await;
+        fake.with(|s| {
+            s.add_box("INBOX", None);
+            s.add_box("Archive", Some("\\Archive"));
+            s.add_box("Projects", None);
+            s.deliver("INBOX", &numbered(1, "Archive me"), &[]);
+        });
+        let (core, dir, account) = core_on(&fake, "report").await;
+        core.sync_account(account, &SyncOptions::default())
+            .await
+            .unwrap();
+        let thread = core.threads("", 10).unwrap()[0].id;
+        core.actions().archive(thread).unwrap();
+        // Gone from the inbox elsewhere: the archive cannot happen, and says so once.
+        fake.with(|s| s.remove("INBOX", 1));
+        let projects = core
+            .store()
+            .folders(account)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.remote_name == "Projects")
+            .unwrap();
+        fake.with(|s| s.refuse_select = Some("Projects".into()));
+        let (report, why) = core.open_folder(projects.id).await.unwrap();
+        assert!(why.is_some());
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.starts_with("Could not finish moving a message to Archive")),
+            "{:?}",
+            report.errors
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

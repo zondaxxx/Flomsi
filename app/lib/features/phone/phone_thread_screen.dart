@@ -118,7 +118,7 @@ class _PhoneThreadScreenState extends ConsumerState<PhoneThreadScreen> {
       ref.watch(listFilterProvider),
     );
     final role = parseMailbox(base)?.role;
-    final backTitle = mailboxTitle(base);
+    final backTitle = mailboxTitle(base, folderNames: folderNames(ref));
     final allowed = ref.watch(remoteImagesProvider(id));
     final blocked = [
       for (final m in messages ?? const <Message>[])
