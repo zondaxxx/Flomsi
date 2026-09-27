@@ -649,7 +649,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
           <div class="srow"><span class="lead"><svg class="ic"><use href="#i-star"/></svg></span><span class="lbl">Starred</span><span class="mono">1</span></div>
           <div class="srow"><span class="lead"><svg class="ic"><use href="#i-archive"/></svg></span><span class="lbl">Archive</span><span class="mono"></span></div>
         </div>
-        <div class="cap"><h3>Accounts <span class="mono">IMAP · SMTP</span></h3><p>Gmail, iCloud, Yandex, Mail.ru, Fastmail or any IMAP server, with an app password. One inbox for all of them, or one account at a time.</p></div>
+        <div class="cap"><h3>Accounts <span class="mono">IMAP · SMTP</span></h3><p>Gmail with Continue with Google; iCloud, Yandex, Mail.ru, Fastmail or any IMAP server with an app password. One inbox for all of them, or one account at a time.</p></div>
       </div></div>
     </div>
   </div>
@@ -674,14 +674,14 @@ kbd.changed{animation:flash 1.4s var(--ease)}
           <img class="shot-d" src="img/phone-menu-dark.webp" width="390" height="844" loading="lazy" decoding="async" alt="The menu that opens on a long press: Reply, Forward, Archive, Delete, Move to, Snooze, Star and Mark as unread.">
           <img class="shot-l" src="img/phone-menu-light.webp" width="390" height="844" loading="lazy" decoding="async" alt="The menu that opens on a long press: Reply, Forward, Archive, Delete, Move to, Snooze, Star and Mark as unread.">
         </div>
-        <div class="cap"><h3>Long press and swipe</h3><p>Hold a message for its menu. Swipe right to archive, left to delete. Archive, delete and move wait five seconds with Undo before they reach the server.</p></div>
+        <div class="cap"><h3>Long press and swipe</h3><p>Hold a message for its menu. Swipe right to archive, left to delete. Archive, delete and move wait five seconds with Undo before they reach the server. Deleting from Trash is for good, so Flomsi asks first.</p></div>
       </li>
       <li class="phone">
         <div class="screen">
-          <img class="shot-d" src="img/phone-welcome-dark.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, Sign in with Microsoft, and Other email account.">
-          <img class="shot-l" src="img/phone-welcome-light.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, Sign in with Microsoft, and Other email account.">
+          <img class="shot-d" src="img/phone-welcome-dark.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, a note that the mail goes straight between the phone and Gmail with a link to the privacy policy, and Other email account.">
+          <img class="shot-l" src="img/phone-welcome-light.webp" width="390" height="844" loading="lazy" decoding="async" alt="Flomsi's start screen: Continue with Google, a note that the mail goes straight between the phone and Gmail with a link to the privacy policy, and Other email account.">
         </div>
-        <div class="cap"><h3>Sign in</h3><p>Continue with Google or Microsoft on the provider's own page, or add any IMAP account with step-by-step app-password instructions. Microsoft sign-in comes later.</p></div>
+        <div class="cap"><h3>Sign in</h3><p>Continue with Google on Google's own page, or add any IMAP account with step-by-step app-password instructions. The start screen says what Flomsi does with your Gmail before you sign in. Microsoft sign-in comes later.</p></div>
       </li>
     </ul>
   </div>
@@ -706,7 +706,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       <div class="kg"><h3>Write</h3><div class="kr"><span>New message</span><span class="ks"><kbd>c</kbd></span></div><div class="kr"><span>Reply</span><span class="ks"><kbd>r</kbd></span></div><div class="kr"><span>Reply all</span><span class="ks"><kbd>a</kbd></span></div><div class="kr"><span>Forward</span><span class="ks"><kbd>f</kbd></span></div><div class="kr"><span>Send</span><span class="ks"><kbd>⌘↵</kbd></span></div></div>
       <div class="kg"><h3>Go</h3><div class="kr"><span>Inbox</span><span class="ks"><kbd>g</kbd><kbd>i</kbd></span></div><div class="kr"><span>Starred</span><span class="ks"><kbd>g</kbd><kbd>s</kbd></span></div><div class="kr"><span>Archive</span><span class="ks"><kbd>g</kbd><kbd>a</kbd></span></div><div class="kr"><span>Search</span><span class="ks"><kbd>/</kbd></span></div><div class="kr"><span>Commands</span><span class="ks"><kbd>⌘K</kbd><span class="or">or</span><kbd>?</kbd></span></div><div class="kr"><span>Settings</span><span class="ks"><kbd>⌘,</kbd></span></div></div>
     </div>
-    <p class="note">Reply, reply all and forward work in an open conversation: <kbd>↵</kbd> or <kbd>o</kbd> opens it. Single-key shortcuts only fire outside text fields, so typing an <kbd>e</kbd> in search types an e; it never archives the thread you were reading.</p>
+    <p class="note">Reply, reply all and forward work in an open conversation: <kbd>↵</kbd> or <kbd>o</kbd> opens it. Single-key shortcuts only fire outside text fields, so typing an <kbd>e</kbd> in search types an e; it never archives the thread you were reading. In Trash, <kbd>#</kbd> deletes for good, after asking.</p>
   </div>
 </section>
 
@@ -732,6 +732,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       <div class="spec"><dt>search</dt><dd>SQLite FTS5 over the mail on the device, with one query language in the app and in the CLI. Search on the server looks past the cache.</dd></div>
       <div class="spec"><dt>html mail</dt><dd>Cleaned in the core and drawn without a WebView or JavaScript. Remote images wait for your click.</dd></div>
       <div class="spec"><dt>secrets</dt><dd>Passwords and tokens live in Keychain, in Windows Credential Manager, or on Android under a key held in the Android Keystore; never in the database.</dd></div>
+      <div class="spec"><dt>deleting</dt><dd>For good only from Trash or Spam, and only after asking. Delete forever and Empty Trash delete what the question named: mail you restored, or that arrived meanwhile, stays.</dd></div>
       <div class="spec"><dt>sending</dt><dd>SMTP over TLS on 465 or STARTTLS on 587, straight to the server, so it needs a connection. Bcc stays in the envelope.</dd></div>
       <div class="spec"><dt>tested</dt><dd>IMAP and SMTP run end to end in CI on every push to main and every pull request: against scripted TLS servers and against real Dovecot and mailpit. The same run builds all four apps.</dd></div>
       <div class="spec"><dt>platforms</dt><dd>One Rust core under a Flutter interface on macOS, Windows, iOS and Android.</dd></div>
@@ -758,7 +759,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       <a href="https://github.com/zondaxxx/Flomsi/commits/main">Full history on GitHub</a>
     </div>
     <div class="log">
-      <article class="entry"><time class="mono" datetime="2026-09-24T21:00+03:00">Sep 24</time><h3>0.2.4: Delete forever and Empty Trash</h3><p>In Trash, Delete removes a conversation from the server for good, after asking. Empty Trash and Empty Junk clear the whole folder, older mail on the server included. The start screen says what Flomsi does with your Gmail, with a link to the privacy policy.</p></article>
+      <article class="entry"><time class="mono" datetime="2026-09-25">Sep 25</time><h3>0.2.4: Delete forever and Empty Trash</h3><p>In Trash, Delete removes a conversation from the server for good, after asking. Empty Trash and Empty Junk read the folder from the server, ask, then clear it, older mail on the server included; mail you restored stays. The start screen says what Flomsi does with your Gmail. macOS downloads are a disk image, and this site moved to its own server.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-24">Sep 24</time><h3>0.2.1 to 0.2.3: Google sign-in and a new icon</h3><p>Continue with Google works in every download; 0.2.2 and 0.2.3 fix the return from the Google page on Android and behind some proxies. A new mark, an fl ligature whose l is the text cursor, on all four platforms and on this site. Android builds now use one permanent key.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T15:57+03:00">Sep 23</time><h3>Undo on phones</h3><p>Archive, delete and move wait five seconds with Undo before they reach the server. A conversation, a new message and settings each get a screen of their own.</p></article>
       <article class="entry"><time class="mono" datetime="2026-09-23T14:38+03:00">Sep 23</time><h3>A phone layout</h3><p>A bottom bar with Mailboxes, Search, Unread and Compose, and dropdown menus for accounts and the rest. Swipe right to archive, left to delete, long press for everything else.</p></article>
@@ -775,7 +776,8 @@ kbd.changed{animation:flash 1.4s var(--ease)}
       <div>
         <h4>Works today</h4>
         <ul>
-          <li>App passwords for Gmail, iCloud, Yandex, Mail.ru, Fastmail and any IMAP server, with step-by-step guides</li>
+          <li>Continue with Google for Gmail</li>
+          <li>App passwords for iCloud, Yandex, Mail.ru, Fastmail and any IMAP server, with step-by-step guides</li>
           <li>Several accounts in one inbox, or one at a time</li>
           <li>Search, stars, snooze, move to any folder, delete forever and empty Trash</li>
           <li>Attachments, and drafts saved on the device</li>
@@ -803,7 +805,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
   <div class="wrap">
     <div class="get-head">
       <div>
-        <p class="ver mono">Version 0.2.4 · 24 Sep 2026</p>
+        <p class="ver mono">Version 0.2.4 · 25 Sep 2026</p>
         <h2 id="h-get">Get Flomsi</h2>
         <p>Builds for macOS, Windows, Android and iOS. They are not signed by Apple, Microsoft or Google yet: macOS, Windows and Android ask once before they open them, and on iOS you sign the app yourself with AltStore or Sideloadly.</p>
       </div>
@@ -984,7 +986,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
   const VIEWS = { inbox: 'Inbox', starred: 'Starred', snoozed: 'Snoozed', drafts: 'Drafts', sent: 'Sent', archive: 'Archive', junk: 'Junk', trash: 'Trash' };
   function inView(t, v = S.view) {
     if (v === 'inbox') return t.box === 'inbox';
-    if (v === 'starred') return t.starred && t.box !== 'trash';
+    if (v === 'starred') return t.starred && t.box !== 'trash' && t.box !== 'gone';
     if (v.startsWith('acct:')) return t.box === 'inbox' && t.acct === +v.slice(5);
     return t.box === v;
   }
@@ -1025,7 +1027,7 @@ kbd.changed{animation:flash 1.4s var(--ease)}
     const rows = [
       ['sec', 'Mailboxes'],
       ['inbox', 'Inbox', 'tray', inbox.filter(t => t.unread).length],
-      ['starred', 'Starred', 'star', S.threads.filter(t => t.starred && t.box !== 'trash').length],
+      ['starred', 'Starred', 'star', S.threads.filter(t => t.starred && t.box !== 'trash' && t.box !== 'gone').length],
       ['snoozed', 'Snoozed', 'clock', S.threads.filter(t => t.box === 'snoozed').length],
       ['drafts', 'Drafts', 'doc', 1],
       ['sent', 'Sent', 'send', 0],
@@ -1173,7 +1175,20 @@ kbd.changed{animation:flash 1.4s var(--ease)}
     } else finish();
   }
   const archive = () => removeCurrent(t => { t.box = 'archive'; }, 'Archived');
-  const del = () => removeCurrent(t => { t.box = 'trash'; }, 'Deleted');
+  // In Trash there is nowhere further to put it: Delete deletes for good (the app asks first).
+  const bin = t => t && (t.box === 'trash' || t.box === 'junk');
+  function delForever() {
+    if (!bin(current())) { notify('Only mail in Trash or Junk can be deleted forever'); return; }
+    removeCurrent(t => { t.box = 'gone'; }, 'Deleted forever');
+  }
+  const del = () => (current() && current().box === 'trash' ? delForever() : removeCurrent(t => { t.box = 'trash'; }, 'Deleted'));
+  function empty(box) {
+    const name = VIEWS[box];
+    if (!S.threads.some(t => t.box === box)) { notify(`No ${name} to empty`); return; }
+    S.threads.forEach(t => { if (t.box === box) t.box = 'gone'; });
+    S.sel = null; openPane(false); render(true);
+    notify(`${name} emptied`);
+  }
   function star() {
     const t = current(); if (!t) return;
     t.starred = !t.starred;
@@ -1238,6 +1253,9 @@ kbd.changed{animation:flash 1.4s var(--ease)}
     return [
       { g: 'Message', title: 'Archive', k: 'e', run: archive },
       { g: 'Message', title: 'Delete', k: '#', run: del },
+      { g: 'Message', title: 'Delete Forever', d: 'From Trash or Junk', run: delForever },
+      { g: 'Mailbox', title: 'Empty Trash', d: 'Deletes it all for good', run: () => empty('trash') },
+      { g: 'Mailbox', title: 'Empty Junk', d: 'Deletes it all for good', run: () => empty('junk') },
       { g: 'Message', title: 'Reply All', k: 'a', run: reply },
       { g: 'Message', title: 'Star / Unstar', k: keyOf('star'), run: star },
       { g: 'Message', title: 'Mark as Read', run: () => setRead(true) },
