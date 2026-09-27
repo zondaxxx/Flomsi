@@ -108,6 +108,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          # A release app is universal: the Rust bridge is built for both and joined with lipo.
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -121,6 +124,16 @@ jobs:
         working-directory: app
       - run: flutter build macos --release
         working-directory: app
+      - name: universal
+        run: |
+          # Intel Macs need every binary in both architectures, the Rust bridge included.
+          app="app/build/macos/Build/Products/Release/Flomsi.app"
+          for bin in "$app/Contents/MacOS/Flomsi" "$app/Contents/Frameworks/libmail_bridge.dylib"; do
+            archs=$(lipo -archs "$bin")
+            echo "$bin: $archs"
+            case " $archs " in *" arm64 "*) ;; *) exit 1 ;; esac
+            case " $archs " in *" x86_64 "*) ;; *) exit 1 ;; esac
+          done
       # A disk image to drag Flomsi into Applications from.
       - name: package
         run: scripts/make_dmg.sh app/build/macos/Build/Products/Release/Flomsi.app Flomsi-macOS.dmg
